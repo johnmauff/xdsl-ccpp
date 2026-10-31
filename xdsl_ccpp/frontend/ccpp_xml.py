@@ -28,6 +28,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_verbosity,
 )
 from xdsl_ccpp.util.ccpp_item import CCPPArgument, CCPPItem, CCPPType
+from xdsl_ccpp.util.errors import CcppInputError, report_input_errors
 from xdsl_ccpp.util.options_db import coerce_list_option
 
 
@@ -89,11 +90,11 @@ class CCPPTableProperties(CCPPItem):
         if key == "type" and isinstance(value, str):
             value = CCPPType(value)
         if key == "array_layout" and value not in self._VALID_ARRAY_LAYOUTS:
-            raise ValueError(
+            raise CcppInputError(
                 f"array_layout must be one of {self._VALID_ARRAY_LAYOUTS}, got '{value}'"
             )
         if key == "language" and value not in self._VALID_LANGUAGES:
-            raise ValueError(
+            raise CcppInputError(
                 f"language must be one of {self._VALID_LANGUAGES}, got '{value}'"
             )
         if key == "kind_spec":
@@ -157,7 +158,7 @@ def _load_nested_suite_reference(suite_name, group_name, file_attr, default_dir)
     pass spliced its containing file in from somewhere else).
     """
     if not suite_name or not file_attr:
-        raise ValueError(
+        raise CcppInputError(
             f"<nested_suite> requires both name= and file= attributes, got "
             f"name={suite_name!r} file={file_attr!r}"
         )
@@ -176,7 +177,7 @@ def _load_nested_suite_reference(suite_name, group_name, file_attr, default_dir)
     if group_name:
         msg += f", group '{group_name}',"
     msg += f" not found in file '{resolved_path}'"
-    raise ValueError(msg)
+    raise CcppInputError(msg)
 
 
 def _replace_nested_suite(parent, nested, default_dir):
@@ -237,7 +238,7 @@ def _expand_nested_suites(root, default_dir):
             keep_expanding = True
         if not keep_expanding:
             return
-    raise ValueError(
+    raise CcppInputError(
         "Exceeded max iterations while expanding <nested_suite> elements -- "
         "check for a cycle between mutually-referential suite files, or "
         f"raise _MAX_NESTED_SUITE_ITERATIONS. Suites expanded so far: {expanded_names}"
@@ -267,11 +268,11 @@ def _reject_suite_child(parent, child, source):
     if source:
         where += f" of suite file '{source}'"
     if child.tag in _UNSUPPORTED_SUITE_ELEMENTS:
-        raise ValueError(
+        raise CcppInputError(
             f"<{child.tag}> in {where} is not supported: xdsl-ccpp does not "
             f"implement {_UNSUPPORTED_SUITE_ELEMENTS[child.tag]}"
         )
-    raise ValueError(f"Unknown element <{child.tag}> in {where}")
+    raise CcppInputError(f"Unknown element <{child.tag}> in {where}")
 
 
 class XMLSuiteBase:
@@ -441,7 +442,7 @@ def _check_meta_expr(parse, text, filename, line_no) -> None:
     try:
         parse(text)
     except MetaExprError as e:
-        raise ValueError(f"{filename}:{line_no}: {e}") from None
+        raise CcppInputError(f"{filename}:{line_no}: {e}") from None
 
 
 def parse_meta_file(filename, is_scheme):
@@ -516,13 +517,13 @@ def parse_meta_file(filename, is_scheme):
                     # a still-nonexistent table; an empty name would silently
                     # propagate as a nameless argument):
                     if current_arg_table is None:
-                        raise ValueError(
+                        raise CcppInputError(
                             f"{filename}:{line_no}: argument '{token.strip()}' "
                             "declared before any [ccpp-arg-table] header"
                         )
                     arg_name = token.strip()
                     if not arg_name:
-                        raise ValueError(
+                        raise CcppInputError(
                             f"{filename}:{line_no}: empty argument name '[{token}]'"
                         )
                     _check_meta_expr(parse_local_name, arg_name, filename, line_no)
@@ -837,8 +838,8 @@ class ccppXML:
 
 
 def main():
-    ccppXML().run()
+    report_input_errors(ccppXML().run)
 
 
 if __name__ == "__main__":
-    ccppXML().run()
+    main()

@@ -25,6 +25,7 @@ from xdsl.dialects import builtin
 from xdsl.dialects.builtin import StringAttr
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TablePropertiesOp
+from xdsl_ccpp.util.errors import CcppInputError
 
 # Map Fortran intrinsic type names to CCPP type strings
 _TYPE_MAP: dict[str, str] = {
@@ -307,18 +308,18 @@ def _extract_ccpp_tags(
     for line_no, remainders in _join_comment_continuations(source_lines, span, _CCPP_TAG_SENTINELS):
         first = remainders[0]
         if not first.startswith("["):
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag missing '[name]': {first!r}"
             )
         close = first.find("]")
         if close == -1:
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an unterminated "
                 f"'[name]': {first!r}"
             )
         var_name = first[1:close].strip().lower()
         if not var_name:
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an empty '[name]'"
             )
 
@@ -328,14 +329,14 @@ def _extract_ccpp_tags(
         segments = [first[close + 1:].strip()] + remainders[1:]
         for seg in segments:
             if "=" not in seg:
-                raise ValueError(
+                raise CcppInputError(
                     f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag is "
                     f"missing 'key = value': {seg!r}"
                 )
             key, value = seg.split("=", 1)
             key = key.strip().lower()
             if not key:
-                raise ValueError(
+                raise CcppInputError(
                     f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag has an "
                     "empty key"
                 )
@@ -388,7 +389,7 @@ def _extract_device_resident_vars(
                     open_paren = pos + len(keyword)
                     close_paren = text.find(")", open_paren)
                     if close_paren == -1:
-                        raise ValueError(
+                        raise CcppInputError(
                             f"{filename}: '{keyword}(' clause has no closing "
                             f"')': {text!r}"
                         )
@@ -458,7 +459,7 @@ def _extract_subroutines(
             tags = _extract_ccpp_tags(source_lines, span, filename)
             unknown_tagged = sorted(set(tags) - dummy_names)
             if unknown_tagged:
-                raise ValueError(
+                raise CcppInputError(
                     f"'{filename}': subroutine '{proc_name}' has a !ccpp tag "
                     f"for {unknown_tagged}, which is not one of its own dummy "
                     f"arguments ({sorted(dummy_names)})"
@@ -629,7 +630,7 @@ def build_meta_module_from_source(
                     if tag_dim_names:
                         dim_list = [d.strip() for d in tag_dim_names.split(",") if d.strip()]
                         if len(dim_list) != arg["rank"]:
-                            raise ValueError(
+                            raise CcppInputError(
                                 f"'{arg['name']}': !ccpp tag's dim_names has "
                                 f"{len(dim_list)} name(s) but the real "
                                 f"declaration has rank {arg['rank']}"

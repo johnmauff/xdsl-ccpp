@@ -20,6 +20,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     dims_compatible,
     normalize_units,
 )
+from xdsl_ccpp.util.errors import CcppInputError
 
 
 def _parse_dim_names(arg_op) -> list:
@@ -762,7 +763,7 @@ class HostVariableMatchPass(ModulePass):
                         )
 
         if all_errors:
-            raise ValueError(
+            raise CcppInputError(
                 "Host model variable matching/compatibility failed:\n"
                 + "\n".join(all_errors)
             )

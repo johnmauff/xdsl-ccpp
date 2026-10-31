@@ -26,6 +26,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_legacy_mode,
     set_verbosity,
 )
+from xdsl_ccpp.util.errors import report_input_errors
 from xdsl_ccpp.util.options_db import coerce_list_option
 
 
@@ -1230,7 +1231,7 @@ class ccppMain:
         pipeline = self._build_pipeline()
         cmd = [
             sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
-            "-p", pipeline, "-t", target,
+            "-p", pipeline, "-t", target, "--verbose", str(self.options_db["verbose"]),
         ]
         return self.start_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer"), ftn_out
 
@@ -1455,7 +1456,7 @@ def main():
     printed message and a process exit. An in-process caller should call
     ccppMain().run() directly and catch CcppDslError itself instead."""
     try:
-        ccppMain().run()
+        report_input_errors(ccppMain().run)
     except CcppDslError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(e.returncode)

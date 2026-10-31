@@ -38,6 +38,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     is_legacy_mode,
     record_deprecated_use,
 )
+from xdsl_ccpp.util.errors import CcppInputError
 
 
 class TableTypeKind(StrEnum):
@@ -599,7 +600,7 @@ class ArgumentOp(IRDLOperation):
                 if is_legacy_mode():
                     record_deprecated_use(arg_name.data, _std_name)
                 else:
-                    raise ValueError(
+                    raise CcppInputError(
                         f"arg '{arg_name.data}': {_warning}. Pass --legacy-mode "
                         f"to accept this deprecated standard_name (matches "
                         f"capgen-v1's --legacy-mode flag)."

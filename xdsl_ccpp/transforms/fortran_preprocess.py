@@ -48,6 +48,8 @@ import ast
 import re
 from dataclasses import dataclass
 
+from xdsl_ccpp.util.errors import CcppInputError
+
 _DIRECTIVE_RE = re.compile(
     r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif|define|undef)\b\s*(.*)$"
 )
@@ -147,7 +149,7 @@ class _RestrictedEval(ast.NodeVisitor):
         self.line_no = line_no
 
     def _error(self, msg: str) -> None:
-        raise ValueError(f"{self.filename}:{self.line_no}: {msg}")
+        raise CcppInputError(f"{self.filename}:{self.line_no}: {msg}")
 
     def visit(self, node):
         method = "visit_" + node.__class__.__name__
@@ -244,7 +246,7 @@ def _eval_condition(
     try:
         tree = ast.parse(python_expr, mode="eval")
     except SyntaxError as exc:
-        raise ValueError(
+        raise CcppInputError(
             f"{filename}:{line_no}: malformed #if/#elif expression "
             f"{cpp_expr!r}: {exc}"
         ) from None
@@ -283,7 +285,7 @@ def preprocess_fortran_source(
         if keyword in ("ifdef", "ifndef"):
             symbol = rest.split()[0] if rest else ""
             if not symbol:
-                raise ValueError(f"{filename}:{line_no}: '#{keyword}' with no symbol")
+                raise CcppInputError(f"{filename}:{line_no}: '#{keyword}' with no symbol")
             is_defined = symbol in local_defines
             wants = is_defined if keyword == "ifdef" else not is_defined
             branch_active = parent_active and wants
@@ -315,10 +317,10 @@ def preprocess_fortran_source(
             )
         elif keyword == "elif":
             if not stack:
-                raise ValueError(f"{filename}:{line_no}: '#elif' with no matching '#if'")
+                raise CcppInputError(f"{filename}:{line_no}: '#elif' with no matching '#if'")
             top = stack[-1]
             if top.seen_else:
-                raise ValueError(f"{filename}:{line_no}: '#elif' after '#else'")
+                raise CcppInputError(f"{filename}:{line_no}: '#elif' after '#else'")
             grandparent_active = _in_true_region(stack[:-1])
             if top.branch_taken or not grandparent_active:
                 top.branch_active = False
@@ -330,10 +332,10 @@ def preprocess_fortran_source(
                     top.branch_taken = True
         elif keyword == "else":
             if not stack:
-                raise ValueError(f"{filename}:{line_no}: '#else' with no matching '#if'")
+                raise CcppInputError(f"{filename}:{line_no}: '#else' with no matching '#if'")
             top = stack[-1]
             if top.seen_else:
-                raise ValueError(f"{filename}:{line_no}: duplicate '#else'")
+                raise CcppInputError(f"{filename}:{line_no}: duplicate '#else'")
             top.seen_else = True
             grandparent_active = _in_true_region(stack[:-1])
             top.branch_active = grandparent_active and not top.branch_taken
@@ -341,12 +343,12 @@ def preprocess_fortran_source(
                 top.branch_taken = True
         elif keyword == "endif":
             if not stack:
-                raise ValueError(f"{filename}:{line_no}: '#endif' with no matching '#if'")
+                raise CcppInputError(f"{filename}:{line_no}: '#endif' with no matching '#if'")
             stack.pop()
         elif keyword == "define":
             parts = rest.split(None, 1)
             if not parts:
-                raise ValueError(f"{filename}:{line_no}: '#define' with no symbol")
+                raise CcppInputError(f"{filename}:{line_no}: '#define' with no symbol")
             name = parts[0]
             value = parts[1].strip() if len(parts) > 1 else None
             if _in_true_region(stack):
@@ -354,7 +356,7 @@ def preprocess_fortran_source(
         elif keyword == "undef":
             name = rest.split()[0] if rest else ""
             if not name:
-                raise ValueError(f"{filename}:{line_no}: '#undef' with no symbol")
+                raise CcppInputError(f"{filename}:{line_no}: '#undef' with no symbol")
             if _in_true_region(stack):
                 local_defines.pop(name, None)
 
@@ -362,7 +364,7 @@ def preprocess_fortran_source(
 
     if stack:
         top = stack[-1]
-        raise ValueError(
+        raise CcppInputError(
             f"{filename}: unterminated '{top.open_directive}' opened at line "
             f"{top.open_line} (missing #endif)"
         )
