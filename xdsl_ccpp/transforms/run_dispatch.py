@@ -6,11 +6,11 @@ plain dataclasses to real IR ops (see ResolvedArgOp/ArgSourceKind below).
 
 Builds the per-suite run-dispatch chain (resolve host/control/suite/constituent
 data for each scheme call, generate the nested if/else dispatcher on
-suite_name) and the suite-part-list query function. Kept as a plain
+suite_name) and the per-suite name-list queries (part list, scheme list). Kept as a plain
 importable module (not a registered pass), mirroring
 lifecycle_cap.py/constituent_cap.py -- called directly from
 generate-ccpp-cap's final module assembly via _generate_run_fn and
-_generate_suite_part_list_fn.
+_generate_suite_name_list_fn.
 """
 
 import sys
@@ -1930,8 +1930,10 @@ def _generate_run_fn(
     ])
     return cap_fn, all_decls, all_host_global_ops, non_host_std_to_canonical
 
-def _generate_suite_part_list_fn(
-    suite_part_entries,
+def _generate_suite_name_list_fn(
+    fn_name,
+    list_arg_name,
+    suite_entries,
     inner_char_type,
     allocatable_type,
     suite_name_type,
@@ -1940,40 +1942,43 @@ def _generate_suite_part_list_fn(
     char_base,
     int_base,
 ):
-    """Build the ccpp_physics_suite_part_list FuncOp for all suites.
+    """Build a public ``fn_name(suite_name, <list_arg_name>, errmsg, errflg)``
+    FuncOp that returns one list of names per suite: ccpp_physics_suite_part_list
+    (group names) and ccpp_physics_suite_schemes (scheme names).
 
-    ``suite_part_entries`` is a list of ``(suite_name, [part_names])`` tuples.
-    Generates a subroutine with a nested if/else chain that checks suite_name
-    and fills part_list with the matching suite's part names.
+    ``suite_entries`` is a list of ``(suite_name, [names])`` tuples.
+    Generates a nested if/else chain that checks suite_name and fills the
+    list argument with the matching suite's names.
 
-    Returns (FuncOp, list[llvm.GlobalOp]).
+    Returns (FuncOp, list[llvm.GlobalOp]): one ``str_<name>`` constant per
+    distinct name; the caller drops constants another list already declared.
     """
-    # Collect ALL unique part names for shared global string constants.
-    all_part_names = list(
+    # One shared global string constant per distinct name.
+    all_names = list(
         dict.fromkeys(
-            pn for _, part_names in suite_part_entries for pn in part_names
+            name for _, names in suite_entries for name in names
         )
     )
 
-    part_global_ops = []
-    part_global_names: dict = {}
-    for pn in all_part_names:
-        str_global_name = f"str_{pn}"
-        arr_type = llvm.LLVMArrayType.from_size_and_type(len(pn), i8)
-        part_global_ops.append(
+    global_ops = []
+    global_names: dict = {}
+    for name in all_names:
+        str_global_name = f"str_{name}"
+        arr_type = llvm.LLVMArrayType.from_size_and_type(len(name), i8)
+        global_ops.append(
             llvm.GlobalOp(
                 arr_type,
                 str_global_name,
                 "internal",
                 constant=True,
-                value=StringAttr(pn),
+                value=StringAttr(name),
             )
         )
-        part_global_names[pn] = (str_global_name, arr_type)
+        global_names[name] = (str_global_name, arr_type)
 
     new_block = Block(arg_types=[suite_name_type, allocatable_type])
     new_block.args[0].name_hint = "suite_name"
-    new_block.args[1].name_hint = "part_list"
+    new_block.args[1].name_hint = list_arg_name
 
     errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
     errmsg_alloc.memref.name_hint = "errmsg"
@@ -1991,14 +1996,14 @@ def _generate_suite_part_list_fn(
         errmsg_alloc, trim_suite_name.res, errflg_alloc
     )
 
-    for suite_name, part_names in reversed(suite_part_entries):
+    for suite_name, names in reversed(suite_entries):
         strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)
 
         true_ops = []
-        for pn in part_names:
-            str_global_name, arr_type = part_global_names[pn]
+        for name in names:
+            str_global_name, arr_type = global_names[name]
             str_len_const = arith.ConstantOp(
-                IntegerAttr(len(pn), IndexType()), IndexType()
+                IntegerAttr(len(name), IndexType()), IndexType()
             )
             str_alloc = memref.AllocOp([str_len_const.result], [], inner_char_type)
             addr_op = llvm.AddressOfOp(str_global_name, llvm.LLVMPointerType())
@@ -2044,7 +2049,5 @@ def _generate_suite_part_list_fn(
         [suite_name_type, allocatable_type],
         [errmsg_type, errflg_type],
     )
-    suite_part_list_fn = func.FuncOp(
-        "ccpp_physics_suite_part_list", fn_type, body, visibility="public"
-    )
-    return suite_part_list_fn, part_global_ops
+    name_list_fn = func.FuncOp(fn_name, fn_type, body, visibility="public")
+    return name_list_fn, global_ops

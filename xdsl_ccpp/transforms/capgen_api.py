@@ -11,7 +11,7 @@ that layer on top of the capgen-v1 dispatchers.
 
 from __future__ import annotations
 
-from xdsl.dialects import arith, builtin, func, llvm, memref
+from xdsl.dialects import builtin, func, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, StringAttr
 from xdsl.ir import Block, Region
 
@@ -20,9 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamQminPostambleOp,
     CamQminPreambleOp,
     CamSuiteDispatchOp,
-    CamSuiteSchemeListOp,
     ClearErrStateOp,
-    ClearStringOp,
     DdtMethodCallOp,
     ErrorPropagateOp,
     KeywordArgExprOp,
@@ -30,7 +28,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
-    _iter_schemes,
     fixed_interface_fn,
     framework_cap_var_ref,
 )
@@ -85,7 +82,7 @@ def generate_capgen_api_wrappers(
     as dummy arguments.
 
     Returns (wrappers, globals) where:
-      wrappers: list[func.FuncOp]  -- 7 public wrapper subroutines
+      wrappers: list[func.FuncOp]  -- 6 public wrapper subroutines
       globals:  list[llvm.GlobalOp] -- USE-association stubs for module scope
 
     Arg resolution is metadata-driven: lifecycle_fns carries the
@@ -94,13 +91,7 @@ def generate_capgen_api_wrappers(
     reference passed in CamDirectCallOp / CamSuiteDispatchOp args.
     """
     char_base = TypeConversions.getBaseType("character")
-    int_base  = TypeConversions.getBaseType("integer")
     suite_name_type  = memref.MemRefType(char_base, [DYNAMIC_INDEX])
-    errmsg_type      = memref.MemRefType(char_base, [CCPP_ERRMSG_LEN])
-    errflg_type      = memref.MemRefType(int_base,  [])
-    scheme_list_type = memref.MemRefType(
-        memref.MemRefType(char_base, [DYNAMIC_INDEX]), []
-    )
 
     # Cap-local framework variables: standard_name -> (reference, None,
     # qmin_needed); reference is an identifier or a CapVarRef. Every other
@@ -369,56 +360,6 @@ def generate_capgen_api_wrappers(
         ["suite_name"],
         [suite_name_type],
         _tsfinal_body,
-    ))
-
-    # --- ccpp_physics_suite_schemes ---
-    # errmsg and errflg are intent(out): declared as AllocaOps and returned.
-    schemes_block = Block(arg_types=[suite_name_type, scheme_list_type])
-    schemes_block.args[0].name_hint = "suite_name"
-    schemes_block.args[1].name_hint = "scheme_list"
-
-    errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
-    errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
-    errmsg_alloc.memref.name_hint = "errmsg"
-    errflg_alloc.memref.name_hint = "errflg"
-    zero_const   = arith.ConstantOp.from_int_and_width(0, 32)
-    store_zero   = memref.StoreOp.get(zero_const, errflg_alloc, [])
-    clear_errmsg = ClearStringOp(errmsg_alloc.memref)
-
-    _suite_schemes = []
-    for sn, sd in suite_descriptions.items():
-        seen: dict[str, None] = {}
-        for group in sd:
-            for scheme in _iter_schemes(group):
-                name = scheme.attributes["name"]
-                # A package-cap segment stands for the schemes it calls.
-                props = meta_data.get(name)
-                if props is not None and props.hasAttr("segment_schemes"):
-                    seen.update(dict.fromkeys(props.getAttr("segment_schemes")))
-                else:
-                    seen[name] = None
-        _suite_schemes.append((sn, list(seen.keys())))
-
-    schemes_block.add_ops([
-        errmsg_alloc,
-        errflg_alloc,
-        zero_const,
-        store_zero,
-        clear_errmsg,
-        CamSuiteSchemeListOp(_suite_schemes, errmsg_var="errmsg", errflg_var="errflg"),
-        func.ReturnOp(errmsg_alloc, errflg_alloc),
-    ])
-    schemes_body = Region()
-    schemes_body.add_block(schemes_block)
-    schemes_fn_type = builtin.FunctionType.from_lists(
-        [suite_name_type, scheme_list_type],
-        [errmsg_type, errflg_type],
-    )
-    wrappers.append(func.FuncOp(
-        "ccpp_physics_suite_schemes",
-        schemes_fn_type,
-        schemes_body,
-        visibility="public",
     ))
 
     return wrappers, list(_seen_globals.values())

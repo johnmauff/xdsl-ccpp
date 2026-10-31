@@ -177,6 +177,8 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=9), parameter :: str_ddt_suite = 'ddt_suite'
 // CHECK-NEXT:    character(len=9), parameter :: str_data_prep = 'data_prep'
+// CHECK-NEXT:    character(len=8), parameter :: str_make_ddt = 'make_ddt'
+// CHECK-NEXT:    character(len=18), parameter :: str_environ_conditions = 'environ_conditions'
 // CHECK-NEXT:    type(ccpp_model_constituents_t), target :: Ddt_constituents_obj
 // CHECK-NEXT:    integer, allocatable :: lc_all_constituents(:)
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()
@@ -197,6 +199,7 @@
 // CHECK-NEXT:    public :: ccpp_physics_final
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
+// CHECK-NEXT:    public :: ccpp_physics_suite_schemes
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK-NEXT:    public :: Ddt_ccpp_is_scheme_constituent
 // CHECK-NEXT:    public :: Ddt_ccpp_deallocate_dynamic_constituents
@@ -364,6 +367,21 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_part_list
+// CHECK-LABEL:   subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), allocatable, intent(out) :: scheme_list(:)
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
+// CHECK-NEXT:        allocate(scheme_list(2))
+// CHECK-NEXT:        scheme_list(1) = str_make_ddt
+// CHECK-NEXT:        scheme_list(2) = str_environ_conditions
+// CHECK-NEXT:      else
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_suite_schemes
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
 // CHECK:           output_vars)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name

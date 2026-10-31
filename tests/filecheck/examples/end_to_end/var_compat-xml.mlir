@@ -480,6 +480,13 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=23), parameter :: str_var_compatibility_suite = 'var_compatibility_suite'
 // CHECK-NEXT:    character(len=9), parameter :: str_radiation = 'radiation'
+// CHECK-NEXT:    character(len=8), parameter :: str_effr_pre = 'effr_pre'
+// CHECK-NEXT:    character(len=9), parameter :: str_effr_calc = 'effr_calc'
+// CHECK-NEXT:    character(len=9), parameter :: str_effr_post = 'effr_post'
+// CHECK-NEXT:    character(len=10), parameter :: str_effrs_calc = 'effrs_calc'
+// CHECK-NEXT:    character(len=9), parameter :: str_effr_diag = 'effr_diag'
+// CHECK-NEXT:    character(len=6), parameter :: str_rad_lw = 'rad_lw'
+// CHECK-NEXT:    character(len=6), parameter :: str_rad_sw = 'rad_sw'
 // CHECK-NEXT:    type(ccpp_model_constituents_t), target :: VarCompatibility_constituents_obj
 // CHECK-NEXT:    integer, allocatable :: lc_all_constituents(:)
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()
@@ -495,6 +502,7 @@
 // CHECK-NEXT:    public :: ccpp_physics_final
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
+// CHECK-NEXT:    public :: ccpp_physics_suite_schemes
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK-NEXT:    public :: VarCompatibility_ccpp_is_scheme_constituent
 // CHECK-NEXT:    public :: VarCompatibility_ccpp_deallocate_dynamic_constituents
@@ -669,6 +677,26 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_part_list
+// CHECK-LABEL:   subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), allocatable, intent(out) :: scheme_list(:)
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
+// CHECK-NEXT:        allocate(scheme_list(7))
+// CHECK-NEXT:        scheme_list(1) = str_effr_pre
+// CHECK-NEXT:        scheme_list(2) = str_effr_calc
+// CHECK-NEXT:        scheme_list(3) = str_effr_post
+// CHECK-NEXT:        scheme_list(4) = str_effrs_calc
+// CHECK-NEXT:        scheme_list(5) = str_effr_diag
+// CHECK-NEXT:        scheme_list(6) = str_rad_lw
+// CHECK-NEXT:        scheme_list(7) = str_rad_sw
+// CHECK-NEXT:      else
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_suite_schemes
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
 // CHECK:           output_vars)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name

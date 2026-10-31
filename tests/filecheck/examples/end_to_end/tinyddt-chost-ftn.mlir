@@ -133,6 +133,7 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=13), parameter :: str_tinyddt_suite = 'tinyddt_suite'
 // CHECK-NEXT:    character(len=7), parameter :: str_physics = 'physics'
+// CHECK-NEXT:    character(len=7), parameter :: str_tinyddt = 'tinyddt'
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
@@ -143,6 +144,7 @@
 // CHECK-NEXT:    public :: ccpp_physics_final
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
+// CHECK-NEXT:    public :: ccpp_physics_suite_schemes
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) BIND(C, name='ccpp_register')
@@ -466,6 +468,20 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_part_list
+// CHECK-LABEL:   subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), allocatable, intent(out) :: scheme_list(:)
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'tinyddt_suite') then
+// CHECK-NEXT:        allocate(scheme_list(1))
+// CHECK-NEXT:        scheme_list(1) = str_tinyddt
+// CHECK-NEXT:      else
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_suite_schemes
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
 // CHECK:           output_vars)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name

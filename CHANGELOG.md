@@ -13587,3 +13587,30 @@ physics-check differences; gnu aux_sima xdsl59g 29 of 32 clean -- the three
 failures are known (F2000_C7 and gw_cam7: `prec_dp`/`prec_sh`, zm:
 `zm-ncdata-diffs`, which stock capgen reproduces). code_coverage: no new
 dead code. Generation time unchanged (cam4 ~24 s).
+
+## `generic-suite-schemes`: `ccpp_physics_suite_schemes` for every host (2026-10-31)
+
+`ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)`, part
+of capgen-v1's host API, was generated only with `--capgen-api`, through its
+own op (`CamSuiteSchemeListOp`) whose printer wrote the Fortran. CAM-SIMA's
+`runtime_opts.F90` passes its list to the namelist reader that
+`create_readnl_files.py` generates, which reads a scheme's namelist only if
+the scheme is listed.
+
+- `_generate_suite_part_list_fn` became `_generate_suite_name_list_fn`
+  (`run_dispatch.py`), one builder for a list of names per suite; it builds
+  `ccpp_physics_suite_part_list` (group names) and
+  `ccpp_physics_suite_schemes` (`_suite_scheme_names`, `ccpp_cap.py`: first
+  call order, no repeats, package-cap segments expanded to their schemes).
+  Each `str_<name>` constant is declared once, though a name can appear in
+  several lists (tj2016_precip is a suite and a scheme).
+- Removed `CamSuiteSchemeListOp`, its printer case and the `capgen_api.py`
+  copy.
+
+Verification: pytest 1271 passed (29 goldens regenerated: the routine and
+its constants added). `cap_oracle diff` against `main`: example caps gain the
+routine only; CAM caps move it into the generic section with `str_`
+constants, and the scheme lists of all 30 CAM cases are unchanged (parsed and
+compared). CAM-SIMA: gnu RRTMGP pair s37a (XML reference and package-cap
+composite, 38 schemes each) passed with no physics-check differences, so
+RRTMGP's namelist is still read.
