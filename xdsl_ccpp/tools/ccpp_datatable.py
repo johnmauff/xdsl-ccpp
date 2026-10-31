@@ -303,9 +303,20 @@ def build_datatable(
     Returns:
         An ``xml.etree.ElementTree.Element`` for the ``<datatable>`` root.
     """
-    ctx = make_ccpp_context()
-    module = Parser(ctx, mlir_text).parse_op()
+    module = Parser(make_ccpp_context(), mlir_text).parse_op()
+    return build_datatable_from_module(
+        module, cap_files, host_name=host_name, framework_src_dir=framework_src_dir,
+    )
 
+
+def build_datatable_from_module(
+    module: builtin.ModuleOp,
+    cap_files: list[str],
+    host_name: str = "",
+    framework_src_dir: str = "",
+) -> ET.Element:
+    """``build_datatable`` for an already-parsed frontend module, which it
+    only reads (ccpp_dsl shares one parse with its other consumers)."""
     # Locate the @ccpp named sub-module
     ccpp_mod = None
     for child in module.body.block.ops:

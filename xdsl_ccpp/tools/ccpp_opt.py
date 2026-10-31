@@ -1,6 +1,11 @@
+import argparse
+import os
+import sys
 from typing import IO
 
 from xdsl.dialects.builtin import ModuleOp
+from xdsl.passes import ModulePass, PassPipeline
+from xdsl.printer import Printer
 from xdsl.xdsl_opt_main import xDSLOptMain
 
 from xdsl_ccpp.dialects.ccpp import CCPP
@@ -22,7 +27,42 @@ from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.scheme_io_capture_pass import SchemeIOCapturePass
 
+# Set (to anything but "" or "0") to verify the IR after every pass by
+# default; the test suite sets it (tests/conftest.py).
+VERIFY_EACH_PASS_ENV = "XDSL_CCPP_VERIFY_EACH_PASS"
+
+
 class CCPPOptMain(xDSLOptMain):
+    def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
+        super().register_all_arguments(arg_parser)
+        arg_parser.add_argument(
+            "--verify-each-pass",
+            action="store_true",
+            default=os.environ.get(VERIFY_EACH_PASS_ENV, "") not in ("", "0"),
+            help="verify the IR after every pass, not only before and after "
+            f"the pipeline (default: on if ${VERIFY_EACH_PASS_ENV} is set)",
+        )
+
+    def setup_pipeline(self):
+        """xDSLOptMain's pipeline, but verifying between passes only with
+        --verify-each-pass: verification after each of the ~10 passes was
+        16% of a cam4 generation. The module is still verified before and
+        after the pipeline (apply_passes), unless --disable-verify."""
+
+        def callback(
+            previous_pass: ModulePass, module: ModuleOp, next_pass: ModulePass
+        ) -> None:
+            if self.args.verify_each_pass and not self.args.disable_verify:
+                module.verify()
+            if self.args.print_between_passes:
+                print(f"IR after {previous_pass.name}:")
+                Printer(stream=sys.stdout).print_op(module)
+                print("\n\n\n")
+
+        self.pipeline = PassPipeline.parse_spec(
+            self.available_passes, self.args.passes, callback
+        )
+
     def register_all_passes(self):
         super().register_all_passes()
         self.register_pass("scope-packages", lambda: ScopePackages)

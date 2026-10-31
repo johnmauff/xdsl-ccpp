@@ -51,7 +51,8 @@ measured data, and will drift as items are reassessed.
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
-| `generator-speed` | 4-7 days (verify once; parse the frontend MLIR once; parallel Fortran parsing with `--jobs` from `GMAKE_J`, incl. a small CAM-SIMA change; the shared cache optional, +2-3 days) | S |
+| `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
+| `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -186,7 +187,8 @@ separately), CHANGELOG.md L5850.
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
-| `generator-speed` | xdsl_ccpp cap generation is ~3-5x slower than original capgen (cam4 24.7 s vs ~5 s) | S; profiled 2026-10-31: 56% is the warn-only fparser2 source check | -- |
+| `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
+| `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -413,8 +415,9 @@ transitively `use` per-suite generated modules (`physics_types`,
   on a `cam_autogen.py` cache mismatch) and again at `case.run`: fixing the
   mismatch saves 5-9 s (FPHYStest) to ~26 s (cam4) per build
   (`cam-autogen-repeat-generation`);
-- xdsl-ccpp generation for the cam4 suites is itself slow (53-109 s)
-  (`generator-speed`);
+- xdsl-ccpp generation for the cam4 suites was itself slow (53-109 s);
+  now ~6.6 s standalone and once per build (`generator-speed`, resolved;
+  `cam-autogen-repeat-generation`);
 - MPAS built partly serially: parallelising it recovers much of ~100 s;
 - 16 RRTMGP `mo_*.F90` files compile in suites that don't use RRTMGP;
 - ~25 unchanged `ccpp_physics/*.F90` utility files are re-copied by every
@@ -457,73 +460,35 @@ order scheme namelists are read in changes; calls run in the right order.
 Fix: build the list from the flattened call order of the run phase (the
 order the XML suite gives), not from segment positions.
 
-**`generator-speed`** -- xdsl_ccpp generation is noticeably slower than
-capgen-v1. Measured 2026-10-30: cam4 (analy_ic_cam4) ~24 s and pumas ~6 s
-standalone (`cap_oracle.generate`, same for `main` and the then-current
-branch); 53-109 s for cam4 inside a CAM-SIMA build (`cam-sima-build-time`,
-which also includes `cam-autogen-repeat-generation`'s repeats). Never
-profiled. `ccpp_dsl` runs the passes in a `ccpp_opt` subprocess, so a plain
-cProfile of the command misses them: time each pass and the frontend
-(XML/`.meta` parsing, fparser2 source parsing, host matching, each
-`ccpp_opt` pass, printing, the MLIR text hand-off between processes) for
-cam4 and a small suite, profile the slowest, and time capgen-v1 on the same
-inputs. Then size the fixes (likely suspects: whole-module rescans repeated
-per scheme or per argument, the text round-trip, repeated fparser2 parses).
+**ID: `generator-speed`. Resolved (2026-10-31)** -- CHANGELOG.md L13651.
 
-Profiled 2026-10-31 (every Python process via a scratch `sitecustomize`
-cProfile hook on PYTHONPATH; no repo change). Plain wall time, xdsl_ccpp vs
-original capgen (`cap_oracle.run_capgen`) on the same inputs: held_suarez
-2.8 s vs 0.9 s, pumas 5.7 s vs 1.6 s, cam4 (analy_ic_cam4) 24.7 s vs
-4.5-5.1 s. cam4's profile (shares hold at real time):
-- 56% `ccpp_dsl.validate_fortran_sources`: fparser2 fully parses all 108
-  scheme `.F90` files (2.4 M `__new__` calls) to compare signatures with the
-  `.meta`. Warn-only by design. Share grows with suite size (held_suarez
-  18%, pumas 34%).
-- 16% IR verification in `ccpp_opt`: xdsl verifies the whole module after
-  each of ~10 passes (54% of `ccpp_opt`).
-- 14% parsing the frontend MLIR file three times: `ccpp_opt`,
-  `_check_memory_space_mismatch` and `_run_datatable` each parse it.
-- 7% the passes themselves (`suite_cap` 2.0 s, `ccpp_cap` 1.0 s profiled);
-  ~7% XML frontend, printing, imports.
+**`ccpp-opt-small-speedups`** -- left after `generator-speed` (cam4: 6.6 s,
+of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
+0.73, `ccpp_cap` 0.36 --, two verifies ~0.6, Fortran print ~0.4, start-up
+~0.3). Under 1 s together:
+- skip the verify before the pipeline (~0.3 s): it only checks our own
+  frontend's output and the final verify still runs; keep it under
+  `--verify-each-pass` (tests, CI). A frontend bug would then surface as a
+  pass failure, not a verifier error;
+- hot spots in the passes (~0.2-0.4 s): 915,000 `ccpp_item.getAttr` calls
+  (the same metadata looked up repeatedly), `promotion._find_loop_upper_bound`
+  (1,010 calls, high per-call cost), ~200,000 function-level imports run in
+  hot loops.
+Profile with a scratch `sitecustomize` cProfile hook (see the
+`generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
 
-Plan (agreed 2026-10-31), in this order; every step keeps the generated
-caps byte-identical (`cap_oracle diff`). cam4 estimates are cumulative.
-1. **Verify the IR once**, at the end of `ccpp_opt`, not after every pass;
-   keep per-pass verification behind a debug option (and in CI/tests).
-   ~24.7 s -> ~21 s.
-2. **Parse the frontend MLIR once**: run `_check_memory_space_mismatch`
-   and the datatable step on IR already parsed, not by re-reading the
-   file. ~-2 s.
-3. **Parse the scheme Fortran in parallel.** `validate_fortran_sources`
-   parses each `.F90` serially. Measured for cam4 (one file at a time):
-   108 files, 13.8 s; the slowest is `zm_convr.F90` (2,629 lines, 1.86 s),
-   which bounds any parallel run. Modeled with longest-file-first
-   scheduling: 2 workers ~7 s, 4 ~3.7 s, 8 or more ~2 s. Wiring:
-   `ccpp_dsl --jobs N` (default 1) hands the files, largest first, to a
-   process pool (fparser2 is pure Python, so threads would not help;
-   forked workers inherit the loaded modules) and prints the warnings in
-   the original file order. CAM-SIMA passes the case's `GMAKE_J` (16 on
-   Derecho; `buildlib` already reads it) from `cam_config.py` through
-   `cam_autogen.py` to the xdsl_ccpp command (a few lines; the capgen path
-   is unaffected). Generation runs at `buildnml`, before compiling, so the
-   build's cores are idle then. Helps every first build, for every user.
-   ~-12 s at J=16, leaving cam4 at ~7 s against capgen's ~5 s.
-4. **Optional: a shared cache** of the fparser2 result per scheme `.F90`.
-   After step 3 it saves only the remaining ~2 s per generation, for
-   developers who regenerate often or build many cases (a regression parsed
-   930 files, 147 distinct); a regular user's first build gets nothing.
-   Decide after step 3. Design, if built: one directory shared by all
-   builds (e.g. `~/.cache/xdsl_ccpp/`, overridable by an environment
-   variable); key = file contents + preprocessor defines (SE and MPAS
-   preprocess the same file differently) + xdsl-ccpp version; entries
-   written to a temporary file and renamed into place, so concurrent
-   builds cannot corrupt them; an option disables it.
-
-Rejected for the Fortran check: a signature-only scanner (it would need
-capgen-scale grammar coverage -- `parse_fortran_file.py` is ~1,100 lines --
-and leave two Fortran readers to keep in agreement, since the `!$ccpp` tag
-and OpenACC-clause extraction still need fparser2), and making the check
-opt-in (it would stop running where it matters).
+**`in-process-pipeline`** -- run the frontend and the `ccpp_opt` passes in
+one process. Today `ccpp_dsl` runs the XML frontend and `ccpp_opt` as
+subprocesses that hand the module over as MLIR text: the frontend prints it
+(~0.7 s with its start-up), `ccpp_opt` parses it back (~1.2 s) and starts a
+second interpreter (~0.3 s) -- ~2 s of cam4's 6.6 s, the remaining gap to
+original capgen (~5 s). Design questions: the subprocess isolates global
+state (e.g. `set_legacy_mode`), keeps error paths that call `sys.exit` from
+killing the caller (CAM-SIMA's `cam_autogen.py` runs xdsl_ccpp as a
+subprocess partly for this), and is what the tests and FileCheck goldens
+drive through `ccpp_opt`'s command line; passes monkeypatched in-process
+today have no effect (see the `ccpp_opt` subprocess note). Keep `ccpp_opt`
+as a CLI either way.
 
 **Resolved since last verification (2026-10-14), removed from the list
 above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool

@@ -13647,3 +13647,49 @@ remains). CAM-SIMA: gnu aux_sima xdsl60g 29 of 32 clean, including all
 three cam4 QPC4 cases; the 3 failures are the known F2000_C7/gw_cam7
 (`prec_dp`/`prec_sh`) and zm (`zm-ncdata-diffs`). nvhpc GPU Kessler s38a
 passed with no physics-check differences.
+
+## `generator-speed`: cam4 generation ~25 s -> 6.6 s (2026-10-31)
+
+Profiled every Python process of a generation (a scratch `sitecustomize`
+cProfile hook; the passes run in a `ccpp_opt` subprocess). cam4
+(`analy_ic_cam4`) took 24.7 s against ~5 s for original capgen: 56% was the
+warn-only fparser2 parse of every scheme `.F90`, 16% IR verification after
+every pass, 14% the frontend MLIR parsed three times; the passes were 7%.
+Printing ~2,900 warning lines costs nothing measurable.
+
+- **Verify once** (`ccpp_opt`): the IR is verified before and after the
+  pipeline, not after each of ~10 passes. `--verify-each-pass`, or
+  `XDSL_CCPP_VERIFY_EACH_PASS` (set by `tests/conftest.py`, so pytest,
+  FileCheck and CI keep it), restores the per-pass check. `ccpp_opt`
+  6.2 -> 4.1 s.
+- **Parse the frontend once** (`ccpp_dsl._parse_frontend`): the
+  memory-space check and the datatable share one parse
+  (`build_datatable_from_module`; `build_datatable(mlir_text)` delegates
+  to it). -1.2 s.
+- **Parallel Fortran check** (`ccpp_dsl --jobs N`, default 1): the
+  Fortran-vs-`.meta` comparisons run in a process pool, largest files
+  first; each worker returns its stderr text, printed in `--scheme-files`
+  order, so output is identical for any N. 108 cam4 files: 13.8 s serial,
+  ~2 s at N >= 8 (bounded by `zm_convr.F90`, 1.86 s). CAM-SIMA passes the
+  case's `GMAKE_J` (16 on Derecho) as `--jobs` (`cam_config.py`,
+  `cam_autogen.py`). cam4 20.8 -> 9.5 s.
+- **Overlap the independent phases** (`ccpp_dsl.run`): the Fortran check
+  starts before the frontend and is collected after `ccpp_opt`; `ccpp_opt`
+  runs while the main process does the memory-space check and the
+  datatable parse. Failures kill the subprocess and cancel the pool. Only
+  the position of the Fortran-check warnings in stderr moves. cam4
+  9.7 -> 6.6 s.
+- Not done: a shared parse cache (decided against: ~2 s per regeneration
+  at most, nothing on a first build, invalidation risk with editable
+  installs) and a signature-only Fortran scanner.
+
+In CAM-SIMA a build now also generates once, not at `buildnml`, `buildlib`
+and `case.run` (`cam-autogen-repeat-generation`, fixed in CAM-SIMA).
+
+Verification: caps, `resolved_vars.json` and datatable byte-identical at
+every step (cam4 compared directly; `cap_oracle diff` against `main`: 46
+identical, ~91-96 s); stderr identical (same 2,859 lines, reordered only by
+the overlap). pytest 1273 passed (new: parallel-vs-serial output test).
+CAM-SIMA: a forced cam4 regeneration in a real build (`GMAKE_J=16`) took
+~9 s with steps 1-3, against ~21 s serial; a forced `ccpp_opt` failure
+with `--jobs 4` exits cleanly with no leftover processes.
