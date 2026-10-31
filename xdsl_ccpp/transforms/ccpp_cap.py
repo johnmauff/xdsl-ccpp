@@ -41,7 +41,7 @@ from xdsl_ccpp.transforms.constituent_cap import (
 from xdsl_ccpp.transforms.lifecycle_cap import _generate_lifecycle_fn
 from xdsl_ccpp.transforms.run_dispatch import (
     _generate_run_fn,
-    _generate_suite_part_list_fn,
+    _generate_suite_name_list_fn,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
@@ -122,7 +122,19 @@ def _collect_public_suite_functions(ops):
 
 
 
-
+def _suite_scheme_names(suite_description, meta_data) -> list:
+    """The schemes a suite calls, in first-call order, without repeats; a
+    package-cap segment stands for the schemes it calls."""
+    seen: dict[str, None] = {}
+    for group in suite_description:
+        for scheme in _iter_schemes(group):
+            name = scheme.attributes["name"]
+            props = meta_data.get(name)
+            if props is not None and props.hasAttr("segment_schemes"):
+                seen.update(dict.fromkeys(props.getAttr("segment_schemes")))
+            else:
+                seen[name] = None
+    return list(seen)
 
 
 @dataclass
@@ -1229,24 +1241,40 @@ class CCPPCAP(ModulePass):
         )
         all_definitions.append(suite_list_fn)
 
-        # Generate ccpp_physics_suite_part_list — use actual XML group names per suite.
-        suite_part_entries = [
-            (sn, [grp.attributes["name"] for grp in suite_descriptions[sn]])
-            for sn in all_suite_names
+        # ccpp_physics_suite_part_list (the XML group names) and
+        # ccpp_physics_suite_schemes (the schemes, in first-call order; a
+        # package-cap segment stands for the schemes it calls), per suite.
+        # A name can recur across the lists (a scheme named like its suite),
+        # and str_<name> always holds <name>, so each constant is declared once.
+        name_lists = [
+            ("ccpp_physics_suite_part_list", "part_list", [
+                (sn, [grp.attributes["name"] for grp in suite_descriptions[sn]])
+                for sn in all_suite_names
+            ]),
+            ("ccpp_physics_suite_schemes", "scheme_list", [
+                (sn, _suite_scheme_names(suite_descriptions[sn], meta_data))
+                for sn in all_suite_names
+            ]),
         ]
-
-        suite_part_list_fn, part_global_ops = _generate_suite_part_list_fn(
-            suite_part_entries=suite_part_entries,
-            inner_char_type=inner_char_type,
-            allocatable_type=allocatable_type,
-            suite_name_type=suite_name_type,
-            errmsg_type=errmsg_type,
-            errflg_type=errflg_type,
-            char_base=char_base,
-            int_base=int_base,
-        )
-        all_globals.extend(part_global_ops)
-        all_definitions.append(suite_part_list_fn)
+        declared = {f"str_{sn}" for sn in all_suite_names}
+        for fn_name, list_arg_name, entries in name_lists:
+            name_list_fn, str_globals = _generate_suite_name_list_fn(
+                fn_name,
+                list_arg_name,
+                entries,
+                inner_char_type=inner_char_type,
+                allocatable_type=allocatable_type,
+                suite_name_type=suite_name_type,
+                errmsg_type=errmsg_type,
+                errflg_type=errflg_type,
+                char_base=char_base,
+                int_base=int_base,
+            )
+            for g in str_globals:
+                if g.sym_name.data not in declared:
+                    declared.add(g.sym_name.data)
+                    all_globals.append(g)
+            all_definitions.append(name_list_fn)
         suite_vars_op = self._build_suite_variables_fn(
             suite_descriptions, ccpp_mod,
             host_std_names or {},

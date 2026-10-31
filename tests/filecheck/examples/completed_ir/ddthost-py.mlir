@@ -225,6 +225,10 @@
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<9 x i8>, sym_name = "str_data_prep", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "data_prep"}> ({
 // CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<8 x i8>, sym_name = "str_make_ddt", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "make_ddt"}> ({
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<18 x i8>, sym_name = "str_environ_conditions", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "environ_conditions"}> ({
+// CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ccpp_constituent_properties_t", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "ccpp_constituent_prop_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ccpp_constituent_prop_ptr_t", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
@@ -443,6 +447,33 @@
 // CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %7 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %7, %errflg[] : memref<i32>
+// CHECK-NEXT:        }
+// CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
+// CHECK-NEXT:      }
+// CHECK-LABEL:     func.func public @ccpp_physics_suite_schemes(%suite_name : memref<?xi8>, %scheme_list : memref<memref<?xi8>>) -> (memref<512xi8>, memref<i32>) {
+// CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
+// CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "ddt_suite"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:        scf.if %2 {
+// CHECK-NEXT:          %3 = arith.constant 8 : index
+// CHECK-NEXT:          %4 = memref.alloc(%3) : memref<?xi8>
+// CHECK-NEXT:          %5 = "llvm.mlir.addressof"() <{global_name = @str_make_ddt}> : () -> !llvm.ptr
+// CHECK-NEXT:          %6 = "llvm.load"(%5) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<8 x i8>
+// CHECK-NEXT:          "ccpp_utils.set_string"(%4, %6) : (memref<?xi8>, !llvm.array<8 x i8>) -> ()
+// CHECK-NEXT:          memref.store %4, %scheme_list[] : memref<memref<?xi8>>
+// CHECK-NEXT:          %7 = arith.constant 18 : index
+// CHECK-NEXT:          %8 = memref.alloc(%7) : memref<?xi8>
+// CHECK-NEXT:          %9 = "llvm.mlir.addressof"() <{global_name = @str_environ_conditions}> : () -> !llvm.ptr
+// CHECK-NEXT:          %10 = "llvm.load"(%9) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<18 x i8>
+// CHECK-NEXT:          "ccpp_utils.set_string"(%8, %10) : (memref<?xi8>, !llvm.array<18 x i8>) -> ()
+// CHECK-NEXT:          memref.store %8, %scheme_list[] : memref<memref<?xi8>>
+// CHECK-NEXT:        } else {
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          %11 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %11, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }

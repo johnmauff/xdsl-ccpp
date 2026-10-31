@@ -427,7 +427,7 @@ def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_d
 
     Sets errmsg to "No suite named <name> found" and errflg to 1. Shared by
     run_dispatch.py (two call sites: _build_run_chain_preamble and
-    _generate_suite_part_list_fn) and lifecycle_cap.py (one call site) --
+    _generate_suite_name_list_fn) and lifecycle_cap.py (one call site) --
     previously three independent copies of the same error sequence, which is
     exactly the failure shape that let an earlier fix land on two
     copies and miss the third (a one-word text fix applied to run_dispatch.py's

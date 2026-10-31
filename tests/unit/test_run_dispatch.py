@@ -15,7 +15,7 @@ descriptor objects, strings) rather than live xDSL IR/Block objects:
 
 The remaining, IR-heavy functions in this module (_build_run_block_signature,
 _build_run_chain_preamble, _build_run_dispatch_chain, _assemble_run_fn,
-_generate_run_fn, _generate_suite_part_list_fn) still rely on the existing
+_generate_run_fn, _generate_suite_name_list_fn) still rely on the existing
 end-to-end example suites for coverage -- constructing valid Block/FuncOp
 fixtures by hand for those is a separate, larger effort.
 """

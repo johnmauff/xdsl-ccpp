@@ -37,7 +37,6 @@ from xdsl_ccpp.dialects.ccpp_utils import CallStatementOp as CCPPCallStatementOp
 from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
 from xdsl_ccpp.dialects.ccpp_utils import CamQminPreambleOp as CCPPCamQminPreambleOp
 from xdsl_ccpp.dialects.ccpp_utils import CamSuiteDispatchOp as CCPPCamSuiteDispatchOp
-from xdsl_ccpp.dialects.ccpp_utils import CamSuiteSchemeListOp as CCPPCamSuiteSchemeListOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
@@ -1928,30 +1927,6 @@ class ftnPrintContext:
                             f"trim(suite_name), ' found'"
                         )
                         blk.print(f"{ev} = 1")
-                    self.print("end if")
-            case CCPPCamSuiteSchemeListOp():
-                first = True
-                for inner in op.suite_schemes.data:
-                    attrs   = inner.data
-                    sn      = attrs[0].data
-                    schemes = [a.data for a in attrs[1:]]
-                    kw = "if" if first else "else if"
-                    first = False
-                    self.print(f"{kw} (trim(suite_name) == '{sn}') then")
-                    with self.descend() as blk:
-                        blk.print(f"allocate(scheme_list({len(schemes)}))")
-                        for idx, sname in enumerate(schemes, 1):
-                            blk.print(f"scheme_list({idx}) = '{sname}'")
-                if not first:
-                    em = op.errmsg_var.data
-                    ef = op.errflg_var.data
-                    self.print("else")
-                    with self.descend() as blk:
-                        blk.print(
-                            f"write({em}, '(3a)') 'No suite named ', "
-                            "trim(suite_name), ' found'"
-                        )
-                        blk.print(f"{ef} = 1")
                     self.print("end if")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data

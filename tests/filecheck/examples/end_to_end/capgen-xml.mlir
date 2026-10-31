@@ -485,6 +485,12 @@
 // CHECK-NEXT:    character(len=9), parameter :: str_data_prep = 'data_prep'
 // CHECK-NEXT:    character(len=8), parameter :: str_physics1 = 'physics1'
 // CHECK-NEXT:    character(len=8), parameter :: str_physics2 = 'physics2'
+// CHECK-NEXT:    character(len=8), parameter :: str_make_ddt = 'make_ddt'
+// CHECK-NEXT:    character(len=18), parameter :: str_environ_conditions = 'environ_conditions'
+// CHECK-NEXT:    character(len=12), parameter :: str_setup_coeffs = 'setup_coeffs'
+// CHECK-NEXT:    character(len=8), parameter :: str_temp_set = 'temp_set'
+// CHECK-NEXT:    character(len=16), parameter :: str_temp_calc_adjust = 'temp_calc_adjust'
+// CHECK-NEXT:    character(len=11), parameter :: str_temp_adjust = 'temp_adjust'
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
@@ -495,6 +501,7 @@
 // CHECK-NEXT:    public :: ccpp_physics_final
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
+// CHECK-NEXT:    public :: ccpp_physics_suite_schemes
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg)
@@ -761,6 +768,29 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_part_list
+// CHECK-LABEL:   subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), allocatable, intent(out) :: scheme_list(:)
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
+// CHECK-NEXT:        allocate(scheme_list(2))
+// CHECK-NEXT:        scheme_list(1) = str_make_ddt
+// CHECK-NEXT:        scheme_list(2) = str_environ_conditions
+// CHECK-NEXT:      else
+// CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
+// CHECK-NEXT:          allocate(scheme_list(4))
+// CHECK-NEXT:          scheme_list(1) = str_setup_coeffs
+// CHECK-NEXT:          scheme_list(2) = str_temp_set
+// CHECK-NEXT:          scheme_list(3) = str_temp_calc_adjust
+// CHECK-NEXT:          scheme_list(4) = str_temp_adjust
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_suite_schemes
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
 // CHECK:           output_vars)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name

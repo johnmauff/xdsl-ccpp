@@ -3307,65 +3307,6 @@ class CamSuiteDispatchOp(IRDLOperation):
         )
 
 
-@irdl_op_definition
-class CamSuiteSchemeListOp(IRDLOperation):
-    """Emit the suite-keyed scheme-list assignment block in ccpp_physics_suite_schemes.
-
-    Represents the body of the ``ccpp_physics_suite_schemes`` subroutine::
-
-        if (trim(suite_name) == 'suite1') then
-          allocate(scheme_list(N))
-          scheme_list(1) = 'scheme_a'
-          scheme_list(2) = 'scheme_b'
-          ...
-        else if (trim(suite_name) == 'suite2') then
-          ...
-        else
-          write({errmsg_var}, '(3a)') 'No suite named ', trim(suite_name), ' found'
-          {errflg_var} = 1
-        end if
-
-    Properties
-    ----------
-    suite_schemes : ArrayAttr[ArrayAttr[StringAttr]]
-        Outer array has one inner ArrayAttr per suite.  In each inner array,
-        element [0] is the suite name and elements [1:] are the scheme names
-        in first-occurrence order (duplicates already removed by the caller).
-    errmsg_var : StringAttr
-        Name of the character variable to write the error message into.
-    errflg_var : StringAttr
-        Name of the integer variable to set to 1 on error.
-    """
-
-    name = "ccpp_utils.cam_suite_scheme_list"
-
-    suite_schemes = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
-    errmsg_var    = prop_def(StringAttr)
-    errflg_var    = prop_def(StringAttr)
-
-    def __init__(self, suite_schemes: "list[tuple[str, list[str]]]",
-                 errmsg_var: str = "errmsg", errflg_var: str = "errflg"):
-        """
-        Parameters
-        ----------
-        suite_schemes
-            List of (suite_name, [scheme1, scheme2, ...]) tuples.
-        errmsg_var
-            Fortran variable name for the error message output.
-        errflg_var
-            Fortran variable name for the error flag output.
-        """
-        attr = ArrayAttr([
-            ArrayAttr([StringAttr(sn)] + [StringAttr(s) for s in schemes])
-            for sn, schemes in suite_schemes
-        ])
-        super().__init__(properties={
-            "suite_schemes": attr,
-            "errmsg_var":    StringAttr(errmsg_var),
-            "errflg_var":    StringAttr(errflg_var),
-        })
-
-
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -3463,7 +3404,6 @@ CCPPUtils = Dialect(
         ReturnStmtOp,
         ErrorExitOp,
         CamSuiteDispatchOp,
-        CamSuiteSchemeListOp,
     ],
     [RealKindType, DerivedType, ReadOnlyType, OwnedArrayType, OwnedStringType],
 )

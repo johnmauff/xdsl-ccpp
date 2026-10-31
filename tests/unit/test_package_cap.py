@@ -184,51 +184,14 @@ def test_assumed_length_character_stays_assumed_length():
     assert str(_block_arg_type(arg("len=*", mismatch="len=*:len=256"))) == "memref<256xi8>"
 
 
-_HOST_ERRORS_META = """\
-[ccpp-table-properties]
-  name = host_errors
-  type = module
-[ccpp-arg-table]
-  name = host_errors
-  type = module
-[ errmsg ]
-  standard_name = ccpp_error_message
-  units = none
-  dimensions = ()
-  type = character | kind = len=512
-[ errcode ]
-  standard_name = ccpp_error_code
-  units = 1
-  dimensions = ()
-  type = integer
-[ col_start ]
-  standard_name = horizontal_loop_begin
-  units = count
-  dimensions = ()
-  type = integer
-[ col_end ]
-  standard_name = horizontal_loop_end
-  units = count
-  dimensions = ()
-  type = integer
-"""
-
-
 def test_active_scheme_list_names_package_schemes(tmp_path):
     """ccpp_physics_suite_schemes lists the package's schemes, not its
     segments: CAM-SIMA reads a scheme's namelist only if it is listed
-    (s25c: RRTMGP's file names stayed UNSET)."""
-    # --capgen-api's wrappers use-associate the host's errmsg/errcode and
-    # column bounds, which a host declares as module variables (CAM-SIMA:
-    # physics_types, physics_grid).
-    errors = tmp_path / "host_errors.meta"
-    errors.write_text(_HOST_ERRORS_META)
-    caps = _generate(tmp_path, _setup(tmp_path), "caps", package_caps=True, capgen_api=True,
-                     host_files=[f"{H}/hello_world_host.meta", f"{H}/hello_world_mod.meta",
-                                 str(errors)])
+    (s25c: RRTMGP's file names stayed UNSET). Every host gets the routine."""
+    caps = _generate(tmp_path, _setup(tmp_path), "caps", package_caps=True)
     body = caps["Pkg_ccpp_cap.F90"].split("subroutine ccpp_physics_suite_schemes")[1]
     body = body.split("end subroutine")[0]
-    assert re.findall(r"'(\w+)'", body) == ["pkg_suite", "producer", "diag", "consumer"]
+    assert re.findall(r"scheme_list\(\d+\) = str_(\w+)", body) == ["producer", "diag", "consumer"]
 
 
 _DIM_META = {
