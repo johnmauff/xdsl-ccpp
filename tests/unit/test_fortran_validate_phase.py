@@ -224,3 +224,43 @@ end module
         positions = [serial.index(n) for n in ("first_scheme", "second_scheme", "third_scheme")]
         assert positions == sorted(positions)
         assert self._stderr(meta_paths, 3, capsys) == serial
+
+
+class TestDisabledCodeWithoutDefines:
+    def test_if_0_block_is_dropped_with_no_defines(self, tmp_path, capsys):
+        """The source is preprocessed even when there are no defines, so a
+        disabled #if 0 block never reaches fparser2 (qneg.F90 crashed it in
+        every case without defines)."""
+        meta_path = _write_pair(
+            tmp_path,
+            "disabled_code",
+            """\
+[ccpp-table-properties]
+  name = disabled_code
+  type = scheme
+[ccpp-arg-table]
+  name = disabled_code_run
+  type = scheme
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+""",
+            """\
+module disabled_code
+contains
+  subroutine disabled_code_run(errflg)
+    integer, intent(out) :: errflg
+#if 0
+    this is not Fortran (
+#endif
+  end subroutine
+end module
+""",
+        )
+        m = ccppMain()
+        m.options_db = {"scheme_files": [meta_path], "preproc_defs": []}
+        m.validate_fortran_sources()
+        assert capsys.readouterr().err == ""

@@ -80,7 +80,11 @@ def read_case(case_dir: str) -> CamCase:
     py_suite = next((f for f in suite_files if os.path.basename(f).startswith("suite_")
                      and f.endswith(".py")), None)
     host_files = paths("host")
-    host_files += [f for f in paths("scheme_namelist_meta_file") if f not in host_files]
+    # The scheme namelist .meta files are host files too; the cache stores
+    # each path as the element's text (cam_build_cache.py), not file_path.
+    namelist_meta = [e.text.strip() for e in ccpp.iter("scheme_namelist_meta_file")
+                     if e.text and e.text.strip()]
+    host_files += [f for f in namelist_meta if f not in host_files]
     # cam_autogen.py runs a Python suite with its suites-py library first on
     # PYTHONPATH; the build cache lists files from that library.
     library = next((f[:f.index("/suites-py/") + len("/suites-py")]

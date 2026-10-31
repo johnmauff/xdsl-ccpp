@@ -414,20 +414,23 @@ def _extract_subroutines(
     ``name``, ``type``, ``rank``, ``intent`` (or None), ``optional`` (bool),
     ``kind`` (str or None, for CHARACTER only: the length string).
 
-    ``preproc_defs``, when truthy, is applied to *f90_source* via
-    ``fortran_preprocess.preprocess_fortran_source`` before fparser2 ever
-    sees it -- fparser has no CPP-evaluation capability of its own (it only
-    tokenizes ``#if``/``#ifdef``/etc. as opaque directive nodes), so
-    conditional-compilation regions must already be resolved by this point.
+    *f90_source* is always run through
+    ``fortran_preprocess.preprocess_fortran_source`` with ``preproc_defs``
+    (none if empty) before fparser2 sees it -- fparser has no CPP-evaluation
+    capability of its own (it only tokenizes ``#if``/``#ifdef``/etc. as
+    opaque directive nodes), so conditional-compilation regions must already
+    be resolved by this point.
     """
     import fparser.two.Fortran2003 as f03
     from fparser.two.parser import ParserFactory
     from fparser.two.utils import walk
     from fparser.common.readfortran import FortranStringReader
 
-    if preproc_defs:
-        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
-        f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
+    # Always, even with no defines: #if/#ifdef regions must be resolved (an
+    # undefined name excludes its region, as for the compiler); fparser2 sees
+    # the directives as opaque nodes and can fail on disabled code (#if 0).
+    from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+    f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
 
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
@@ -530,9 +533,11 @@ def extract_program_locals(
     from fparser.two.utils import walk
     from fparser.common.readfortran import FortranStringReader
 
-    if preproc_defs:
-        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
-        f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
+    # Always, even with no defines: #if/#ifdef regions must be resolved (an
+    # undefined name excludes its region, as for the compiler); fparser2 sees
+    # the directives as opaque nodes and can fail on disabled code (#if 0).
+    from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+    f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
 
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
@@ -585,7 +590,7 @@ def build_meta_module_from_source(
     """Parse *f90_source* and return a ``builtin.ModuleOp`` containing
     ``ccpp.table_properties`` / ``ccpp.arg_table`` / ``ccpp.arg`` ops.
 
-    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    ``preproc_defs`` (none if empty) resolves ``#ifdef``/``#if`` conditional
     compilation in *f90_source* before parsing -- see ``_extract_subroutines``.
 
     Every ``!$ccpp``-tag-derived key found by ``_extract_subroutines``
@@ -670,7 +675,7 @@ def build_meta_module_from_file(
 ) -> builtin.ModuleOp:
     """Read *f90_path* and return CCPP metadata IR extracted via fparser2.
 
-    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    ``preproc_defs`` (none if empty) resolves ``#ifdef``/``#if`` conditional
     compilation before parsing -- see ``build_meta_module_from_source``.
     """
     with open(f90_path) as f:

@@ -17,7 +17,8 @@ def _case(tmp_path, name="case", *, sdfs=(f"{PHYS}/suites/suite_cam4.xml",),
     entries = "".join(f'<SDF file_path="{s}" hash="0"/>' for s in sdfs)
     entries += f'<scheme file_path="{PHYS}/schemes/zm.meta" hash="0"/>'
     entries += '<host file_path="/cam/registry/physics_types.meta" hash="0"/>'
-    entries += '<scheme_namelist_meta_file file_path="/bld/zm_namelist.meta" hash="0"/>'
+    # As cam_build_cache.py writes it: the path is the element's text.
+    entries += '<scheme_namelist_meta_file>/bld/zm_namelist.meta</scheme_namelist_meta_file>'
     (obj / "cam_build_cache.xml").write_text(
         f"<cache><CCPP>{entries}<preproc_defs>{preproc}</preproc_defs></CCPP></cache>")
     (case / "env_case.xml").write_text('<entry id="SRCROOT" value="/cam"/>')
