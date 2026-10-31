@@ -46,7 +46,7 @@ measured data, and will drift as items are reassessed.
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
-| `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
+| `zm-ncdata-diffs` | 5-10 days (cause upstream: stock capgen gives the same differences; fails on every compiler) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
@@ -67,8 +67,9 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
+| `capgen-api-qmin` | 2-4 days (pass the constituent object's minimum values to the run phase instead of recomputing them per call; CAM caps change, needs a CAM-SIMA regression) | S |
+| `generic-suite-schemes` | 1-2 days (emit `ccpp_physics_suite_schemes` for every host; example caps gain a routine) | XS |
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
@@ -178,7 +179,7 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
+| `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n, xdsl59g; stock capgen gives the same differences (zmcg1), so not xdsl_ccpp | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
@@ -288,9 +289,11 @@ not `ncdata_check_err = .true.` (and no `min_difference`), so differences
 are only printed. (`hack_shallow` is set up the same way; its differences are
 rounding-sized, ~1e-15.) `ncdata_check_err = .true.` turned on in the zm
 testmod 2026-10-22 (CAM-SIMA, uncommitted), so the zm test now FAILS until
-this is fixed. To do: find whether the ZM scheme or its snapshot moved
-(compare with a capgen build; check the snapshot's date, c20250116,
-against ZM changes).
+this is fixed. A stock-capgen build (2026-10-30, gnu, zmcg1) differs on the
+same 9 variables with the same maxima and locations as xdsl_ccpp (xdsl59g;
+geopotential height counts differ by ~20 of ~11,660 points), so the cause
+is the ZM scheme or its snapshot, not the generator. To do: check the
+snapshot's date, c20250116, against ZM changes, and raise it upstream.
 
 **ID: `rrtmgp-gpu-partially-present`. Resolved (2026-10-24)** -- `rrtmgp_post` now frees the gas-concentration objects (atmospheric_physics PR #468); GPU RRTMGP pair s34a completes. Trigger is our build config, see `rrtmgp-wrapper-acc-trigger`. CHANGELOG.md L12785.
 
@@ -1751,12 +1754,7 @@ completed_ir goldens and a C++-host example) and the string literals (not docstr
 frontends that parse Fortran input (`fparser2_to_meta`,
 `fortran_preprocess`, `validate_source`, `module_dependency_resolver`),
 diagnostic messages and single-token metadata keys.
-- `suite-cap-mode-flags` — **One generator, several products.** The
-  suite-cap generator branches on `instance_local_name` (71 uses),
-  `physics_mode` (38), `cam_host` (18), `emit_scheme_calls` (16) and
-  `getattr(self, "generating_package_cap", False)`. Special-purpose paths
-  accumulate there (e.g. the removed `ConstituentsMixin`). Separate the
-  products (suite cap, package cap, CAM wrappers) over a shared core.
+- `suite-cap-mode-flags` — resolved 2026-10-30. CHANGELOG.md L13536.
 - `split-large-generators` — **Very large functions** where special cases
   collect: `_generate_constituent_api` (904 lines),
   `_generate_lifecycle_fn` (657), `_generate_ccpp_cap_module` (454),
@@ -1795,3 +1793,16 @@ diagnostic messages and single-token metadata keys.
   section in the CAM-SIMA style, move the example scripts to
   `export_suite`, deprecate then remove `emit_ir`, and decide whether the
   standalone script path stays supported. Found by `dead-code-coverage`.
+- `capgen-api-qmin` — **The capgen-API run adapter recomputes constituent
+  minimums on every call.** With `--capgen-api` (formerly `--cam-host`),
+  `{host}_ccpp_physics_run` allocates `lc_qmin`, calls `minimum()` for every
+  constituent, passes the array to `ccpp_physics_run`, and deallocates it
+  (`CamQminPreambleOp`/`CamQminPostambleOp`, ccpp_cap.py). Original capgen
+  passes `cam_constituents_obj%vars_minvalue` directly. Pass the stored
+  minimums instead; this changes the run interface and CAM's caps. Found in
+  `suite-cap-mode-flags` (B0 audit).
+- `generic-suite-schemes` — **`ccpp_physics_suite_schemes` is generated only
+  for the capgen-API host.** It is part of capgen-v1's standard API
+  (capgen/generator), but xdsl-ccpp emits it only with `--capgen-api`
+  (`CamSuiteSchemeListOp`). Make it part of the generic host cap. Found in
+  `suite-cap-mode-flags` (B0 audit).

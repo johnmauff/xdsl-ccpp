@@ -59,9 +59,11 @@ from xdsl_ccpp.util.ccpp_conventions import (  # noqa: F401
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     is_dispatch_scalar_std_name,
 )
 
@@ -1237,6 +1239,33 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
             if var.hasAttr("standard_name"):
                 result[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
     return result
+
+
+@dataclass(frozen=True)
+class InstancePair:
+    """A multi-instance host's two local names: the instance number and the
+    number of instances, which sizes the cap's lc_instances bundle."""
+
+    instance: str
+    count: str
+
+
+def host_instance_pair(meta_data) -> "InstancePair | None":
+    """The host's (instance_number, number_of_instances) pair, or None.
+
+    Real capgen-v1's multi-instance model needs both: the instance indexes
+    lc_instances and the count allocates it. A host declaring only one of
+    the two (nothing stops a .meta file from doing it) stays single-instance
+    rather than emitting allocate(lc_instances(None)) -- caught by Copilot
+    review on PR #77. Every cap that handles instances takes this one value,
+    so the both-or-neither rule is checked here only.
+    """
+    host_vars = _build_host_var_map(meta_data, include_host=True)
+    instance = host_vars.get(CCPP_INSTANCE_NUMBER_STD_NAME)
+    count = host_vars.get(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+    if instance is None or count is None:
+        return None
+    return InstancePair(instance[0], count[0])
 
 
 def classify_host_table_vars(meta_data) -> dict:

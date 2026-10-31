@@ -20,7 +20,7 @@ argument the same way any other host-matched value does. _emit_subcycle then
 prints that argument's own name as the do-loop bound instead of the raw
 standard_name.
 
-This must only apply to the specific postfix (physics_mode=True, the "_run"
+This must only apply to the specific postfix (column_range=True, the "_run"
 entry point) that actually emits a SubcycleLoopOp using it -- not every
 lifecycle postfix the suite happens to have -- since a scheme can have both a
 _run and an _init entry point, making the arg_tables-based check alone
@@ -155,7 +155,7 @@ class TestDynamicLoopCountWithHostMatch:
         """suite_initialize calls scheme_a_init/scheme_b_init -- both schemes
         ARE present in that postfix's own arg_tables (an arg_tables-only
         check would think the subcycle is "active" there too), but
-        _init never runs under physics_mode, so it never emits a
+        _init never runs with column_range, so it never emits a
         SubcycleLoopOp at all and must not gain host_count as an unused
         dummy argument."""
         fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META])

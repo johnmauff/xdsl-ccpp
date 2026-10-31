@@ -1665,7 +1665,7 @@ class DerivedTypeDefOp(IRDLOperation):
           {component declarations}
         end type {type_name}
 
-    Lives as a child of NonCamHostConstituentApiOp's own body Region
+    Lives as a child of ConstituentApiOp's own body Region
     (the multi-instance per-instance bundle type is its only user today)
     rather than being printed generically by the main statement dispatch --
     the printer gives it a no-op case there and instead emits it from a
@@ -1693,32 +1693,8 @@ class DerivedTypeDefOp(IRDLOperation):
 
 
 @irdl_op_definition
-class CamHostConstituentApiOp(IRDLOperation):
-    """Container for the cam_host=True constituent registration API.
-
-    ``public_names`` — names to export with ``public ::`` in the module preamble.
-    ``body``         — single-block Region of the API's ``func.FuncOp`` s
-                       (cap_shared.fixed_interface_fn).
-    """
-
-    name = "ccpp_utils.cam_host_constituent_api"
-
-    public_names = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    body         = region_def("single_block")
-
-    traits = traits_def(NoTerminator())
-
-    def __init__(self, public_names_list: "list[str]", fn_ops: list):
-        body = Region([Block(fn_ops)])
-        super().__init__(
-            properties={"public_names": ArrayAttr([StringAttr(n) for n in public_names_list])},
-            regions=[body],
-        )
-
-
-@irdl_op_definition
-class NonCamHostConstituentApiOp(IRDLOperation):
-    """Container for the non-cam_host constituent registration API.
+class ConstituentApiOp(IRDLOperation):
+    """Container for the host cap's constituent registration API.
 
     ``public_names`` — names to export with ``public ::`` in the module preamble.
     ``body``         — single-block Region of the API's ``func.FuncOp`` s
@@ -1729,23 +1705,18 @@ class NonCamHostConstituentApiOp(IRDLOperation):
                        rather than this op carrying a separate type_defs property).
     """
 
-    name = "ccpp_utils.non_cam_host_constituent_api"
+    name = "ccpp_utils.constituent_api"
 
     public_names = prop_def(ArrayAttr)          # ArrayAttr[StringAttr]
     body         = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(
-        self,
-        public_names_list: "list[str]",
-        fn_ops: list,
-    ):
-        body = Region([Block(fn_ops)])
-        props: dict = {
-            "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
-        }
-        super().__init__(properties=props, regions=[body])
+    def __init__(self, public_names_list: "list[str]", fn_ops: list):
+        super().__init__(
+            properties={"public_names": ArrayAttr([StringAttr(n) for n in public_names_list])},
+            regions=[Region([Block(fn_ops)])],
+        )
 
 
 @irdl_op_definition
@@ -3440,8 +3411,7 @@ CCPPUtils = Dialect(
         ScopedBlockOp,
         CToFortranStringCopyOp,
         FortranToCStringCopyOp,
-        CamHostConstituentApiOp,
-        NonCamHostConstituentApiOp,
+        ConstituentApiOp,
         DdtComponentDeclOp,
         DerivedTypeDefOp,
         CppIncludeOp,

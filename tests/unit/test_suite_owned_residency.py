@@ -34,7 +34,7 @@ pytestmark = pytest.mark.usefixtures("legacy_mode")
 # would ever be emitted at all -- exactly the latent (and unrelated,
 # pre-existing) case this work found in examples/helloworld's temp_layer
 # (whose alloc dims use horizontal_loop_extent, only resolvable in
-# physics_mode, so it never gets a LazyAllocOp in _register/_init either).
+# column_range phase, so it never gets a LazyAllocOp in _register/_init either).
 
 _HOST_META = """\
 [ccpp-table-properties]

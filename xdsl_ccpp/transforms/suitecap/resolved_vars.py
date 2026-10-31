@@ -16,7 +16,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
 
 
 # CCPP phase names (capgen-v1 CCPP_STATE_MACH naming), keyed by
-# (tgt_subroutine_postfix, physics_mode); physics_mode=True is always "run".
+# (tgt_subroutine_postfix, column_range); column_range=True is always "run".
 _PHASE_NAMES: dict = {
     ("_register", False): "register",
     ("_init", False): "initialize",

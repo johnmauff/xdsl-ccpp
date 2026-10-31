@@ -24,15 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AllocateOp,
     AssignOp,
     CallExprOp,
-    CamDirectCallOp,
-    CamQminPostambleOp,
-    CamQminPreambleOp,
-    CamSuiteDispatchOp,
-    CamSuiteSchemeListOp,
-    ClearErrStateOp,
-    ClearStringOp,
     DerivedType,
-    ErrorPropagateOp,
     HostVarRefOp,
     IndexExprOp,
     SetStringOp,
@@ -40,8 +32,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     StringLiteralExprOp,
     TrimOp,
     ValueExprOp,
-    VarRefExprOp,
 )
+from xdsl_ccpp.transforms.capgen_api import generate_capgen_api_wrappers
 from xdsl_ccpp.transforms.constituent_cap import (
     _collect_constituent_info,
     _generate_constituent_api,
@@ -68,6 +60,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     derive_camel_case_name,
     fixed_interface_fn,
     framework_cap_var_ref,
+    host_instance_pair,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
 )
@@ -88,11 +81,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
     CCPP_ERROR_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
-    CCPP_INSTANCE_NUMBER_STD_NAME,
-    CCPP_LOOP_BEGIN_STD_NAME,
-    CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
-    CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
     name_local,
 )
@@ -873,12 +862,10 @@ class CCPPCAP(ModulePass):
     # called from C++ / Kokkos host models.
     bind_c: bool = False
 
-    # When True, generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper
-    # subroutines that read errmsg/errcode from physics_types and col_start/col_end
-    # from physics_grid (CAM-SIMA module-level variables).  Off by default so
-    # non-CAM builds (examples, CI compile tests) are not required to provide
-    # those modules.
-    cam_host: bool = False
+    # When True, also generate original capgen's host API (<host>_ccpp_physics_*
+    # wrappers and the capgen constituent routines, as CAM-SIMA calls them) on
+    # top of the capgen-v1 API (--capgen-api, formerly --cam-host).
+    capgen_api: bool = False
 
 
     def _derive_camel_case_name(self, suite_name: str) -> str:
@@ -937,348 +924,6 @@ class CCPPCAP(ModulePass):
             )
 
         return _render_suite_variables_subroutine(suite_vars)
-
-
-    @staticmethod
-    def _generate_cam_lifecycle_wrappers(suite_descriptions, public_fns, meta_data, lifecycle_fns=None, host_var_map_lc=None):
-        """Generate cam_ccpp_physics_* lifecycle wrapper FuncOps for the CAM-SIMA host.
-
-        phys_comp.F90 calls these with a simplified signature -- just suite_name
-        (and suite_part for _run) -- reading errmsg/errcode from physics_types
-        module-level variables rather than receiving them as dummy arguments.
-
-        Returns (wrappers, globals) where:
-          wrappers: list[func.FuncOp]  -- 7 public wrapper subroutines
-          globals:  list[llvm.GlobalOp] -- USE-association stubs for module scope
-
-        Arg resolution is metadata-driven: lifecycle_fns carries the
-        canonical_arg_name to standard_name mapping from _generate_run_fn.
-        Each dispatcher block arg is looked up in _CAM_STD_EXPRS to obtain the
-        reference passed in CamDirectCallOp / CamSuiteDispatchOp args.
-        """
-        char_base = TypeConversions.getBaseType("character")
-        int_base  = TypeConversions.getBaseType("integer")
-        suite_name_type  = memref.MemRefType(char_base, [DYNAMIC_INDEX])
-        errmsg_type      = memref.MemRefType(char_base, [CCPP_ERRMSG_LEN])
-        errflg_type      = memref.MemRefType(int_base,  [])
-        scheme_list_type = memref.MemRefType(
-            memref.MemRefType(char_base, [DYNAMIC_INDEX]), []
-        )
-
-        # Maps CCPP standard_name to (reference, module_for_use_stub, qmin_needed).
-        # reference: a variable's identifier, or a CapVarRef for a framework cap var.
-        # module_for_use_stub: str name of the Fortran module that exports this variable,
-        # or None when the variable is a cap-local (lc_*) that needs no USE statement.
-        _CAM_STD_EXPRS = {
-            CCPP_LOOP_BEGIN_STD_NAME: ("col_start", "physics_grid",  False),
-            CCPP_LOOP_END_STD_NAME:   ("col_end",   "physics_grid",  False),
-            CCPP_ERROR_MESSAGE:       ("errmsg",    "physics_types", False),
-            CCPP_ERROR_CODE:          ("errcode",   "physics_types", False),
-            "ccpp_constituent_properties":     ("lc_const_props", None, False),
-            "ccpp_constituent_minimum_values": ("lc_qmin",        None, True),
-        }
-        for _std in FRAMEWORK_STD_NAME_TO_CAP_VAR:
-            assert _std not in _CAM_STD_EXPRS, f"_CAM_STD_EXPRS collision for '{_std}'"
-            _CAM_STD_EXPRS[_std] = (framework_cap_var_ref(_std), None, False)
-
-        def _make_use_global(var_name, module_name):
-            g = llvm.GlobalOp(
-                llvm.LLVMArrayType.from_size_and_type(1, char_base),
-                var_name,
-                "external",
-            )
-            g.attributes["module"] = StringAttr(module_name)
-            return g
-
-        # Accumulated USE-stub globals, deduped by (var_name, module_name).
-        _seen_globals: "dict[tuple, llvm.GlobalOp]" = {}
-
-        def _add_globals(global_specs):
-            for var_name, mod_name in global_specs:
-                key = (var_name, mod_name)
-                if key not in _seen_globals:
-                    _seen_globals[key] = _make_use_global(var_name, mod_name)
-
-        def _build_dispatcher_call(fn_suffix):
-            """Return (call_args, global_specs, qmin_needed) for one dispatcher.
-
-            call_args:    list -- an expression op for each positional arg, and
-                          None for the suite part (the caller supplies it).
-            global_specs: list[(var_name, module_name)] -- vars needing USE stubs.
-            qmin_needed:  bool -- True when ccpp_constituent_minimum_values is used.
-
-            Returns (None, [], False) when the dispatcher is absent from lifecycle_fns.
-
-            arg_to_std is keyed by the dispatcher's dummy-argument names,
-            which _build_run_block_signature records in its arg_attrs
-            (SUITE_ARG_NAME).
-            """
-            if lifecycle_fns is None:
-                return None, [], False
-            entry = lifecycle_fns.get(fn_suffix)
-            if entry is None:
-                return None, [], False
-
-            fn, arg_to_std = entry
-            call_args  = []
-            gspecs     = []
-            qmin_needed = False
-
-            for a, attrs in zip(fn.args, arg_attr_values(fn)):
-                arg_name = attrs.get(SUITE_ARG_NAME, a.name_hint or "")
-                if arg_name == "suite_name":
-                    call_args.append(VarRefExprOp("suite_name"))
-                    continue
-                if arg_name == "suite_part":
-                    call_args.append(None)
-                    continue
-
-                std_name = arg_to_std.get(arg_name)
-                if std_name is None:
-                    raise ValueError(
-                        f"_generate_cam_lifecycle_wrappers: no standard_name for "
-                        f"dispatcher '{fn_suffix}' block arg '{arg_name}'. "
-                        f"Ensure _generate_run_fn returns non_host_std_to_canonical "
-                        f"and ccpp_cap.py stores it in lifecycle_fns."
-                    )
-                cam_entry = _CAM_STD_EXPRS.get(std_name)
-                if cam_entry is None and host_var_map_lc is not None:
-                    hv = host_var_map_lc.get(std_name.lower())
-                    if hv is not None:
-                        var_name, module_name = hv
-                        cam_entry = (var_name, module_name, False)
-                if cam_entry is None:
-                    raise ValueError(
-                        f"_generate_cam_lifecycle_wrappers: no CAM expression for "
-                        f"standard_name '{std_name}' (dispatcher '{fn_suffix}', "
-                        f"arg '{arg_name}'). Either add it to _CAM_STD_EXPRS (for "
-                        f"cap-local framework variables) or declare it in a MODULE-type "
-                        f"host metadata table (for host-model variables)."
-                    )
-                ref, mod, qmin = cam_entry
-                call_args.append(VarRefExprOp(ref) if isinstance(ref, str) else ref.expr_op())
-                if mod:
-                    gspecs.append((ref, mod))
-                if qmin:
-                    qmin_needed = True
-
-            return call_args, gspecs, qmin_needed
-
-        def _build_suite_groups(infix):
-            """Return list of (suite_name, group_names) for CamSuiteDispatchOp."""
-            groups = []
-            for sn, sd in suite_descriptions.items():
-                gs = [
-                    grp.attributes["name"] for grp in sd
-                    if f"{sn}_{infix}_{grp.attributes['name']}" in public_fns
-                ]
-                if gs:
-                    groups.append((sn, gs))
-            return groups
-
-        def _names(*names):
-            return [VarRefExprOp(n) for n in names]
-
-        def _suite_dispatch(dispatcher, wrapper, infix, call_args):
-            """The suite-group dispatch chain; call_args holds None where the
-            group name goes."""
-            part_at = call_args.index(None)
-            return CamSuiteDispatchOp(
-                dispatcher, wrapper, "errcode", "errmsg", _build_suite_groups(infix),
-                [a for a in call_args if a is not None], part_at,
-            )
-
-        def _build_funcop(fn_name, arg_names, arg_types, body_ops):
-            block = Block(arg_types=arg_types)
-            for arg, name in zip(block.args, arg_names):
-                arg.name_hint = name
-            block.add_ops(body_ops)
-            body = Region()
-            body.add_block(block)
-            fn_type = builtin.FunctionType.from_lists(arg_types, [])
-            return func.FuncOp(fn_name, fn_type, body, visibility="public")
-
-        _lf = lifecycle_fns or {}
-        has_physics_init  = "ccpp_physics_init"           in _lf
-        has_physics_final = "ccpp_physics_final"          in _lf
-        has_tsinit        = "ccpp_physics_timestep_init"   in _lf
-        has_tsfinal       = "ccpp_physics_timestep_final"  in _lf
-
-        # errmsg and errcode are always referenced directly from physics_types.
-        _add_globals([("errmsg", "physics_types"), ("errcode", "physics_types")])
-
-        wrappers = []
-
-        # --- cam_ccpp_physics_register ---
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_register",
-            ["suite_name"],
-            [suite_name_type],
-            [
-                CamDirectCallOp("ccpp_register", _names("suite_name", "errmsg", "errcode")),
-                func.ReturnOp(),
-            ],
-        ))
-
-        # --- cam_ccpp_physics_initialize ---
-        _init_body = [
-            CamDirectCallOp("ccpp_init", _names("suite_name", "errmsg", "errcode")),
-            ErrorPropagateOp("errcode"),
-        ]
-        if has_physics_init:
-            _init_args, _init_gspecs, _ = _build_dispatcher_call("ccpp_physics_init")
-            _add_globals(_init_gspecs)
-            _init_body.append(_suite_dispatch(
-                "ccpp_physics_init", "cam_ccpp_physics_initialize", "init", _init_args,
-            ))
-        _init_body.append(func.ReturnOp())
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_initialize",
-            ["suite_name"],
-            [suite_name_type],
-            _init_body,
-        ))
-
-        # --- cam_ccpp_physics_finalize ---
-        _final_body = []
-        if has_physics_final:
-            _final_args, _final_gspecs, _ = _build_dispatcher_call("ccpp_physics_final")
-            _add_globals(_final_gspecs)
-            _final_body += [
-                _suite_dispatch(
-                    "ccpp_physics_final", "cam_ccpp_physics_finalize", "final", _final_args,
-                ),
-                ErrorPropagateOp("errcode"),
-            ]
-        _final_body += [
-            CamDirectCallOp("ccpp_final", _names("suite_name", "errmsg", "errcode")),
-            func.ReturnOp(),
-        ]
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_finalize",
-            ["suite_name"],
-            [suite_name_type],
-            _final_body,
-        ))
-
-        # --- cam_ccpp_physics_timestep_initial ---
-        if has_tsinit:
-            _tsinit_args, _tsinit_gspecs, _ = _build_dispatcher_call("ccpp_physics_timestep_init")
-            _add_globals(_tsinit_gspecs)
-            _tsinit_body = [
-                _suite_dispatch(
-                    "ccpp_physics_timestep_init", "cam_ccpp_physics_timestep_initial",
-                    "timestep_init", _tsinit_args,
-                ),
-            ]
-        else:
-            _tsinit_body = [ClearErrStateOp("errcode", "errmsg")]
-        _tsinit_body.append(func.ReturnOp())
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_timestep_initial",
-            ["suite_name"],
-            [suite_name_type],
-            _tsinit_body,
-        ))
-
-        # --- cam_ccpp_physics_run ---
-        _run_call_args, _run_gspecs, _run_has_qmin = _build_dispatcher_call("ccpp_physics_run")
-        if _run_call_args is None:
-            _run_call_args = _names("suite_name", "suite_part", "errmsg", "errcode")
-        else:
-            _run_call_args = [VarRefExprOp("suite_part") if a is None else a
-                              for a in _run_call_args]
-        _add_globals(_run_gspecs)
-        if _run_has_qmin:
-            _add_globals([("kind_phys", "ccpp_kinds")])
-        _run_body = []
-        if _run_has_qmin:
-            _run_body.append(CamQminPreambleOp("errcode", "errmsg"))
-        _run_body.append(CamDirectCallOp("ccpp_physics_run", _run_call_args))
-        if _run_has_qmin:
-            _run_body.append(CamQminPostambleOp())
-        _run_body.append(func.ReturnOp())
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_run",
-            ["suite_name", "suite_part"],
-            [suite_name_type, suite_name_type],
-            _run_body,
-        ))
-
-        # --- cam_ccpp_physics_timestep_final ---
-        if has_tsfinal:
-            _tsfinal_args, _tsfinal_gspecs, _ = _build_dispatcher_call(
-                "ccpp_physics_timestep_final"
-            )
-            _add_globals(_tsfinal_gspecs)
-            _tsfinal_body = [
-                _suite_dispatch(
-                    "ccpp_physics_timestep_final", "cam_ccpp_physics_timestep_final",
-                    "timestep_final", _tsfinal_args,
-                ),
-            ]
-        else:
-            _tsfinal_body = [ClearErrStateOp("errcode", "errmsg")]
-        _tsfinal_body.append(func.ReturnOp())
-        wrappers.append(_build_funcop(
-            "cam_ccpp_physics_timestep_final",
-            ["suite_name"],
-            [suite_name_type],
-            _tsfinal_body,
-        ))
-
-        # --- ccpp_physics_suite_schemes ---
-        # errmsg and errflg are intent(out): declared as AllocaOps and returned.
-        schemes_block = Block(arg_types=[suite_name_type, scheme_list_type])
-        schemes_block.args[0].name_hint = "suite_name"
-        schemes_block.args[1].name_hint = "scheme_list"
-
-        errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
-        errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
-        errmsg_alloc.memref.name_hint = "errmsg"
-        errflg_alloc.memref.name_hint = "errflg"
-        zero_const   = arith.ConstantOp.from_int_and_width(0, 32)
-        store_zero   = memref.StoreOp.get(zero_const, errflg_alloc, [])
-        clear_errmsg = ClearStringOp(errmsg_alloc.memref)
-
-        _suite_schemes = []
-        for sn, sd in suite_descriptions.items():
-            seen: "dict[str, None]" = {}
-            for group in sd:
-                for scheme in _iter_schemes(group):
-                    name = scheme.attributes["name"]
-                    # A package-cap segment stands for the schemes it calls.
-                    props = meta_data.get(name)
-                    if props is not None and props.hasAttr("segment_schemes"):
-                        seen.update(dict.fromkeys(props.getAttr("segment_schemes")))
-                    else:
-                        seen[name] = None
-            _suite_schemes.append((sn, list(seen.keys())))
-
-        schemes_block.add_ops([
-            errmsg_alloc,
-            errflg_alloc,
-            zero_const,
-            store_zero,
-            clear_errmsg,
-            CamSuiteSchemeListOp(_suite_schemes, errmsg_var="errmsg", errflg_var="errflg"),
-            func.ReturnOp(errmsg_alloc, errflg_alloc),
-        ])
-        schemes_body = Region()
-        schemes_body.add_block(schemes_block)
-        schemes_fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type, scheme_list_type],
-            [errmsg_type, errflg_type],
-        )
-        wrappers.append(func.FuncOp(
-            "ccpp_physics_suite_schemes",
-            schemes_fn_type,
-            schemes_body,
-            visibility="public",
-        ))
-
-        return wrappers, list(_seen_globals.values())
-
 
 
     def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
@@ -1387,36 +1032,11 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
-        # Real capgen-v1's multi-instance model: resolved once
-        # for the whole host (instance_number/number_of_instances are
-        # HOST-declared scalars, not suite-scoped), same lookup shape as
-        # suite_cap.py's own _resolve_host_only_std_name -- scans every
-        # non-scheme table (module/host/ddt) for the standard name. None for
-        # a non-multi-instance host, in which case every downstream
-        # constituent-API/cap-var-map consumer below takes its original,
-        # unchanged codepath.
-        # instance_local_name/ninstances_local_name form one paired contract
-        # -- every downstream consumer (cap_var_map's lc_instances(instance)%
-        # wrapping, constituent_cap.py's lc_instances bundle/allocation,
-        # lifecycle_cap.py's LazyAllocOp guard) assumes BOTH are set or
-        # NEITHER is. A host declaring only one of the two standard names
-        # (unusual, but nothing stops a .meta file from doing it) would
-        # otherwise enable multi-instance wrapping with no matching
-        # allocation/signature support -- e.g. a literal "None" spliced into
-        # a generated Fortran signature, or a reference to lc_instances that
-        # is never declared. Caught by Copilot review on PR #77; normalize
-        # to the pair here, once, so every downstream site's own "is this
-        # multi-instance" check (instance_local_name is not None) stays a
-        # reliable proxy for "both names are present."
-        _host_var_map_all_for_instance = _build_host_var_map(meta_data, include_host=True)
-        _instance_match = _host_var_map_all_for_instance.get(CCPP_INSTANCE_NUMBER_STD_NAME)
-        _ninstances_match = _host_var_map_all_for_instance.get(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        if _instance_match is not None and _ninstances_match is not None:
-            instance_local_name = _instance_match[0]
-            ninstances_local_name = _ninstances_match[0]
-        else:
-            instance_local_name = None
-            ninstances_local_name = None
+        # Real capgen-v1's multi-instance model: resolved once for the whole
+        # host (instance_number/number_of_instances are host-declared
+        # scalars, not suite-scoped). None for a single-instance host.
+        instances = host_instance_pair(meta_data)
+        instance_local_name = instances.instance if instances else None
 
         cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency = _build_cap_var_map(
             meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
@@ -1547,8 +1167,7 @@ class CCPPCAP(ModulePass):
                     host_var_map_lc=host_var_map_lc,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
-                    instance_local_name=instance_local_name,
-                    ninstances_local_name=ninstances_local_name,
+                    instances=instances,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)
@@ -1642,22 +1261,22 @@ class CCPPCAP(ModulePass):
         # (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py), so lc_all_constituents
         # must exist whenever it could be referenced, even for a suite with no
         # dynamic registration or fixed-advected constituent of its own.
-        # SHORT-TERM HACK (TDB-001, BACKLOG.md): cam_host builds always
-        # generate the constituent API so write_init_files.py can unconditionally
-        # import cam_constituents_array / cam_model_const_properties from cam_ccpp_cap.
-        # The right fix is to make write_init_files.py constituent-aware instead.
+        # With --capgen-api the constituent API is always generated, as original
+        # capgen does: CAM-SIMA (cam_comp.F90, phys_comp.F90, and
+        # write_init_files.py's generated physics_inputs.F90) uses
+        # <host>_constituents_array / <host>_model_const_properties for every
+        # suite.
         dyn_names, fixed_adv, references_count = _collect_constituent_info(meta_data)
         needs_const_tend = (
             "ccpp_constituent_tendencies" in cap_var_map
             or any(sv[3] is not None for sv in scratch_var_list)
         )
-        if dyn_names or fixed_adv or scratch_var_list or references_count or self.cam_host:
+        if dyn_names or fixed_adv or scratch_var_list or references_count or self.capgen_api:
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
                 framework_var_residency=framework_var_residency,
-                instance_local_name=instance_local_name,
-                ninstances_local_name=ninstances_local_name,
-                cam_host=self.cam_host,
+                instances=instances,
+                capgen_api=self.capgen_api,
                 needs_const_tend=needs_const_tend,
                 ddt_source_module=ddt_source_module,
             )
@@ -1711,15 +1330,11 @@ class CCPPCAP(ModulePass):
                     shared_seen_host_globals.add(_key)
                     all_globals.append(stub)
 
-        # Append CAM-SIMA-specific lifecycle wrappers (cam_ccpp_physics_*) so
-        # that phys_comp.F90's simplified call convention (suite_name only, or
-        # suite_name + suite_part for _run) is satisfied without changing the
-        # inner ccpp_* dispatchers used by xdsl_ccpp's own examples/tests.
-        # Gated on cam_host=true so non-CAM builds (examples, CI) don't need
-        # the physics_types / physics_grid modules to be present.
-        if self.cam_host:
-            _wrappers, _wrapper_globals = self._generate_cam_lifecycle_wrappers(
-                suite_descriptions, public_fns, meta_data, lifecycle_fns,
+        # Original capgen's lifecycle wrappers (<host>_ccpp_physics_*), layered
+        # on the capgen-v1 dispatchers the examples call (capgen_api.py).
+        if self.capgen_api:
+            _wrappers, _wrapper_globals = generate_capgen_api_wrappers(
+                camel_name, suite_descriptions, public_fns, meta_data, lifecycle_fns,
                 host_var_map_lc=host_var_map_lc,
             )
             for _g in _wrapper_globals:

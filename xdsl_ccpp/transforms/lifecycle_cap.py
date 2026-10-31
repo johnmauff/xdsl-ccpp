@@ -143,23 +143,9 @@ def _generate_lifecycle_fn(
     # lc_instances(instance) here, before anything has ever allocated
     # lc_instances at all, is undefined behavior, not merely an
     # unallocated-component read.
-    instance_local_name = kwargs.get("instance_local_name")
-    ninstances_local_name = kwargs.get("ninstances_local_name")
-    # Paired contract, not two independent optionals -- the dyn_const branch
-    # below gates its own lc_instances(instance)%... reference and
-    # LazyAllocOp on instance_local_name alone; without ninstances_local_name
-    # too, that LazyAllocOp's own allocate(lc_instances(ninstances)) would
-    # get a literal "None" spliced into generated Fortran. ccpp_cap.py's own
-    # resolution site normalizes both to None together, but assert the
-    # invariant here too, matching this codebase's existing
-    # _assert_call_arg_count_matches_signature precedent. Caught by Copilot
-    # review on PR #77.
-    assert (instance_local_name is None) == (ninstances_local_name is None), (
-        "instance_local_name and ninstances_local_name must both be set or "
-        "both be None -- got "
-        f"instance_local_name={instance_local_name!r}, "
-        f"ninstances_local_name={ninstances_local_name!r}"
-    )
+    instances = kwargs.get("instances")
+    instance_local_name = instances.instance if instances else None
+    ninstances_local_name = instances.count if instances else None
     _lc_instances_alloc_emitted = False
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)

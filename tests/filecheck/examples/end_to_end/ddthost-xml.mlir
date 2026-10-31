@@ -177,7 +177,7 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=9), parameter :: str_ddt_suite = 'ddt_suite'
 // CHECK-NEXT:    character(len=9), parameter :: str_data_prep = 'data_prep'
-// CHECK-NEXT:    type(ccpp_model_constituents_t), target :: cam_constituents_obj
+// CHECK-NEXT:    type(ccpp_model_constituents_t), target :: Ddt_constituents_obj
 // CHECK-NEXT:    integer, allocatable :: lc_all_constituents(:)
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()
 // CHECK-NEXT:    type(ccpp_constituent_prop_ptr_t), target, allocatable :: lc_const_props(:)
@@ -450,7 +450,7 @@
 // CHECK-NEXT:      if (allocated(lc_HNO3)) deallocate(lc_HNO3)
 // CHECK-NEXT:      if (allocated(lc_vmr)) deallocate(lc_vmr)
 // CHECK-NEXT:      if (allocated(lc_psurf)) deallocate(lc_psurf)
-// CHECK-NEXT:      call cam_constituents_obj%reset()
+// CHECK-NEXT:      call Ddt_constituents_obj%reset()
 // CHECK-NEXT:    end subroutine Ddt_ccpp_deallocate_dynamic_constituents
 // CHECK-LABEL:   subroutine Ddt_ccpp_register_constituents(host_constituents, errmsg, errcode)
 // CHECK:           use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t
@@ -466,7 +466,7 @@
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
 // CHECK-NEXT:      lc_num_consts = lc_num_consts + 0
-// CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
+// CHECK-NEXT:      call Ddt_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
 // CHECK-NEXT:        allocate(const_prop, stat=errcode)
 // CHECK-NEXT:        if (errcode .ne. 0) then
@@ -474,19 +474,19 @@
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        const_prop = host_constituents(lc_i)
-// CHECK-NEXT:        call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:        call Ddt_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:        nullify(const_prop)
 // CHECK-NEXT:        if (errcode /= 0) return
 // CHECK-NEXT:      end do
-// CHECK-NEXT:      call cam_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      call Ddt_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:      if (errcode /= 0) return
-// CHECK-NEXT:      lc_props_ptr => cam_constituents_obj%constituent_props_ptr()
+// CHECK-NEXT:      lc_props_ptr => Ddt_constituents_obj%constituent_props_ptr()
 // CHECK-NEXT:      if (allocated(lc_const_props)) deallocate(lc_const_props)
 // CHECK-NEXT:      allocate(lc_const_props(size(lc_props_ptr)))
 // CHECK-NEXT:      lc_const_props = lc_props_ptr
 // CHECK-NEXT:      nullify(lc_props_ptr)
 // CHECK-NEXT:      call ccpp_scheme_utils_set_constituents(lc_const_props)
-// CHECK-NEXT:      call cam_constituents_obj%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      call Ddt_constituents_obj%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:      if (errcode /= 0) return
 // CHECK-NEXT:      if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:      allocate(lc_all_constituents(lc_num_consts))
@@ -498,7 +498,7 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
 // CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, errcode=errcode,  &
+// CHECK-NEXT:      call Ddt_constituents_obj%num_constituents(num_advected, advected=advected, errcode=errcode,  &
 // CHECK-NEXT:        errmsg=errmsg)
 // CHECK-NEXT:    end subroutine Ddt_ccpp_number_constituents
 // CHECK-LABEL:   subroutine Ddt_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
@@ -513,9 +513,9 @@
 // CHECK-NEXT:        errmsg = 'ccpp_initialize_constituents: register_constituents not called'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      call cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)
+// CHECK-NEXT:      call Ddt_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)
 // CHECK-NEXT:      if (errflg /= 0) return
-// CHECK-NEXT:      lc_constituent_array => cam_constituents_obj%field_data_ptr()
+// CHECK-NEXT:      lc_constituent_array => Ddt_constituents_obj%field_data_ptr()
 // CHECK-NEXT:      if (allocated(lc_cols)) deallocate(lc_cols)
 // CHECK-NEXT:      allocate(lc_cols(ncols, pver))
 // CHECK-NEXT:      lc_cols = 0.0_kind_phys
@@ -541,7 +541,7 @@
 // CHECK-NEXT:    end function Ddt_constituents_array
 // CHECK:         function Ddt_advected_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
-// CHECK:           ptr => cam_constituents_obj%advected_constituents_ptr()
+// CHECK:           ptr => Ddt_constituents_obj%advected_constituents_ptr()
 // CHECK-NEXT:    end function Ddt_advected_constituents_array
 // CHECK-LABEL:   subroutine Ddt_const_get_index(std_name, index, errflg, errmsg)
 // CHECK:           use ccpp_constituent_prop_mod, only: to_lower
@@ -557,7 +557,7 @@
 // CHECK-NEXT:        errmsg = 'const_get_index: constituents not registered'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
+// CHECK-NEXT:      call Ddt_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
 // CHECK-NEXT:      if (errflg .ne. 0 .or. index .le. 0) then
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'

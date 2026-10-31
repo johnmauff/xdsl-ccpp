@@ -55,6 +55,7 @@ from xdsl_ccpp.transforms.suitecap.host_scalars import (
     _synthesize_thread_number_arg,
 )
 from xdsl_ccpp.transforms.suitecap.records import (
+    PhaseSpec,
     _ArgClassification,
     _ArgTableResult,
     _BlockSignature,
@@ -67,13 +68,37 @@ from xdsl_ccpp.transforms.suitecap.resolved_vars import (
 )
 
 
-# Phase tags (cap_shared.FN_PHASE_ATTR) for the suite-level and per-group
-# functions, keyed by the scheme entry-point postfix each one calls.
-_SUITE_PHASE_TAGS = {"_register": "suite_register", "_init": "suite_initialize",
-                     "_finalize": "suite_finalize"}
-_GROUP_PHASE_TAGS = {"_init": "group_init", "_run": "run",
-                     "_timestep_initialize": "timestep_init",
-                     "_timestep_finalize": "timestep_final", "_finalize": "group_final"}
+# The suite's flat functions. _init/_finalize only do framework setup and
+# own the "uninitialized" <-> "initialized" transitions (capgen-v1); the
+# scheme _init/_finalize calls are made per group.
+_SUITE_PHASES = (
+    PhaseSpec("_register", "_register", "suite_register", column_range=False),
+    PhaseSpec("_init", "_initialize", "suite_initialize", column_range=False,
+              emit_scheme_calls=False, check_state="uninitialized",
+              set_state="initialized", suite_hooks=True),
+    PhaseSpec("_finalize", "_finalize", "suite_finalize", column_range=False,
+              emit_scheme_calls=False, check_state="initialized",
+              set_state="uninitialized", suite_hooks=True),
+)
+
+
+def _group_phases(group_name: str) -> tuple:
+    """A group's functions. Each runs once per group, so none both checks
+    and sets state (a check+set would fail for the second group); the
+    timestep phases only set state, matching capgen-v1's lack of
+    group-level state checks."""
+    return (
+        PhaseSpec("_init", f"_init_{group_name}", "group_init", column_range=True,
+                  check_state="initialized"),
+        PhaseSpec("_run", f"_{group_name}", "run", column_range=True,
+                  check_state="in_time_step"),
+        PhaseSpec("_timestep_initialize", f"_timestep_init_{group_name}", "timestep_init",
+                  column_range=True, set_state="in_time_step"),
+        PhaseSpec("_timestep_finalize", f"_timestep_final_{group_name}", "timestep_final",
+                  column_range=True, set_state="initialized"),
+        PhaseSpec("_finalize", f"_final_{group_name}", "group_final", column_range=True,
+                  check_state="initialized"),
+    )
 
 
 # The synthetic column-range arguments replacing horizontal_loop_extent.
@@ -111,6 +136,22 @@ def suite_arg_attrs(input_arg_list, names) -> ArrayAttr:
             entries[SUITE_ARG_OPTIONAL] = UnitAttr()
         attrs.append(DictionaryAttr(entries))
     return ArrayAttr(attrs)
+
+
+def warn_unallocated(deferred_warnings: list, scheduled_allocs: set) -> None:
+    """Warn for each suite-owned variable whose allocation was deferred and
+    that no phase of the suite (or package) managed to allocate."""
+    import warnings
+    for local_name, std_name, dim_desc in deferred_warnings:
+        if std_name not in scheduled_allocs:
+            warnings.warn(
+                f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                f" '{local_name}'"
+                f" (std_name='{std_name}', dims=({dim_desc}))"
+                f" during suite-owned var sweep"
+                f" -- no allocate() will be generated.",
+                stacklevel=3,
+            )
 
 
 class PhaseFunctionsMixin:
@@ -229,10 +270,12 @@ class PhaseFunctionsMixin:
             writeback_ops=writeback_ops,
         )
 
-    def _classify_args(self, all_args, physics_mode, suite_model=None) -> "_ArgClassification":
+    def _classify_args(
+        self, all_args, column_range, suite_model=None, package_scoped=False,
+    ) -> "_ArgClassification":
         """Partition all_args into framework-managed, input, and output lists.
 
-        When physics_mode is True and the loop-extent arg is present, replaces
+        When column_range is True and the loop-extent arg is present, replaces
         that arg in input_arg_list with synthetic col_start/col_end scalars.
         Returns the final lists and the ncol_meta arg (or None).
 
@@ -251,12 +294,11 @@ class PhaseFunctionsMixin:
             )
         # Keyed by standard_name, not local name: two schemes may use the
         # same local name for different SuiteOwned variables.
-        package_cap = getattr(self, "generating_package_cap", False)
         framework_vars = {
             _std_key(a): a
             for a in all_args.values()
             if a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
-            and not (package_cap and not suite_model.is_suite_owned(_std_key(a)))
+            and not (package_scoped and not suite_model.is_suite_owned(_std_key(a)))
         }
         input_arg_list = [
             a
@@ -273,7 +315,7 @@ class PhaseFunctionsMixin:
 
         ncol_meta = None
         ncol_meta_entry = all_args.get(CCPP_LOOP_EXTENT_STD_NAME)
-        if physics_mode and ncol_meta_entry is not None:
+        if column_range and ncol_meta_entry is not None:
             ncol_meta = ncol_meta_entry
             ncol_idx = next(
                 i for i, a in enumerate(input_arg_list)
@@ -312,7 +354,7 @@ class PhaseFunctionsMixin:
         )
 
     def _build_arg_tables(
-        self, suite_description, tgt_subroutine_postfix, physics_mode: bool = False,
+        self, suite_description, tgt_subroutine_postfix,
         emit_scheme_calls: bool = True,
     ) -> "_ArgTableResult":
         """Build argument tables, overrides, and canonical arg map for all schemes.
@@ -328,51 +370,50 @@ class PhaseFunctionsMixin:
         actual_postfixes: dict[str, str] = {}
         all_args = {}
         suite_use_stubs: list = []
-        if tgt_subroutine_postfix is not None:
-            if emit_scheme_calls:
-                _postfix_candidates = [tgt_subroutine_postfix]
-                if tgt_subroutine_postfix in LIFECYCLE_POSTFIX_ALIASES:
-                    _postfix_candidates.append(LIFECYCLE_POSTFIX_ALIASES[tgt_subroutine_postfix])
-                for scheme_name, overrides in scheme_entries:
-                    for _candidate in _postfix_candidates:
-                        table = self.getArgumentTable(
-                            scheme_name, scheme_name + _candidate
-                        )
-                        if table is not None and scheme_name not in arg_tables:
-                            arg_tables[scheme_name] = table
-                            scheme_overrides[scheme_name] = overrides
-                            actual_postfixes[scheme_name] = _candidate
-                            break
-
-                for scheme_name in arg_tables:
-                    for fn_arg in arg_tables[scheme_name].getFunctionArguments():
-                        std_key = _std_key(fn_arg)
-                        # The merge below rewrites intent; keep the declared
-                        # one (whether a scheme writes a name before anyone
-                        # reads it decides when allocations sized by it run).
-                        if not fn_arg.hasAttr("declared_intent"):
-                            fn_arg.setAttr("declared_intent", fn_arg.getAttr("intent"))
-                        if std_key in all_args:
-                            assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
-                            # Any two different intents combine to 'inout'.
-                            cur = all_args[std_key].getAttr("intent")
-                            new = fn_arg.getAttr("intent")
-                            if new != cur:
-                                all_args[std_key].setAttr("intent", "inout")
-                        else:
-                            all_args[std_key] = fn_arg
-
-                # Matches _emit_subcycle's "_run"-only gate; other phases
-                # would get an unused dummy argument.
-                if physics_mode and tgt_subroutine_postfix == "_run":
-                    _synthesize_dynamic_loop_count_args(
-                        self.meta_data, self.getCallSequence(suite_description),
-                        arg_tables, all_args,
+        if emit_scheme_calls:
+            _postfix_candidates = [tgt_subroutine_postfix]
+            if tgt_subroutine_postfix in LIFECYCLE_POSTFIX_ALIASES:
+                _postfix_candidates.append(LIFECYCLE_POSTFIX_ALIASES[tgt_subroutine_postfix])
+            for scheme_name, overrides in scheme_entries:
+                for _candidate in _postfix_candidates:
+                    table = self.getArgumentTable(
+                        scheme_name, scheme_name + _candidate
                     )
-            _synthesize_instance_number_arg(self.meta_data, all_args)
-            _synthesize_number_of_instances_arg(self.meta_data, all_args)
-            _synthesize_thread_number_arg(self.meta_data, all_args)
-            _synthesize_number_of_threads_arg(self.meta_data, all_args)
+                    if table is not None and scheme_name not in arg_tables:
+                        arg_tables[scheme_name] = table
+                        scheme_overrides[scheme_name] = overrides
+                        actual_postfixes[scheme_name] = _candidate
+                        break
+
+            for scheme_name in arg_tables:
+                for fn_arg in arg_tables[scheme_name].getFunctionArguments():
+                    std_key = _std_key(fn_arg)
+                    # The merge below rewrites intent; keep the declared
+                    # one (whether a scheme writes a name before anyone
+                    # reads it decides when allocations sized by it run).
+                    if not fn_arg.hasAttr("declared_intent"):
+                        fn_arg.setAttr("declared_intent", fn_arg.getAttr("intent"))
+                    if std_key in all_args:
+                        assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
+                        # Any two different intents combine to 'inout'.
+                        cur = all_args[std_key].getAttr("intent")
+                        new = fn_arg.getAttr("intent")
+                        if new != cur:
+                            all_args[std_key].setAttr("intent", "inout")
+                    else:
+                        all_args[std_key] = fn_arg
+
+            # Matches _emit_subcycle's "_run"-only gate; other phases
+            # would get an unused dummy argument.
+            if tgt_subroutine_postfix == "_run":
+                _synthesize_dynamic_loop_count_args(
+                    self.meta_data, self.getCallSequence(suite_description),
+                    arg_tables, all_args,
+                )
+        _synthesize_instance_number_arg(self.meta_data, all_args)
+        _synthesize_number_of_instances_arg(self.meta_data, all_args)
+        _synthesize_thread_number_arg(self.meta_data, all_args)
+        _synthesize_number_of_threads_arg(self.meta_data, all_args)
 
         # Schemes sharing a standard_name may disagree with each other on
         # kind, units or top_at_one, but all_args keeps only the first
@@ -492,16 +533,16 @@ class PhaseFunctionsMixin:
         )
 
     def _record_resolved_vars_for_phase(
-        self, tgt_subroutine_postfix, physics_mode,
+        self, tgt_subroutine_postfix,
         framework_vars, input_arg_list, output_arg_list, ncol_meta,
     ) -> None:
         """--emit-resolved-vars: append this phase's resolved-variable
         records to self.resolved_vars.
 
-        Bucketed by tgt_subroutine_postfix; only physics_mode "_run" maps to
-        "run", so group-scoped non-run phases keep their own phase name.
+        Bucketed by tgt_subroutine_postfix; only "_run" maps to "run", so
+        group-scoped non-run phases keep their own phase name.
         """
-        if physics_mode and tgt_subroutine_postfix == "_run":
+        if tgt_subroutine_postfix == "_run":
             phase_name = "run"
         else:
             phase_name = _PHASE_NAMES.get((tgt_subroutine_postfix, False))
@@ -535,45 +576,26 @@ class PhaseFunctionsMixin:
     def generateSubroutineCall(
         self,
         suite_description,
-        tgt_subroutine_postfix,
-        generated_subroutine_posfix=None,
-        state_string: str | None = None,
-        check_string: str | None = None,
-        physics_mode: bool = False,
-        group_name: str = "",
+        spec: PhaseSpec,
         suite_model=None,
         already_scheduled_allocs=None,
         deferred_warnings=None,
-        emit_scheme_calls: bool = True,
     ):
-        """Build a single cap subroutine as a func.FuncOp.
+        """Build one phase function (see PhaseSpec) as a func.FuncOp, tagged
+        with spec.phase_tag.
 
-        tgt_subroutine_postfix  -- suffix appended to each scheme name to form
-                                   the called function (e.g. "_init"); also
-                                   the phase identity, even when
-                                   emit_scheme_calls=False.
-        generated_subroutine_posfix -- suffix used for the generated function
-                                   name (e.g. "_initialize"). Defaults to
-                                   tgt_subroutine_postfix when not supplied.
-        state_string            -- if set, write this value into ccpp_suite_state
-                                   at the end of the subroutine.
-        check_string            -- if set, verify ccpp_suite_state equals this
-                                   value at the start of the subroutine.
         already_scheduled_allocs -- set shared by every phase call for one
                                    suite, so a framework var gets at most
                                    one LazyAllocOp (see _build_framework_refs).
-        emit_scheme_calls       -- False for the flat suite _init/_finalize,
-                                   which (as in capgen-v1) only do framework
-                                   setup; scheme _init/_finalize calls happen
-                                   in the group-scoped phases instead.
         """
-        if generated_subroutine_posfix is None:
-            assert tgt_subroutine_postfix is not None
-            generated_subroutine_posfix = tgt_subroutine_postfix
+        tgt_subroutine_postfix = spec.target_postfix
+        column_range = spec.column_range
+        check_string = spec.check_state
+        state_string = spec.set_state
 
         _tables = self._build_arg_tables(
-            suite_description, tgt_subroutine_postfix, physics_mode,
-            emit_scheme_calls=emit_scheme_calls,
+            suite_description, tgt_subroutine_postfix,
+            emit_scheme_calls=spec.emit_scheme_calls,
         )
         arg_tables = _tables.arg_tables
         scheme_overrides = _tables.scheme_overrides
@@ -582,14 +604,16 @@ class PhaseFunctionsMixin:
         suite_use_stubs = _tables.suite_use_stubs
         divergent_std_keys = _tables.divergent_std_keys
 
-        _cls = self._classify_args(all_args, physics_mode, suite_model)
+        _cls = self._classify_args(
+            all_args, column_range, suite_model, package_scoped=spec.package_scoped,
+        )
         framework_vars = _cls.framework_vars
         input_arg_list = _cls.input_arg_list
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
 
         self._record_resolved_vars_for_phase(
-            tgt_subroutine_postfix, physics_mode,
+            tgt_subroutine_postfix,
             framework_vars, input_arg_list, output_arg_list, ncol_meta,
         )
 
@@ -604,7 +628,7 @@ class PhaseFunctionsMixin:
         unit_convert_ops = _sig.unit_convert_ops
         writeback_ops = _sig.writeback_ops
 
-        ncol_compute_ops = self._build_ncol_compute_ops(physics_mode, data_ops, ncol_meta)
+        ncol_compute_ops = self._build_ncol_compute_ops(column_range, data_ops, ncol_meta)
 
         initialisation_ops = self.generateVariableInitialisations(data_ops)
 
@@ -615,7 +639,8 @@ class PhaseFunctionsMixin:
             suite_use_stubs=suite_use_stubs,
             suite_model=suite_model,
             tgt_subroutine_postfix=tgt_subroutine_postfix,
-            physics_mode=physics_mode,
+            column_range=column_range,
+            package_scoped=spec.package_scoped,
             arg_tables=arg_tables,
             already_scheduled_allocs=already_scheduled_allocs,
             deferred_warnings=deferred_warnings,
@@ -624,7 +649,8 @@ class PhaseFunctionsMixin:
         _bco_kwargs = dict(
             suite_description=suite_description,
             tgt_subroutine_postfix=tgt_subroutine_postfix,
-            physics_mode=physics_mode,
+            column_range=column_range,
+            package_scoped=spec.package_scoped,
             all_args=all_args,
             data_ops=data_ops,
             framework_ref_ops=framework_ref_ops,
@@ -657,21 +683,20 @@ class PhaseFunctionsMixin:
             )
 
         # Suite-level <init>/<final> hook (v2.0 SDF): entry points use
-        # "_init"/"_final" (the tag names), not "_finalize". Flat phases only
-        # (not physics_mode), so the hook isn't called once per group.
+        # "_init"/"_final" (the tag names), not "_finalize".
         suite_lifecycle_call_ops = []
-        if tgt_subroutine_postfix == "_init" and not physics_mode:
+        if spec.suite_hooks and tgt_subroutine_postfix == "_init":
             suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
                 suite_description.init_scheme, "_init", data_ops, fn_sigs, suite_use_stubs,
             )
-        elif tgt_subroutine_postfix == "_finalize" and not physics_mode:
+        elif spec.suite_hooks and tgt_subroutine_postfix == "_finalize":
             suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
                 suite_description.final_scheme, "_final", data_ops, fn_sigs, suite_use_stubs,
             )
 
         new_func = self._assemble_func(
             suite_description=suite_description,
-            generated_subroutine_posfix=generated_subroutine_posfix,
+            generated_subroutine_posfix=spec.generated_postfix,
             check_string=check_string,
             state_string=state_string,
             input_arg_list=input_arg_list,
@@ -691,26 +716,18 @@ class PhaseFunctionsMixin:
             suite_lifecycle_call_ops=suite_lifecycle_call_ops,
             instance_local_name=instance_local_name,
         )
+        new_func.attributes[FN_PHASE_ATTR] = StringAttr(spec.phase_tag)
         return new_func, list(fn_sigs.values()), suite_use_stubs
 
     def _generate_lifecycle_fns(self, suite_description, suite_model) -> "_LifecycleFnsResult":
-        """Generate FuncOps for the three fixed, flat lifecycle specs, plus
-        one group-scoped _run, one group-scoped _timestep_initialize, and
-        one group-scoped _timestep_finalize per physics group.
+        """Generate the suite's flat functions (_SUITE_PHASES) and each
+        group's functions (_group_phases).
 
         Matches capgen-v1: the flat _init/_finalize own the
         "uninitialized" <-> "initialized" transitions, the group-scoped
         timestep phases own "initialized" <-> "in_time_step", and the
         group-scoped _run only checks "in_time_step".
         """
-        # emit_scheme_calls=False for _init/_finalize: scheme _init/_finalize
-        # calls are made per group (group_phase_specs), as in capgen-v1.
-        subroutine_specs = [
-            ("_register",            "_register",         None,            None,            True),
-            ("_init",                "_initialize",       "initialized",   "uninitialized", False),
-            ("_finalize",            "_finalize",         "uninitialized", "initialized",   False),
-        ]
-
         generated_fns: list = []
         fn_sigs_by_name: dict = {}
         suite_host_use_stubs: list = []
@@ -723,77 +740,34 @@ class PhaseFunctionsMixin:
         # managed to allocate.
         sweep_deferred_warnings: list = []
 
-        for tgt_postfix, gen_postfix, state_string, check_string, emit_scheme_calls in subroutine_specs:
+        def generate(phase_suite, spec):
             fn, sigs, stubs = self.generateSubroutineCall(
-                suite_description, tgt_postfix, gen_postfix,
-                state_string=state_string, check_string=check_string,
-                physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
+                phase_suite, spec, suite_model=suite_model,
                 already_scheduled_allocs=scheduled_allocs,
                 deferred_warnings=sweep_deferred_warnings,
-                emit_scheme_calls=emit_scheme_calls,
             )
-            fn.attributes[FN_PHASE_ATTR] = StringAttr(_SUITE_PHASE_TAGS[tgt_postfix])
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
             for sig in sigs:
                 fn_sigs_by_name[sig.sym_name.data] = sig
-            if check_string is not None:
-                check_strings_used.add(check_string)
-            if state_string is not None:
-                state_strings_used.add(state_string)
+            if spec.check_state is not None:
+                check_strings_used.add(spec.check_state)
+            if spec.set_state is not None:
+                state_strings_used.add(spec.set_state)
 
-        # Per-group phases: (tgt_postfix, generated-name prefix, state_string,
-        # check_string). Each runs once per group, so no phase both checks and
-        # sets state (a check+set would fail for the second group); the
-        # timestep phases only set state, matching capgen-v1's lack of
-        # group-level state checks. "_init"/"_finalize" carry the scheme
-        # _init/_finalize calls the flat specs above skip.
-        group_phase_specs = [
-            ("_init",                "init_",           None,            "initialized"),
-            ("_run",                 "",                None,            "in_time_step"),
-            ("_timestep_initialize", "timestep_init_",  "in_time_step",  None),
-            ("_timestep_finalize",   "timestep_final_",  "initialized",  None),
-            ("_finalize",            "final_",          None,            "initialized"),
-        ]
+        for spec in _SUITE_PHASES:
+            generate(suite_description, spec)
 
         for group in suite_description:
-            group_name = group.attributes["name"]
             group_suite = XMLSuite(
                 suite_description.attributes["name"],
                 suite_description.attributes["version"],
             )
             group_suite.addChild(group)
-            for tgt_postfix, gen_prefix, state_string, check_string in group_phase_specs:
-                fn, sigs, stubs = self.generateSubroutineCall(
-                    group_suite, tgt_postfix, f"_{gen_prefix}{group_name}",
-                    state_string=state_string, check_string=check_string,
-                    physics_mode=True, group_name=group_name, suite_model=suite_model,
-                    already_scheduled_allocs=scheduled_allocs,
-                    deferred_warnings=sweep_deferred_warnings,
-                )
-                fn.attributes[FN_PHASE_ATTR] = StringAttr(_GROUP_PHASE_TAGS[tgt_postfix])
-                generated_fns.append(fn)
-                suite_host_use_stubs.extend(stubs)
-                for sig in sigs:
-                    fn_sigs_by_name[sig.sym_name.data] = sig
-                if check_string is not None:
-                    check_strings_used.add(check_string)
-                if state_string is not None:
-                    state_strings_used.add(state_string)
+            for spec in _group_phases(group.attributes["name"]):
+                generate(group_suite, spec)
 
-        # Warn only for vars no phase managed to allocate.
-        if sweep_deferred_warnings:
-            import warnings
-            for _local_name, _std_name, _dim_desc in sweep_deferred_warnings:
-                if _std_name not in scheduled_allocs:
-                    warnings.warn(
-                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
-                        f" '{_local_name}'"
-                        f" (std_name='{_std_name}', dims=({_dim_desc}))"
-                        f" during suite-owned var sweep"
-                        f" -- no allocate() will be generated.",
-                        stacklevel=2,
-                    )
+        warn_unallocated(sweep_deferred_warnings, scheduled_allocs)
 
         return _LifecycleFnsResult(
             generated_fns=generated_fns,

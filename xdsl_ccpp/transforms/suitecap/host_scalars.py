@@ -49,8 +49,8 @@ def _synthesize_dynamic_loop_count_args(meta_data, call_sequence, arg_tables, al
     arg_tables holds only schemes for the current postfix; a count is added
     only if one of the subcycle's schemes (recursively) is in arg_tables,
     matching _emit_subcycle_items's "if sn in arg_tables" filter. Only
-    called in physics_mode, matching _emit_subcycle's own guard, so
-    non-physics postfixes never gain an unused argument.
+    called for the _run phase, matching _emit_subcycle's own guard, so
+    other phases never gain an unused argument.
     """
     def _subcycle_has_active_schemes(items) -> bool:
         for item in items:
@@ -149,7 +149,7 @@ def _synthesize_instance_number_arg(meta_data, all_args) -> None:
     Matches capgen-v1: instance_number is on every lifecycle call, whether
     or not a scheme's entry point for that phase declares it, so each phase
     can index its own ccpp_suite_state entry (see generateStateCheckOps/
-    generateStateAssignment). Called for every phase, not just physics_mode.
+    generateStateAssignment). Called for every phase, not just group-scoped ones.
     """
     _synthesize_host_scalar_arg(
         meta_data, all_args, CCPP_INSTANCE_NUMBER_STD_NAME,

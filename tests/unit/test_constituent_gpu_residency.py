@@ -19,6 +19,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.ccpp_cap import _inject_capscratch_gpu_exit
 from xdsl_ccpp.transforms.constituent_cap import _generate_constituent_api
+from xdsl_ccpp.transforms.util.cap_shared import InstancePair
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
@@ -77,7 +78,7 @@ def test_printed_directives():
 
 
 def test_multi_instance_directives_reach_the_instance_component():
-    fn = _init_fn(instance_local_name="instance", ninstances_local_name="ninstances")
+    fn = _init_fn(instances=InstancePair("instance", "ninstances"))
     text = _printed(fn)
     for name in ("lc_constituent_array", "lc_const_tend", "lc_scratch"):
         assert f"!$acc enter data copyin(lc_instances(instance)%{name})" in text

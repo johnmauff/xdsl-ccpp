@@ -77,9 +77,9 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
         self.resolved_vars: dict = {}
 
     @staticmethod
-    def _build_ncol_compute_ops(physics_mode, data_ops, ncol_meta) -> list:
+    def _build_ncol_compute_ops(column_range, data_ops, ncol_meta) -> list:
         """Compute ncol = col_end - col_start + 1 and lbound_one; mutates data_ops."""
-        if not (physics_mode and "col_start" in data_ops and "col_end" in data_ops):
+        if not (column_range and "col_start" in data_ops and "col_end" in data_ops):
             return []
         ncol_ops, ncol_alloc = build_ncol_compute_ops(
             data_ops["col_start"], data_ops["col_end"]
