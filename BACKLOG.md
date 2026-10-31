@@ -53,6 +53,7 @@ measured data, and will drift as items are reassessed.
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
+| `cap-oracle-jobs` | <1 day (pass `--jobs` to each generation, splitting the CPU limit among the concurrent ones) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -189,6 +190,7 @@ separately), CHANGELOG.md L5850.
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
+| `cap-oracle-jobs` | `cap_oracle` gets little of `generator-speed`: its generations run without `--jobs` | XS; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -507,6 +509,20 @@ of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
   hot loops.
 Profile with a scratch `sitecustomize` cProfile hook (see the
 `generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
+
+**`cap-oracle-jobs`** -- `cap_oracle diff` generates every case twice (with
+`main` and the working tree), 4 at a time by default (half this user's CPU
+limit on the login node), but calls each generation without `--jobs`. So
+the Fortran-vs-`.meta` check -- most of a generation -- stays serial, and
+with `--jobs 1` it runs inline before the frontend, so the
+`generator-speed` overlap does not apply either; the oracle gained only
+the verify-once/parse-once steps (93 -> ~81-91 s). Fix: pass `--jobs`
+to each generation (`generator_args` or `cap_oracle.generate`), sharing
+the CPU limit among the concurrent generations, e.g. limit // `--jobs`
+(4 x `--jobs 2` on an 8-CPU limit). The examples' recorded calls take it
+too. Expect well under a minute. Alternative considered: keep the overlap
+at `--jobs 1` by running the serial check in one background process
+(helps every default caller, one extra process each).
 
 **`in-process-pipeline`** -- run the frontend and the `ccpp_opt` passes in
 one process. Today `ccpp_dsl` runs the XML frontend and `ccpp_opt` as

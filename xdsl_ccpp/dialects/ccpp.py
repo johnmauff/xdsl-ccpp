@@ -509,7 +509,7 @@ class ArgumentOp(IRDLOperation):
         "kind", "intent", "units", "memory_space", "optional",
         "allocatable", "advected", "constituent", "protected", "state_variable",
         "default_value", "diagnostic_name", "diagnostic_name_fixed", "active",
-        "top_at_one",
+        "top_at_one", "persistence",
     ])
 
     def __init__(
@@ -605,6 +605,17 @@ class ArgumentOp(IRDLOperation):
                         f"to accept this deprecated standard_name (matches "
                         f"capgen-v1's --legacy-mode flag)."
                     )
+
+        # persistence (capgen: when a suite-owned array is allocated --
+        # 'timestep', the default, or 'run'). Checked, as capgen does, but not
+        # used: xdsl_ccpp allocates suite-owned data its own way.
+        if "persistence" in attributes:
+            persistence = str(attributes["persistence"]).strip().lower()
+            if persistence not in ("timestep", "run"):
+                raise CcppInputError(
+                    f"arg '{arg_name.data}': persistence must be 'timestep' or "
+                    f"'run', got '{attributes['persistence']}'"
+                )
 
         # Silently ignore unrecognised keys
 
