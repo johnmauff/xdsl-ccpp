@@ -53,6 +53,9 @@ measured data, and will drift as items are reassessed.
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
 | `suite-owned-framework-var` | 1-2 days (exclude framework cap variables such as the constituent tendencies from the suite-owned sweep) | XS |
+| `cpu-cap-acc-updates` | 1-2 days (emit suite-owned and segment syncs only with `--directive`, or guard them; caps of CPU builds change) | XS |
+| `registry-scheme-objects` | ~1 day read-only survey first; then 3-5 days for a suite-aware `metadata_file` filter, or more (unsized) to move scheme objects into package-owned state; both upstream CAM-SIMA changes needing design agreement | S-L |
+| `package-shared-state-per-suite` | <1 day (narrow the warning in `package_scope.py`, note at `--verbose 2` otherwise, a unit test) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -66,8 +69,7 @@ measured data, and will drift as items are reassessed.
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
-| `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
-| `gpu-sync-intent-aware` | 2-4 days | S |
+| `gpu-fphystest-kessler` | umbrella, ~23-41 days left: `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -189,6 +191,9 @@ separately), CHANGELOG.md L5850.
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
 | `suite-owned-framework-var` | The suite cap declares an unused, never-allocated module array for the framework's constituent tendencies (`ptend_q`, microp_aero_bam) and warns about it | XS; found 2026-10-31 | -- |
+| `cpu-cap-acc-updates` | CPU builds' suite caps contain unguarded `!$acc update` directives for suite-owned variables (inert, and not merged) | XS; found 2026-10-31 | -- |
+| `registry-scheme-objects` | CAM-SIMA's registry pulls scheme-internal Fortran types (RRTMGP) into every build; blocks language-neutral host data for C++/Fortran scheme mixing | S-L; long-term architecture, upstream; discussed 2026-10-31 | -- |
+| `package-shared-state-per-suite` | False `shared_state lists 'scheme_name', which is not shared state` warning: a package's `shared_state` is checked against one suite, but describes every suite using the package | XS; found 2026-10-31 (s43a build log, `kessler_test`) | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -442,6 +447,75 @@ of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
   hot loops.
 Profile with a scratch `sitecustomize` cProfile hook (see the
 `generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
+
+**`cpu-cap-acc-updates`** -- found 2026-10-31 (`gpu-sync-intent-aware`
+stage 2). `suitecap/gpu.py` (`_inject_suite_owned_gpu_update`,
+`_inject_segment_interface_gpu_update`) calls `emit_coalesced_updates("acc", ...)`
+whatever the build's `--directive` is, so the suite (and package) caps of
+CPU builds carry `!$acc update self/device(...)` directives for suite-owned
+variables: e.g. 17 in the CPU Kessler FPHYStest cap, not inside `#ifdef
+USE_GPU` (unlike the same caps' `!$acc declare create`, which is). They are
+inert (CPU builds do not compile OpenACC), but noise, and they diverge from
+the GPU caps: `merge_adjacent_updates` runs in `generate-gpu-data`, which
+CPU builds skip, so these stay unmerged. Fix: emit them only when a
+directive is set (and with that directive, so `--directive omp` gets
+OpenMP), or guard them like `declare create`; the merge question then goes
+away. Changes CPU caps (comments only), so check with cap_oracle and one
+CPU Kessler run.
+
+**`registry-scheme-objects`** -- discussed 2026-10-31 (long-term
+architecture; an upstream CAM-SIMA change). `src/data/registry.xml` lists
+RRTMGP's derived-type metadata (`schemes/rrtmgp/objects/ccpp_{fluxes,
+fluxes_byband,gas_concentrations,gas_optics_rrtmgp,optical_props,
+source_functions}.meta`) as `metadata_file` entries. `generate_registry`
+runs before the suites are known and is suite-independent, so every case
+parses them and compiles the RRTMGP sources, Kessler included. Measured on
+s38a (GPU Kessler): the objects are in `libatm.a`, but the linker drops
+them (no RRTMGP symbol in `cesm.exe`), so there is no executable-size or
+memory cost. The costs are compile time and fault isolation: an RRTMGP
+change or compiler problem (e.g. the RRTMGP submodule's particle->crystal
+rename drifting from `registry.xml`) can fail builds that never call radiation.
+
+Long-term it also matters for mixing C++ and Fortran schemes: the host
+registry should hold language-neutral data (arrays, scalars), which the caps
+pass to a scheme in either language. A scheme's internal objects held as
+Fortran types in the host tie that scheme to Fortran (a C++ RRTMGP could not
+use them).
+
+Options:
+1. Suite-aware `metadata_file` filter: collect the derived types the
+   configured suites use and skip unused `metadata_file` entries and the
+   registry variables of those types (`generate_registry_data.py`, build-cache
+   ordering in `cam_autogen.py`). A few days, but hides rather than fixes the
+   language coupling.
+2. Preferred: move scheme-internal objects out of the host registry into
+   state the package owns (suite-owned / package-private state, see the
+   composite-scheme work), leaving the registry language-neutral.
+3. Filtering every registry variable per suite: not worth it (hand-written
+   CAM-SIMA code uses registry variables directly).
+First step (read-only): find which registry variables have RRTMGP types and
+who uses them, to decide whether option 2 is practical. Note that
+`generate_init_routines` is already suite-aware (reads only what the suites
+need), so the suite information exists, just after the registry step.
+
+**`package-shared-state-per-suite`** -- found 2026-10-31 in s43a's build
+log (`kessler_test` with package caps): `xDSL-ccpp: Warning: Package
+'kessler': shared_state lists 'scheme_name', which is not shared state (it
+is an output); remove it from the list.` `PackageScope.interface_problems`
+(`transforms/package_scope.py`) compares the package's declared
+`shared_state` with the directions inferred for the suite being generated.
+In `kessler_test` the only outside user of `scheme_name` is `qneg_run`,
+which reads it, so it is an output there. But `suites-py/suite_kessler.py`
+(`check_energy=True`) adds `check_energy_zero_fluxes_run`, which also
+writes it (`name`, intent out): shared state, so removing the declaration
+as the warning says would turn generating `kessler` into an error. The
+declaration is right; the check sees only one suite. Fix: keep the warning
+only for declarations wrong in every suite (the package does not touch the
+name, keeps it private, or it is public for another reason: host,
+framework, constituent, input); for a name that is an output or input in
+this suite, print a note at `--verbose 2` (generation-error-output
+conventions). Unit test in the package-scope tests; check that the
+kessler_test pkgcap generation no longer warns.
 
 **`suite-owned-framework-var`** -- found 2026-10-31 in the
 `generation-error-output` survey. Generating microp_aero_bam prints
@@ -1538,9 +1612,7 @@ is derived from the Fortran source's OpenACC clauses
   scheme I/O capture generator rather than a Kessler-specific harness,
   so every later step is checked in minutes on a GPU node, with the
   CAM-SIMA regression only at milestones.
-  1. `gpu-sync-intent-aware` — drop the redundant half of today's syncs.
-     Generator-only, checked by pytest/FileCheck; confirm with one
-     CAM-SIMA GPU Kessler case. Useful on its own, before any port.
+  1. `gpu-sync-intent-aware` — done 2026-10-31 (CHANGELOG.md L13758).
   2. Capture gaps: `scheme-io-capture-ddt-args` (at least the
      constituent-properties case, for `geopotential_temp`) and a
      decision on `scheme-io-capture-fixture-storage` (local, gitignored
@@ -1571,17 +1643,7 @@ is derived from the Fortran source's OpenACC clauses
 
 Supporting items (not tracked elsewhere):
 
-- `gpu-sync-intent-aware` — **Skip host/device syncs an argument's
-  intent makes redundant.** The per-call `update self`/`update device`
-  pairs `generate-gpu-data` emits around a host scheme ignore intent:
-  Kessler's cap pulls `exner` to the host before `calc_exner_run`,
-  which only writes it (`intent(out)`), and pushes `cpair`, `rair`,
-  `phis`, `dse`, `z`, `temp` and `precl` back after schemes that only
-  read them (`intent(in)`). Emit `update self` only for `in`/`inout`
-  and `update device` only for `out`/`inout`. The coalescing in
-  `cap_shared.emit_coalesced_updates` must keep a run's boundary syncs
-  correct when its calls differ in intent. Package caps' own syncs
-  (`_inject_suite_owned_gpu_update`) need the same rule.
+- **ID: `gpu-sync-intent-aware`. Resolved (2026-10-31)** -- CHANGELOG.md L13758.
 
 - `acc-derive-memory-space` — **Derive argument residency from the
   scheme's Fortran source instead of `.meta`.** The `.F90` already says

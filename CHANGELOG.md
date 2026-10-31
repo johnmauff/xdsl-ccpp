@@ -13754,3 +13754,45 @@ stage 7. CAM-SIMA gnu aux_sima xdsl62g: 27 PASS, the 3 known failures
 (F2000_C7, gw_cam7: `prec_dp`/`prec_sh`/`prec_str`; zm:
 `zm-ncdata-diffs`), 2 still queued at wrap-up; gw_cam7's log shows the
 `ERROR:` + `Error:` block without a traceback.
+
+## `gpu-sync-intent-aware`: GPU syncs that follow argument intent (2026-10-31)
+
+Step 1 of `gpu-fphystest-kessler`. The `update self`/`update device`
+pairs around host schemes using device-resident data ignored intent, and
+each variable got its own directive. Kessler GPU FPHYStest suite cap: 34
+update directives / 38 variable syncs -> 15 / 20.
+
+- Stage 1 -- adjacent update directives of one kind merge into one
+  (`cap_shared.merge_adjacent_updates`, run at the end of
+  `generate-gpu-data`; each variable listed once): `update self(a)` +
+  `update self(b)` -> `update self(a, b)`. 34 -> 26 directives.
+- Stage 2 -- a run of host calls is pushed back (`update device`) only if
+  some call in it may write the variable (`arg_writes`: intent out/inout,
+  or no intent). 26 -> 19 directives, 38 -> 27 syncs (cpair, rair, phis,
+  dse, precl and others no longer pushed after read-only schemes).
+- Stage 3 -- a run whose first call overwrites (intent out) what it is
+  passed, with every call in the run passed the same section, is not
+  pulled (`update self`), and its push covers only that section, e.g.
+  `update device(theta(col_start:col_end, 1:nz), exner(...))`, so device
+  data outside it is not overwritten by stale host data. Touches are now a
+  `Touch` record carrying intent and the passed value (`call_section`: the
+  variable itself or a slice built before the call; `_overwritten_section`).
+  Constituent-tendency scratch arrays keep the old rule (their arguments
+  can be one-constituent pointer aliases). 19 -> 15 directives, 27 -> 20
+  syncs (exner, theta, rho, qv/qc/qr_dry, z).
+- Fixed on the way: the suite cap merges intents across schemes into the
+  first scheme's own metadata argument ("in" + "out" -> "inout",
+  `suitecap/phase_functions.py`), so the sync code read merged intents;
+  `arg_writes`/`arg_overwrites` now read the scheme's `declared_intent`.
+- Applies to host-matched variables (`gpu_data_pass.py`), suite-owned
+  variables and package-cap segment arguments (`suitecap/gpu.py`).
+
+Verification: pytest 1305 passed (new `test_merge_adjacent_updates.py`,
+`test_update_intent.py`). `cap_oracle diff` at each stage: only the eight
+Kessler caps (CPU, GPU, package caps) differed, each checked as pure
+merges (stage 1), removed pushes (stage 2), or removed pulls of the seven
+overwritten variables with their pushes sectioned (stage 3). CAM-SIMA
+nvhpc GPU Kessler FPHYStest: s40a (stage 1), s42a pkgcap pair (stage 2),
+s43a pkgcap pair (stage 3), all PASS including the snapshot check. The
+CPU caps' (inert) `!$acc update` lines change too; see
+`cpu-cap-acc-updates`.

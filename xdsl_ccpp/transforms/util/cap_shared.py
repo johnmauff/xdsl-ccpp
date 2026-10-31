@@ -9,6 +9,7 @@ ccpp_cap.py itself).
 """
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
@@ -1806,13 +1807,110 @@ def classify_arg_ownership(
     return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
 
 
+def _scheme_intent(arg) -> "str | None":
+    """The intent the scheme declares for this metadata argument. The suite
+    cap merges intents across schemes into the first scheme's argument
+    ("in" + "out" -> "inout", suitecap/phase_functions.py) and keeps the
+    declared one as declared_intent."""
+    for name in ("declared_intent", "intent"):
+        if arg.hasAttr(name):
+            return arg.getAttr(name)
+    return None
+
+
+def arg_writes(arg) -> bool:
+    """Whether a scheme call may write this metadata argument: intent out or
+    inout, or no intent declared (assume it does)."""
+    return _scheme_intent(arg) != "in"
+
+
+def arg_overwrites(arg) -> bool:
+    """Whether a scheme call writes all of this metadata argument before
+    reading it: intent out (the dummy is undefined on entry)."""
+    return _scheme_intent(arg) == "out"
+
+
+class Touch(NamedTuple):
+    """One scheme call's use of a variable that needs GPU synchronization
+    (see emit_coalesced_updates).
+
+    category: "present" (the call uses the device copy), "update" (it uses
+    the host copy) or "produced" (debug sync after a device write).
+    writes: the call may write the variable (arg_writes).
+    overwrites: the call writes all it is passed before reading it
+    (arg_overwrites).
+    section: the value the call is passed for the variable -- the variable
+    itself or a section of it, e.g. exner(col_start:col_end, 1:nz) -- when
+    it is valid before the call (call_section), else None.
+    """
+
+    call_op: object
+    category: str
+    writes: bool = True
+    overwrites: bool = False
+    section: object = None
+
+
+def call_section(if_op, arg_name: str, ref):
+    """The value the scheme call guarded by *if_op* passes as *arg_name*,
+    when an update before or after *if_op* can use it: *ref* itself, or a
+    RankReducingSliceOp defined earlier in *if_op*'s block. None otherwise
+    (positional calls, values defined inside the guard, other aliases)."""
+    if not isa(if_op, scf.IfOp) or not if_op.true_region.blocks:
+        return None
+    call_op = next(
+        (op for op in if_op.true_region.blocks[0].ops if isa(op, KeywordCallOp)), None
+    )
+    if call_op is None:
+        return None
+    names = [name.data for name in call_op.operand_names.data]
+    if arg_name not in names:
+        return None
+    value = call_op.args[names.index(arg_name)]
+    if ref is not None and value is ref:
+        return value
+    owner = value.owner
+    block = if_op.parent_block()
+    if (
+        isa(owner, RankReducingSliceOp)
+        and owner.parent_block() is block
+        and block.get_operation_index(owner) < block.get_operation_index(if_op)
+    ):
+        return value
+    return None
+
+
+def _overwritten_section(update_run: list):
+    """The section a run of host calls ([Touch, ...]) overwrites before
+    reading, or None when the run needs the device copy pulled first.
+
+    The first call must overwrite (intent out) what it is passed, and every
+    call in the run must be passed the same section, so that the push after
+    the run covers exactly what the host holds new values for: the host copy
+    outside that section is stale, and pushing it would clobber the device's.
+    """
+    first = update_run[0]
+    if not first.overwrites or first.section is None:
+        return None
+    key = _expr_text(first.section)
+    for touch in update_run[1:]:
+        if touch.section is None:
+            return None
+        if touch.section is not first.section and (
+            key is None or _expr_text(touch.section) != key
+        ):
+            return None
+    return first.section
+
+
 def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present) -> None:
     """Shared run-coalescing + cross-variable grouping core for
     `update self`/`update device` synchronization, used consistently by
     every GPU-residency ownership kind (HostMatched, CapScratch, and
     SuiteOwned -- see gpu_data_pass.py and suite_cap.py's own callers).
 
-    resolved_touches: {identity: (ref, ordered [(call_op, category), ...])}.
+    resolved_touches: {identity: (ref, ordered [Touch, ...])}; a plain
+    (call_op, category[, writes, overwrites, section]) tuple is accepted too.
     `ref` must already be an SSA value valid at every point between the
     first and last op in touch_list -- a resolved block arg for
     HostMatched/CapScratch, or (for SuiteOwned, which has no block arg at
@@ -1832,11 +1930,13 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     own present run overlaps without nesting inside it (see
     gpu_data_pass.py's _emit_present docstring).
 
-    "update" touches accumulate into a run needing BOTH an `update
-    self(...)` before the run (pull the latest device value in, since a
-    stretch of host-only code is about to read/write it) and an `update
-    device(...)` after it (push the host's changes back out) -- unchanged
-    from the original diverged-var behavior. Runs are collected across ALL
+    "update" touches accumulate into a run needing an `update self(...)`
+    before the run (pull the latest device value in, since a stretch of
+    host-only code is about to read/write it) and, if any call in the run
+    writes the variable, an `update device(...)` after it (push the host's
+    changes back out; a run that only reads leaves the device copy current).
+    A run that starts by overwriting the section it is passed needs no pull;
+    its push then covers only that section (_overwritten_section). Runs are collected across ALL
     identities first, then grouped by the exact (id(first_op), id(last_op))
     boundary they share, so several variables' runs sharing a boundary
     fold into one shared call instead of one each.
@@ -1857,28 +1957,37 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     exact same call still merge into one shared call, the same free
     cross-variable grouping "update" runs get.
     """
-    update_runs: list = []  # (ref, first_op, last_op), across every identity
+    pulls: list = []  # (ref, first_op, last_op), across every identity
+    pushes: list = []  # (ref or section, first_op, last_op), across every identity
     produced_syncs: list = []  # (ref, call_op), across every identity
+
+    def _close_run(ref, update_run):
+        """Record a finished run of host calls ([Touch, ...])."""
+        if not update_run:
+            return
+        first_op, last_op = update_run[0].call_op, update_run[-1].call_op
+        section = _overwritten_section(update_run)
+        if section is None:
+            pulls.append((ref, first_op, last_op))
+        if any(touch.writes for touch in update_run):
+            pushes.append((ref if section is None else section, first_op, last_op))
+        update_run.clear()
+
     for ref, touch_list in resolved_touches.values():
         if ref is None:
             continue
 
-        update_run: list = []
-        for call_op, category in touch_list:
-            if category == "present":
-                emit_present(ref, call_op)
-                if update_run:
-                    update_runs.append((ref, update_run[0], update_run[-1]))
-                    update_run = []
-            elif category == "produced":
-                if update_run:
-                    update_runs.append((ref, update_run[0], update_run[-1]))
-                    update_run = []
-                produced_syncs.append((ref, call_op))
+        update_run: list = []  # [Touch, ...]
+        for touch in (Touch(*t) for t in touch_list):
+            if touch.category == "present":
+                emit_present(ref, touch.call_op)
+                _close_run(ref, update_run)
+            elif touch.category == "produced":
+                _close_run(ref, update_run)
+                produced_syncs.append((ref, touch.call_op))
             else:  # "update"
-                update_run.append(call_op)
-        if update_run:
-            update_runs.append((ref, update_run[0], update_run[-1]))
+                update_run.append(touch)
+        _close_run(ref, update_run)
 
     def _grouped(entries, key_fn):
         """Group (ref, ...) entries by key_fn's own return, deduping refs
@@ -1898,9 +2007,7 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 refs.append(ref)
         return [(groups[key][0], groups[key][1]) for key in order]
 
-    for (first_op, last_op), refs in _grouped(
-        update_runs, lambda e: (id(e[1]), id(e[2]))
-    ):
+    for (first_op, last_op), refs in _grouped(pulls, lambda e: (id(e[1]), id(e[2]))):
         Rewriter.insert_op(
             directive_op(
                 directive, AccUpdateSelfOp, {"array_refs": refs},
@@ -1908,6 +2015,8 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
             ),
             InsertPoint.before(first_op),
         )
+    # Push back only what the run wrote.
+    for (first_op, last_op), refs in _grouped(pushes, lambda e: (id(e[1]), id(e[2]))):
         Rewriter.insert_op(
             directive_op(
                 directive, AccUpdateDeviceOp, {"array_refs": refs},
@@ -1924,6 +2033,47 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
             ),
             InsertPoint.after(call_op),
         )
+
+
+_UPDATE_OP_TYPES = (AccUpdateSelfOp, AccUpdateDeviceOp, OmpTargetUpdateFromOp, OmpTargetUpdateToOp)
+
+
+def merge_adjacent_updates(root) -> None:
+    """Merge each sequence of adjacent update directives of the same kind
+    (``update self``, ``update device`` or their OpenMP forms) under *root*
+    into one, so ``update self(a)`` followed by ``update self(b)`` becomes
+    ``update self(a, b)``. Run after all syncs are emitted: they come from
+    several places (emit_coalesced_updates groups only runs with the same
+    first and last call, and the suite-owned and host-variable syncs are
+    emitted separately). Adjacent updates of one kind move different data at
+    the same point, so merging them changes nothing but the directive count.
+    A variable is listed once (by its Fortran text: a section and its whole
+    array stay distinct)."""
+    blocks = [block for op in root.walk() for region in op.regions for block in region.blocks]
+    for block in blocks:
+        ops = list(block.ops)
+        i = 0
+        while i < len(ops):
+            kind = type(ops[i])
+            if kind not in _UPDATE_OP_TYPES:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(ops) and type(ops[j]) is kind:
+                j += 1
+            if j - i > 1:
+                refs, seen = [], set()
+                for update in ops[i:j]:
+                    for ref in update.arrays:
+                        key = _expr_text(ref) or id(ref)
+                        if key not in seen:
+                            seen.add(key)
+                            refs.append(ref)
+                Rewriter.insert_op(kind(refs), InsertPoint.before(ops[i]))
+                for update in ops[i:j]:
+                    update.detach()
+                    update.erase()
+            i = j
 
 
 def directive_op(directive: str, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):

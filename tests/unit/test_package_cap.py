@@ -373,15 +373,16 @@ def _routine(src, name):
 
 def test_private_state_synced_for_host_use_in_a_later_segment(tmp_path):
     """2g-2: a private array written on the device before the hook and read
-    on the host after it is synced around the host use, inside the package
-    cap; the device copy stays current between segments."""
+    on the host after it is pulled before the host use, inside the package
+    cap. The host use only reads it (intent in), so nothing is pushed back:
+    the device copy stays current between segments."""
     caps = _mixed_space_caps(tmp_path, _SUITE)
     cap = caps["pkg_package_cap.F90"]
     assert "!$acc" not in _routine(cap, "step_1_run")
     step_2 = _routine(cap, "step_2_run")
     assert re.search(r"!\$acc update self\(work\)\s+(#endif\s+)?(#ifdef USE_GPU\s+)?"
-                     r"[^!]*call consumer_run\([^)]*\)[^!]*!\$acc update device\(work\)",
-                     step_2, re.S), step_2
+                     r"[^!]*call consumer_run\(", step_2, re.S), step_2
+    assert not re.search(r"update device\([^)]*\bwork\b", step_2), step_2
     assert "update self(work)" not in caps["pkg_suite_cap.F90"]
 
 
@@ -394,8 +395,12 @@ def test_segment_syncs_host_use_of_a_device_argument(tmp_path):
         "    producer()\n    consumer()\n    hook()"))
     step_1 = _routine(caps["pkg_package_cap.F90"], "step_1_run")
     produce, consume = step_1.index("call producer_run("), step_1.index("call consumer_run(")
-    assert produce < step_1.index("update self(temp)") < consume
-    assert consume < step_1.index("update device(temp)")
+    # temp may share its update directive with another variable synced at
+    # the same point (merge_adjacent_updates).
+    update_self = re.search(r"update self\([^)]*\btemp\b", step_1).start()
+    update_device = re.search(r"update device\([^)]*\btemp\b", step_1).start()
+    assert produce < update_self < consume
+    assert consume < update_device
     assert "!$acc update" not in caps["pkg_suite_cap.F90"]
 
 
