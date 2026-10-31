@@ -1,4 +1,5 @@
-"""Errors in the generator's input, reported without a Python traceback."""
+"""Messages for the user: errors in the generator's input (reported without
+a Python traceback) and warnings."""
 
 import sys
 
@@ -22,3 +23,14 @@ def report_input_errors(main):
             raise
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+_WARNED: set[str] = set()
+
+
+def warn_once(message: str) -> None:
+    """Print ``Warning: <message>`` to stderr, once per process for the same
+    message: several generation phases can report the same problem."""
+    if message not in _WARNED:
+        _WARNED.add(message)
+        print(f"Warning: {message}", file=sys.stderr)

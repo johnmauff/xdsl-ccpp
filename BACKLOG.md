@@ -48,12 +48,10 @@ measured data, and will drift as items are reassessed.
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-ncdata-diffs` | 5-10 days (cause upstream: stock capgen gives the same differences; fails on every compiler) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
-| `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
-| `cap-oracle-jobs` | <1 day (share the oracle's `--jobs` CPUs among the generations running at once; implemented, timing pending) | XS |
 | `suite-owned-framework-var` | 1-2 days (exclude framework cap variables such as the constituent tendencies from the suite-owned sweep) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
@@ -184,14 +182,12 @@ separately), CHANGELOG.md L5850.
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n, xdsl59g; stock capgen gives the same differences (zmcg1), so not xdsl_ccpp | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
-| `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
-| `cap-oracle-jobs` | `cap_oracle` gets little of `generator-speed`: its generations run without `--jobs` | XS; found 2026-10-31 | -- |
 | `suite-owned-framework-var` | The suite cap declares an unused, never-allocated module array for the framework's constituent tendencies (`ptend_q`, microp_aero_bam) and warns about it | XS; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
@@ -322,72 +318,7 @@ without `gravity_wave_drag_orographic_diagnostics`; cam4 and cam7 have
 both. Likely XML omissions: raise with the atmospheric_physics developers,
 and fix the XML and `suites-py/suite_cam5.py` together if confirmed.
 
-**`generation-error-output`** -- found 2026-10-24 comparing the gw_cam7
-FPHYStest failure under both generators. xdsl-ccpp's message is the better
-one: `host_var_match_pass` lists every unmatched argument at once (scheme,
-argument, standard name: `prec_dp`, `prec_sh`, `prec_str` of
-`compute_total_precipitation_rate`), where capgen stops at the first and
-omits the argument name. But in xdsl57n's `TestStatus.log` it is buried:
-- 1,580 `Warning(LEGACY): arg '...': standard_name 'horizontal_loop_extent'
-  is deprecated` lines, printed by the arg op's verifier in
-  `xdsl_ccpp/dialects/ccpp.py` each time it runs (so repeated across
-  passes);
-- an unrelated `Warning: fparser2 failed to parse ... qneg.F90 for
-  Fortran-vs-.meta validation: tuple index out of range`
-  (`tools/ccpp_dsl.py`);
-- the `ValueError` arrives inside the optimizer's Python traceback, which
-  `cam_autogen.py` wraps in CIME's.
-
-**Design decision (user, 2026-10-24): tie the legacy warnings to
-`--verbose`.** Both views are useful: the full per-argument list is a guide
-to which `.meta` files still need updating, and normal builds should be
-quiet. So `--verbose 2` keeps every `Warning(LEGACY)` line (as now); the
-default level prints a short summary (each deprecated name once, with a
-count); `--verbose 0` prints none. There is no such control today: the
-warning is printed unconditionally from `ArgumentOp.__init__` in
-`dialects/ccpp.py` (once per argument, and again whenever IR is re-parsed,
-e.g. in the `ccpp_opt` subprocess), and `--verbose` only reaches
-`ccpp_dsl.py`'s `print_verbose_message`. The level must be carried to the
-`ccpp_opt` subprocess and the Python-suite frontend (which reads `sys.argv`
-itself), e.g. as a module setting next to `set_legacy_mode` in
-`util/ccpp_conventions.py`; `cam_autogen.py` can then choose the level.
-Not started (user deferred).
-
-Also to do: report user-input errors such as host-match
-failures as a plain `Error:` message with exit status 1, keeping the
-traceback for internal errors or a verbose flag; show the fparser2 warning
-only when verbose (and check why qneg.F90 fails to parse).
-
-**In progress (2026-10-31, branch `generation-error-output`).** Done:
-stage 1 -- `ArgumentOp` records deprecated names and the frontends report
-them once at `--verbose` (cam4 stderr 2,859 -> 34 lines); stage 2 --
-CAM-SIMA's `cam_autogen.py` passes `--verbose 1`; stage 3 --
-`CcppInputError` (a `ValueError`) printed as `Error: <message>` with exit 1
-by the `ccpp_dsl`, `ccpp_opt` and XML-frontend entry points (traceback at
-`--verbose 2`), marked at the host-match failure, the deprecated-name
-rejection, the XML frontend's checks and the preprocessor/`!$ccpp` errors.
-Planned, after the xdsl61g regression's builds (they use the working tree):
-- stage 4: `run_dispatch.py`'s 14 `Info:` lines (run-dispatcher arguments
-  supplied by the caller: constituent properties/minimums, column range)
-  only at `--verbose 2`, reworded to say the argument becomes an argument
-  of `ccpp_physics_run` (no "check the host metadata" advice);
-- stage 5: always run the preprocessor before the Fortran-vs-`.meta`
-  check (`fparser2_to_meta.py` skips it when there are no defines, so
-  `qneg.F90`'s `#if 0` blocks crash fparser2 in every FPHYStest case:
-  `tuple index out of range`; with preprocessing it matches `qneg.meta`).
-  23 scheme `.F90`s have directives; compare the check's warnings over all
-  cases before/after;
-- stage 6: accept `persistence` (capgen `metavar.py`: `timestep` default
-  | `run`) as a known argument property, rejecting other values; xdsl_ccpp
-  still ignores it (its only use, `theta` in `state_converters.meta`, is
-  the default). Note in BACKLOG if a scheme ever declares `run`;
-- stage 7: the "missing advected = true ... Reclassifying as advected"
-  warnings (17 in cam4, `host_var_match_pass.py`) as one summary line at
-  level 1, the list at `--verbose 2`. They are real atmospheric_physics
-  metadata gaps (capgen-v1 inherits `advected` silently).
-Not xdsl_ccpp: the `Writing metadata file` / `Writing Fortran module` lines
-are CAM-SIMA's `create_readnl_files.py` (INFO level, two per scheme
-namelist, upstream code).
+**ID: `generation-error-output`. Resolved (2026-10-31)** -- CHANGELOG.md L13697.
 
 **`rrtmgp-wrapper-acc-trigger`** -- found 2026-10-24. Upstream's capgen GPU
 RRTMGP test (CAM-SIMA tpr_n, `development`, no atmospheric_physics #468)
@@ -529,20 +460,7 @@ variable (`FRAMEWORK_STD_NAME_TO_CAP_VAR`, here
 variables from the sweep; the dead declaration and the warning go away.
 Check which other suites declare such arrays (cap_oracle diff shows it).
 
-**`cap-oracle-jobs`** -- `cap_oracle diff` generates every case twice (with
-`main` and the working tree), 4 at a time by default (half this user's
-8-CPU login-node limit, which builds share), but calls each generation
-without `--jobs`, so the Fortran-vs-`.meta` check stays serial. `--jobs`
-does not reduce the CPU work, only spreads it: for a full run (46
-generations) the 4 concurrent generations already keep ~4 CPUs busy, and
-`-j 8` already uses the whole limit. The gain is for runs of few cases,
-where CPUs sit idle. Design (2026-10-31): share the oracle's `--jobs` CPUs
-among the generations running at once -- `generation_jobs(jobs, n_cases)`
-= jobs // min(jobs, n_cases), passed as `ccpp_dsl --jobs` (1 case: 4; 2
-cases: 2; 46 cases: 1), only to trees whose `ccpp_dsl` has `--jobs` (an
-older `--base` may not). Never exceeds today's footprint. Implemented on
-`generation-error-output` (uncommitted); time a one-case oracle run once no
-build shares the CPUs.
+**ID: `cap-oracle-jobs`. Resolved (2026-10-31)** -- CHANGELOG.md L13697.
 
 **`in-process-pipeline`** -- run the frontend and the `ccpp_opt` passes in
 one process. Today `ccpp_dsl` runs the XML frontend and `ccpp_opt` as
