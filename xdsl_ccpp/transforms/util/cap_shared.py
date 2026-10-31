@@ -1806,13 +1806,21 @@ def classify_arg_ownership(
     return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
 
 
+def arg_writes(arg) -> bool:
+    """Whether a scheme call may write this metadata argument: intent out or
+    inout, or no intent declared (assume it does)."""
+    intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
+    return intent not in ("in",)
+
+
 def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present) -> None:
     """Shared run-coalescing + cross-variable grouping core for
     `update self`/`update device` synchronization, used consistently by
     every GPU-residency ownership kind (HostMatched, CapScratch, and
     SuiteOwned -- see gpu_data_pass.py and suite_cap.py's own callers).
 
-    resolved_touches: {identity: (ref, ordered [(call_op, category), ...])}.
+    resolved_touches: {identity: (ref, ordered [(call_op, category, writes), ...])};
+    writes (arg_writes) says whether that call may write the variable.
     `ref` must already be an SSA value valid at every point between the
     first and last op in touch_list -- a resolved block arg for
     HostMatched/CapScratch, or (for SuiteOwned, which has no block arg at
@@ -1832,11 +1840,11 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     own present run overlaps without nesting inside it (see
     gpu_data_pass.py's _emit_present docstring).
 
-    "update" touches accumulate into a run needing BOTH an `update
-    self(...)` before the run (pull the latest device value in, since a
-    stretch of host-only code is about to read/write it) and an `update
-    device(...)` after it (push the host's changes back out) -- unchanged
-    from the original diverged-var behavior. Runs are collected across ALL
+    "update" touches accumulate into a run needing an `update self(...)`
+    before the run (pull the latest device value in, since a stretch of
+    host-only code is about to read/write it) and, if any call in the run
+    writes the variable, an `update device(...)` after it (push the host's
+    changes back out; a run that only reads leaves the device copy current). Runs are collected across ALL
     identities first, then grouped by the exact (id(first_op), id(last_op))
     boundary they share, so several variables' runs sharing a boundary
     fold into one shared call instead of one each.
@@ -1857,28 +1865,31 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     exact same call still merge into one shared call, the same free
     cross-variable grouping "update" runs get.
     """
-    update_runs: list = []  # (ref, first_op, last_op), across every identity
+    update_runs: list = []  # (ref, first_op, last_op, writes), across every identity
     produced_syncs: list = []  # (ref, call_op), across every identity
+
+    def _close_run(ref, update_run):
+        """Record a finished run of host calls ([(call_op, writes), ...])."""
+        if update_run:
+            update_runs.append((ref, update_run[0][0], update_run[-1][0],
+                                any(writes for _, writes in update_run)))
+            update_run.clear()
+
     for ref, touch_list in resolved_touches.values():
         if ref is None:
             continue
 
-        update_run: list = []
-        for call_op, category in touch_list:
+        update_run: list = []  # [(call_op, writes), ...]
+        for call_op, category, writes in touch_list:
             if category == "present":
                 emit_present(ref, call_op)
-                if update_run:
-                    update_runs.append((ref, update_run[0], update_run[-1]))
-                    update_run = []
+                _close_run(ref, update_run)
             elif category == "produced":
-                if update_run:
-                    update_runs.append((ref, update_run[0], update_run[-1]))
-                    update_run = []
+                _close_run(ref, update_run)
                 produced_syncs.append((ref, call_op))
             else:  # "update"
-                update_run.append(call_op)
-        if update_run:
-            update_runs.append((ref, update_run[0], update_run[-1]))
+                update_run.append((call_op, writes))
+        _close_run(ref, update_run)
 
     def _grouped(entries, key_fn):
         """Group (ref, ...) entries by key_fn's own return, deduping refs
@@ -1898,7 +1909,7 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 refs.append(ref)
         return [(groups[key][0], groups[key][1]) for key in order]
 
-    for (first_op, last_op), refs in _grouped(
+    for (first_op, last_op, _), refs in _grouped(
         update_runs, lambda e: (id(e[1]), id(e[2]))
     ):
         Rewriter.insert_op(
@@ -1908,6 +1919,10 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
             ),
             InsertPoint.before(first_op),
         )
+    # Push back only what the run wrote.
+    for (first_op, last_op, _), refs in _grouped(
+        [run for run in update_runs if run[3]], lambda e: (id(e[1]), id(e[2]))
+    ):
         Rewriter.insert_op(
             directive_op(
                 directive, AccUpdateDeviceOp, {"array_refs": refs},

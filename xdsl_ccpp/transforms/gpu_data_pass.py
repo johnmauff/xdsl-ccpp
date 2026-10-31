@@ -16,6 +16,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     directive_op,
+    arg_writes,
     emit_coalesced_updates,
     merge_adjacent_updates,
     find_diverged_capscratch_vars,
@@ -169,7 +170,7 @@ class GPUDataPass(ModulePass):
         return call_op.callee.root_reference.data
 
     def _get_diverged_args(self, scheme_name, table_name, meta_data, diverged_vars):
-        """Return {local_name: (category, host_var, standard name)} for every arg in this
+        """Return {local_name: (category, host_var, standard name, writes)} for every arg in this
         scheme's <table_name> argument table whose model_var_name is in
         diverged_vars.
 
@@ -196,11 +197,12 @@ class GPUDataPass(ModulePass):
                 arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
             )
             category = "present" if scheme_space == "device" else "update"
-            result[arg.name] = (category, host_var, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None)
+            result[arg.name] = (category, host_var, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None,
+                                arg_writes(arg))
         return result
 
     def _get_diverged_capscratch_args(self, scheme_name, table_name, meta_data, diverged_capscratch_vars):
-        """Return {local_name: (category, cap_var_name, is_direct, standard name)} for
+        """Return {local_name: (category, cap_var_name, is_direct, standard name, writes)} for
         every arg in this scheme's <table_name> argument table that is
         CapScratch-classified and resolves (via
         cap_shared.resolve_capscratch_cap_var_name) to a cap var name in
@@ -249,7 +251,7 @@ class GPUDataPass(ModulePass):
             )
             category = "present" if scheme_space == "device" else "update"
             is_direct = std_name.lower() in FRAMEWORK_STD_NAME_TO_CAP_VAR
-            result[arg.name] = (category, cap_var, is_direct, std_name.lower())
+            result[arg.name] = (category, cap_var, is_direct, std_name.lower(), arg_writes(arg))
         return result
 
     def _get_producing_device_args(self, scheme_name, table_name, meta_data):
@@ -340,7 +342,7 @@ class GPUDataPass(ModulePass):
                 continue
             for call_op, _ in touch_list:
                 key = ("debug_sync", identity, id(call_op))
-                debug_sync_touches[key] = (ref, [(call_op, "produced")])
+                debug_sync_touches[key] = (ref, [(call_op, "produced", True)])
         return debug_sync_touches
 
     def _emit_present(self, ref, call_op):
@@ -442,17 +444,19 @@ class GPUDataPass(ModulePass):
 
         The block argument to sync is the one with the args' standard name.
         """
-        touches: dict = {}  # host_var -> ordered [(op, category, standard name), ...]
+        touches: dict = {}  # host_var -> ordered [(op, category, standard name, writes), ...]
         for call_op, scheme_name, table_name in calls:
-            for category, host_var, std in self._get_diverged_args(
+            for category, host_var, std, writes in self._get_diverged_args(
                 scheme_name, table_name, meta_data, diverged_vars
             ).values():
-                touches.setdefault(host_var, []).append((call_op, category, std))
+                touches.setdefault(host_var, []).append((call_op, category, std, writes))
 
         resolved: dict = {}
         for host_var, touch_list in touches.items():
-            ref = _ref((std for _, _, std in touch_list), arg_by_std)
-            resolved[host_var] = (ref, [(call_op, category) for call_op, category, _ in touch_list])
+            ref = _ref((std for _, _, std, _ in touch_list), arg_by_std)
+            resolved[host_var] = (
+                ref, [(call_op, category, writes) for call_op, category, _, writes in touch_list]
+            )
         return resolved
 
     def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_std):
@@ -488,20 +492,20 @@ class GPUDataPass(ModulePass):
         why emission is deferred to a single, merged
         cap_shared.emit_coalesced_updates call.
         """
-        touches: dict = {}  # cap_var_name -> ordered [(op, category, standard name, is_direct), ...]
+        touches: dict = {}  # cap_var_name -> ordered [(op, category, standard name, is_direct, writes), ...]
         for call_op, scheme_name, table_name in calls:
-            for category, cap_var, is_direct, std in self._get_diverged_capscratch_args(
+            for category, cap_var, is_direct, std, writes in self._get_diverged_capscratch_args(
                 scheme_name, table_name, meta_data, diverged_capscratch_vars
             ).values():
-                touches.setdefault(cap_var, []).append((call_op, category, std, is_direct))
+                touches.setdefault(cap_var, []).append((call_op, category, std, is_direct, writes))
 
         resolved: dict = {}
         for cap_var, touch_list in touches.items():
-            ref = _ref((std for _, _, std, is_direct in touch_list if is_direct), arg_by_std)
+            ref = _ref((std for _, _, std, is_direct, _ in touch_list if is_direct), arg_by_std)
             if ref is None:
-                ref = _ref((std for _, _, std, _ in touch_list), arg_by_std)
+                ref = _ref((std for _, _, std, _, _ in touch_list), arg_by_std)
             resolved[cap_var] = (
-                ref, [(call_op, category) for call_op, category, _, _ in touch_list]
+                ref, [(call_op, category, writes) for call_op, category, _, _, writes in touch_list]
             )
         return resolved
 

@@ -17,6 +17,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     GROUP_PHASES,
+    arg_writes,
     block_args_by_std,
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
@@ -150,7 +151,7 @@ class SuiteOwnedGpuMixin:
                 ref_op = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
                 Rewriter.insert_op(ref_op, InsertPoint.before(call_op))
                 key = ("debug_sync", std_name, id(call_op))
-                debug_sync_touches[key] = (ref_op.res, [(call_op, "produced")])
+                debug_sync_touches[key] = (ref_op.res, [(call_op, "produced", True)])
         return debug_sync_touches
 
     @staticmethod
@@ -192,7 +193,7 @@ class SuiteOwnedGpuMixin:
             if not calls:
                 continue
 
-            # touches: standard_name -> ordered [(scf.IfOp, category), ...];
+            # touches: standard_name -> ordered [(scf.IfOp, category, writes), ...];
             # "present" if the scheme declares memory_space=device, else "update"
             # (mirrors _get_diverged_args).
             touches: dict = {}
@@ -209,7 +210,7 @@ class SuiteOwnedGpuMixin:
                         arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
                     )
                     category = "present" if scheme_space == "device" else "update"
-                    touches.setdefault(std_name, []).append((call_op, category))
+                    touches.setdefault(std_name, []).append((call_op, category, arg_writes(arg)))
 
             resolved: dict = {}
             for std_name, touch_list in touches.items():
@@ -247,7 +248,7 @@ class SuiteOwnedGpuMixin:
             return
         block = fn.body.blocks[0]
         arg_by_std = block_args_by_std(fn)
-        touches: dict = {}  # standard_name -> ordered [(scf.IfOp, category)]
+        touches: dict = {}  # standard_name -> ordered [(scf.IfOp, category, writes)]
         for call_op, scheme_name, table_name in _scheme_calls(block):
             if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
                 continue
@@ -261,7 +262,7 @@ class SuiteOwnedGpuMixin:
                     arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
                 )
                 category = "present" if scheme_space == "device" else "update"
-                touches.setdefault(std_name, []).append((call_op, category))
+                touches.setdefault(std_name, []).append((call_op, category, arg_writes(arg)))
 
         resolved = {
             std_name: (arg_by_std.get(std_name), touch_list)

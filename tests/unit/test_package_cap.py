@@ -373,15 +373,16 @@ def _routine(src, name):
 
 def test_private_state_synced_for_host_use_in_a_later_segment(tmp_path):
     """2g-2: a private array written on the device before the hook and read
-    on the host after it is synced around the host use, inside the package
-    cap; the device copy stays current between segments."""
+    on the host after it is pulled before the host use, inside the package
+    cap. The host use only reads it (intent in), so nothing is pushed back:
+    the device copy stays current between segments."""
     caps = _mixed_space_caps(tmp_path, _SUITE)
     cap = caps["pkg_package_cap.F90"]
     assert "!$acc" not in _routine(cap, "step_1_run")
     step_2 = _routine(cap, "step_2_run")
     assert re.search(r"!\$acc update self\(work\)\s+(#endif\s+)?(#ifdef USE_GPU\s+)?"
-                     r"[^!]*call consumer_run\([^)]*\)[^!]*!\$acc update device\(work\)",
-                     step_2, re.S), step_2
+                     r"[^!]*call consumer_run\(", step_2, re.S), step_2
+    assert not re.search(r"update device\([^)]*\bwork\b", step_2), step_2
     assert "update self(work)" not in caps["pkg_suite_cap.F90"]
 
 
