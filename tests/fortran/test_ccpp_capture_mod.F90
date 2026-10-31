@@ -7,8 +7,9 @@
 ! variables, a shape mismatch, mismatch detection and diagnostics, and the
 ! tolerance override default.
 !
-! Run from this directory (netcdf-fortran on the paths, e.g. on Derecho
-! `module load netcdf`):
+! Run from this directory, with netcdf-fortran built by the same compiler
+! (on Derecho load the compiler first: `module load gcc netcdf`, or
+! `module load nvhpc netcdf` and nvfortran; the default is Intel's build):
 !   gfortran -o test_ccpp_capture_mod $(nf-config --fflags) ccpp_kinds.F90 \
 !       ../../xdsl_ccpp/framework_src/ccpp_capture_mod.F90 \
 !       test_ccpp_capture_mod.F90 $(nf-config --flibs)
