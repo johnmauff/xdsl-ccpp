@@ -28,9 +28,9 @@ def _validate_fortran_source(meta_path: str, f90_path: str, preproc_defs) -> str
     """Compare one scheme's .meta file with its paired .F90 and return what
     that printed to stderr (the mismatch warnings), so the comparisons can
     run in worker processes and still be printed in file order."""
+    from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
     from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
     from xdsl_ccpp.transforms.validate_source import compare_modules
-    from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
 
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -535,20 +535,43 @@ class ccppMain:
         separately by apply(), after split_fortran_output, not treated
         as a stage failure here.
         """
+        self.finish_pipeline_stage(self.start_pipeline_stage(cmd, out_path, label))
+
+    def start_pipeline_stage(self, cmd, out_path, label):
+        """Start run_pipeline_stage's subprocess without waiting for it;
+        finish_pipeline_stage (or kill_pipeline_stage) takes the handle."""
         self.print_verbose_message(
             label,
             f'{label} with command: {shlex.join(cmd)} > "{out_path}"',
         )
+        out_f = open(out_path, "w")
         try:
-            with open(out_path, "w") as out_f:
-                result = subprocess.run(cmd, stdout=out_f, stderr=None)
+            proc = subprocess.Popen(cmd, stdout=out_f, stderr=None)
         except FileNotFoundError:
+            out_f.close()
             raise CcppDslError(f"could not execute '{cmd[0]}'") from None
-        if result.returncode != 0:
+        return proc, out_f, label
+
+    @staticmethod
+    def finish_pipeline_stage(stage) -> None:
+        """Wait for start_pipeline_stage's subprocess; raise CcppDslError if
+        it exited non-zero."""
+        proc, out_f, label = stage
+        returncode = proc.wait()
+        out_f.close()
+        if returncode != 0:
             raise CcppDslError(
-                f"{label.lower()} failed (exit code {result.returncode})",
-                returncode=result.returncode,
+                f"{label.lower()} failed (exit code {returncode})",
+                returncode=returncode,
             )
+
+    @staticmethod
+    def kill_pipeline_stage(stage) -> None:
+        """Stop start_pipeline_stage's subprocess (run() failed)."""
+        proc, out_f, _ = stage
+        proc.kill()
+        proc.wait()
+        out_f.close()
 
     def run_frontend(self, tmp_dir):
         suites_arg = ",".join(self.options_db["suites"])
@@ -665,12 +688,19 @@ class ccppMain:
 
         With --jobs N the pairs are compared in N processes (the fparser2
         parse is most of a generation's time); the warnings are printed in
-        file order either way.
+        file order either way. run() starts the check before the frontend
+        and finishes it after ccpp_opt, so with --jobs N it overlaps them.
         """
+        self._finish_fortran_check(self._start_fortran_check())
+
+    def _start_fortran_check(self):
+        """Start validate_fortran_sources' comparisons; return the handle
+        _finish_fortran_check takes: (pool or None, per-pair reports or
+        futures). With one job the comparisons run here, serially."""
         try:
             import fparser.two.Fortran2003  # noqa: F401
         except ImportError:
-            return
+            return None, []
 
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
 
@@ -687,18 +717,34 @@ class ccppMain:
 
         jobs = min(self.options_db.get("jobs") or 1, len(pairs))
         if jobs <= 1:
-            reports = [_validate_fortran_source(m, f, preproc_defs) for m, f in pairs]
-        else:
-            # Largest sources first: the slowest file bounds the wall time.
-            order = sorted(range(len(pairs)), key=lambda i: -os.path.getsize(pairs[i][1]))
-            with ProcessPoolExecutor(max_workers=jobs) as pool:
-                futures = {
-                    i: pool.submit(_validate_fortran_source, *pairs[i], preproc_defs)
-                    for i in order
-                }
-                reports = [futures[i].result() for i in range(len(pairs))]
-        for report in reports:
-            sys.stderr.write(report)
+            return None, [_validate_fortran_source(m, f, preproc_defs) for m, f in pairs]
+        pool = ProcessPoolExecutor(max_workers=jobs)
+        # Largest sources first: the slowest file bounds the wall time.
+        order = sorted(range(len(pairs)), key=lambda i: -os.path.getsize(pairs[i][1]))
+        futures = {
+            i: pool.submit(_validate_fortran_source, *pairs[i], preproc_defs)
+            for i in order
+        }
+        return pool, [futures[i] for i in range(len(pairs))]
+
+    @staticmethod
+    def _finish_fortran_check(handle) -> None:
+        """Wait for _start_fortran_check's comparisons and print their
+        warnings in --scheme-files order."""
+        pool, reports = handle
+        try:
+            for report in reports:
+                sys.stderr.write(report if pool is None else report.result())
+        finally:
+            if pool is not None:
+                pool.shutdown(cancel_futures=True)
+
+    @staticmethod
+    def _cancel_fortran_check(handle) -> None:
+        """Abandon _start_fortran_check's comparisons (run() failed)."""
+        pool, _ = handle
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _check_memory_space_mismatch(self, mlir_file: str) -> None:
         """Warn when memory_space annotations exist but --directive is not set.
@@ -1167,13 +1213,23 @@ class ccppMain:
         goldens invoke that target directly, via ccpp_opt's own CLI, not
         through this method). Copilot PR #110 review, 2026-10-05.
         """
+        return self._finish_opt(self._start_opt(tmp_dir, mlir_in, target))
+
+    def _start_opt(self, tmp_dir, mlir_in, target: str = "ftn"):
+        """Start run_opt's ccpp_opt subprocess; _finish_opt takes the handle."""
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
         cmd = [
             sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
             "-p", pipeline, "-t", target,
         ]
-        self.run_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer")
+        return self.start_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer"), ftn_out
+
+    def _finish_opt(self, handle) -> str:
+        """Wait for _start_opt's subprocess and check its output; return the
+        printer output's path."""
+        stage, ftn_out = handle
+        self.finish_pipeline_stage(stage)
         self.post_stage_check(ftn_out)
         return ftn_out
 
@@ -1321,37 +1377,56 @@ class ccppMain:
         if not self.options_db["stdout"]:
             os.makedirs(out_dir, exist_ok=True)
 
-        if self.options_db.get("py"):
-            mlir_file = self.run_py_frontend(tmp_dir)
-            self.merge_meta_files(mlir_file)
-        else:
-            mlir_file = self.run_frontend(tmp_dir)
-        self.validate_fortran_sources()
-        self._check_memory_space_mismatch(mlir_file)
-        wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
-        target = "ftn_and_cpp_header" if wants_cpp else "ftn"
-        ftn_file = self.run_opt(tmp_dir, mlir_file, target=target)
-        written = self.split_fortran_output(ftn_file, out_dir)
+        # The Fortran-vs-.meta check needs only the scheme files, and the
+        # memory-space check and the datatable only read the frontend
+        # module, so they run alongside the frontend and ccpp_opt instead of
+        # before them (generator-speed step 5); the caps do not change.
+        fortran_check = self._start_fortran_check()
+        opt = None
+        try:
+            if self.options_db.get("py"):
+                mlir_file = self.run_py_frontend(tmp_dir)
+                self.merge_meta_files(mlir_file)
+            else:
+                mlir_file = self.run_frontend(tmp_dir)
+            wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
+            target = "ftn_and_cpp_header" if wants_cpp else "ftn"
+            opt = self._start_opt(tmp_dir, mlir_file, target=target)
+            self._check_memory_space_mismatch(mlir_file)
+            if self.options_db.get("emit_datatable"):
+                self._parse_frontend(mlir_file)
+            ftn_file = self._finish_opt(opt)
+        except BaseException:
+            if opt is not None and not opt[0][1].closed:
+                self.kill_pipeline_stage(opt[0])
+            self._cancel_fortran_check(fortran_check)
+            raise
+        try:
+            written = self.split_fortran_output(ftn_file, out_dir)
 
-        if wants_cpp and not any(f.endswith(".h") for f in written):
-            self.print_verbose_message(
-                "  -> No BIND(C) functions found; no C++ headers written",
-            )
+            if wants_cpp and not any(f.endswith(".h") for f in written):
+                self.print_verbose_message(
+                    "  -> No BIND(C) functions found; no C++ headers written",
+                )
 
-        datatable_path = self.options_db.get("emit_datatable")
-        if datatable_path:
-            self._run_datatable(mlir_file, out_dir, datatable_path)
+            datatable_path = self.options_db.get("emit_datatable")
+            if datatable_path:
+                self._run_datatable(mlir_file, out_dir, datatable_path)
 
-        resolved_vars = None
-        resolved_vars_path = self.options_db.get("emit_resolved_vars")
-        if resolved_vars_path:
-            # run_opt() above already returned, meaning the ccpp_opt
-            # subprocess it spawned exited 0 -- and SuiteCAP.apply()
-            # (suite_cap.py) unconditionally calls _write_resolved_vars()
-            # as the very last thing it does before that process exits,
-            # so this file is guaranteed to exist here. No polling/race.
-            with open(resolved_vars_path) as f:
-                resolved_vars = json.load(f)
+            resolved_vars = None
+            resolved_vars_path = self.options_db.get("emit_resolved_vars")
+            if resolved_vars_path:
+                # _finish_opt() above already returned, meaning the ccpp_opt
+                # subprocess it spawned exited 0 -- and SuiteCAP.apply()
+                # (suite_cap.py) unconditionally calls _write_resolved_vars()
+                # as the very last thing it does before that process exits,
+                # so this file is guaranteed to exist here. No polling/race.
+                with open(resolved_vars_path) as f:
+                    resolved_vars = json.load(f)
+        except BaseException:
+            self._cancel_fortran_check(fortran_check)
+            raise
+        self._finish_fortran_check(fortran_check)
 
         if not self.options_db.get("debug"):
             self.remove_file_if_exists(mlir_file, ftn_file)

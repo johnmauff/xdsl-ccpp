@@ -508,16 +508,38 @@ caps byte-identical (`cap_oracle diff`). cam4 estimates are cumulative.
    is unaffected). Generation runs at `buildnml`, before compiling, so the
    build's cores are idle then. Helps every first build, for every user.
    ~-12 s at J=16, leaving cam4 at ~7 s against capgen's ~5 s.
-4. **Optional: a shared cache** of the fparser2 result per scheme `.F90`.
-   After step 3 it saves only the remaining ~2 s per generation, for
-   developers who regenerate often or build many cases (a regression parsed
-   930 files, 147 distinct); a regular user's first build gets nothing.
-   Decide after step 3. Design, if built: one directory shared by all
+4. **Shared parse cache: not planned** (decided 2026-10-31, after steps
+   1-3 were measured: cam4 ~25 s -> ~9.5 s with `--jobs 16`). The parallel
+   parse is now ~2 s of cam4's generation, bounded by one file
+   (`zm_convr.F90`, 1.86 s), and with `cam-autogen-repeat-generation`
+   fixed a build regenerates only when an input changes. A cache would save
+   up to ~2 s per regeneration while iterating on a scheme and ~30-60 s
+   per 32-case regression (930 parses, 147 distinct), nothing on a first
+   build, at the cost of invalidation (with an editable install the key
+   needs a hash of the extraction code itself, not the package version),
+   location/cleanup, concurrent writes, an off switch and their tests.
+   Reconsider only if low-core builds become common (`GMAKE_J=4`: cam4's
+   parse ~3.7 s). Design, if ever built: one directory shared by all
    builds (e.g. `~/.cache/xdsl_ccpp/`, overridable by an environment
    variable); key = file contents + preprocessor defines (SE and MPAS
    preprocess the same file differently) + xdsl-ccpp version; entries
    written to a temporary file and renamed into place, so concurrent
    builds cannot corrupt them; an option disables it.
+5. **Overlap the independent phases** (added 2026-10-31 from a re-profile
+   after steps 1-3; cam4 with `--jobs 16`, real time, 9.2 s): frontend
+   0.7 s, parallel Fortran check 2.9 s, memory-space check 1.25 s (the
+   shared frontend parse), `ccpp_opt` 4.1 s (MLIR parse ~1.2, two verifies
+   ~0.6, passes ~1.6, Fortran print ~0.4), datatable 0.2 s -- all run one
+   after another, though the Fortran check needs only the scheme files and
+   the memory-space check only reads the frontend module. Start the Fortran
+   check first and collect its warnings at the end; start `ccpp_opt`
+   without waiting and do the frontend parse and memory-space check while
+   it runs. Wall ~0.7 + max(4.1, 2.9, 1.25) + 0.2, ~5 s (capgen ~5 s).
+   Caps unchanged; only the position of the Fortran-check warnings in
+   stderr moves (after `ccpp_opt`'s messages). Skipped for now: dropping
+   the pre-pipeline verify (~0.3 s), and running the frontend and passes
+   in-process to avoid the MLIR text round trip (~2 s, but a structural
+   change: global state, `sys.exit` error paths).
 
 Rejected for the Fortran check: a signature-only scanner (it would need
 capgen-scale grammar coverage -- `parse_fortran_file.py` is ~1,100 lines --
