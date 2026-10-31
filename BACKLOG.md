@@ -354,6 +354,37 @@ failures as a plain `Error:` message with exit status 1, keeping the
 traceback for internal errors or a verbose flag; show the fparser2 warning
 only when verbose (and check why qneg.F90 fails to parse).
 
+**In progress (2026-10-31, branch `generation-error-output`).** Done:
+stage 1 -- `ArgumentOp` records deprecated names and the frontends report
+them once at `--verbose` (cam4 stderr 2,859 -> 34 lines); stage 2 --
+CAM-SIMA's `cam_autogen.py` passes `--verbose 1`; stage 3 --
+`CcppInputError` (a `ValueError`) printed as `Error: <message>` with exit 1
+by the `ccpp_dsl`, `ccpp_opt` and XML-frontend entry points (traceback at
+`--verbose 2`), marked at the host-match failure, the deprecated-name
+rejection, the XML frontend's checks and the preprocessor/`!$ccpp` errors.
+Planned, after the xdsl61g regression's builds (they use the working tree):
+- stage 4: `run_dispatch.py`'s 14 `Info:` lines (run-dispatcher arguments
+  supplied by the caller: constituent properties/minimums, column range)
+  only at `--verbose 2`, reworded to say the argument becomes an argument
+  of `ccpp_physics_run` (no "check the host metadata" advice);
+- stage 5: always run the preprocessor before the Fortran-vs-`.meta`
+  check (`fparser2_to_meta.py` skips it when there are no defines, so
+  `qneg.F90`'s `#if 0` blocks crash fparser2 in every FPHYStest case:
+  `tuple index out of range`; with preprocessing it matches `qneg.meta`).
+  23 scheme `.F90`s have directives; compare the check's warnings over all
+  cases before/after;
+- stage 6: accept `persistence` (capgen `metavar.py`: `timestep` default
+  | `run`) as a known argument property, rejecting other values; xdsl_ccpp
+  still ignores it (its only use, `theta` in `state_converters.meta`, is
+  the default). Note in BACKLOG if a scheme ever declares `run`;
+- stage 7: the "missing advected = true ... Reclassifying as advected"
+  warnings (17 in cam4, `host_var_match_pass.py`) as one summary line at
+  level 1, the list at `--verbose 2`. They are real atmospheric_physics
+  metadata gaps (capgen-v1 inherits `advected` silently).
+Not xdsl_ccpp: the `Writing metadata file` / `Writing Fortran module` lines
+are CAM-SIMA's `create_readnl_files.py` (INFO level, two per scheme
+namelist, upstream code).
+
 **`rrtmgp-wrapper-acc-trigger`** -- found 2026-10-24. Upstream's capgen GPU
 RRTMGP test (CAM-SIMA tpr_n, `development`, no atmospheric_physics #468)
 reaches `END OF MODEL RUN` with a clean `ncdata_check`; our xdsl-ccpp builds

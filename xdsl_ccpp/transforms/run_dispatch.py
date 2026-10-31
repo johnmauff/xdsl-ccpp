@@ -78,6 +78,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_SCALAR_INDEX_DIMS,
+    verbosity,
 )
 
 
@@ -340,13 +341,17 @@ def _build_per_suite_run_info(
                                 )
                             )
                     else:
-                        print(
-                            f"Info: '{suite_callee}' arg '{arg_name}' "
-                            f"(standard_name='{std_name}') matched DDT type "
-                            f"'{ddt_type_name}' but no module-level instance was "
-                            f"found — treating as a host-caller block argument.",
-                            file=sys.stderr,
-                        )
+                        # Expected (e.g. the constituent properties): the
+                        # caller supplies it, so only shown at --verbose 2.
+                        if verbosity() >= 2:
+                            print(
+                                f"Info: '{suite_callee}' arg '{arg_name}' "
+                                f"(standard_name='{std_name}', type "
+                                f"'{ddt_type_name}') has no module-level instance; "
+                                f"it becomes an argument of ccpp_physics_run, "
+                                f"supplied by its caller.",
+                                file=sys.stderr,
+                            )
                         resolved_arg_ops.append(
                             ResolvedArgOp(arg_name, ArgSourceKind.Block)
                         )
@@ -363,15 +368,19 @@ def _build_per_suite_run_info(
                     ResolvedArgOp(arg_name, ArgSourceKind.CapVar, std_name=std_name)
                 )
             else:
+                # Expected (e.g. the column range): a scheme argument with no
+                # source at all already failed host matching, so this is
+                # only shown at --verbose 2.
                 if std_name and std_name not in host_block_std_names \
                         and std_name not in CCPP_FRAMEWORK_STD_NAMES \
                         and std_name not in constituent_std_names \
-                        and not attrs.get(SUITE_ARG_OPTIONAL):
+                        and not attrs.get(SUITE_ARG_OPTIONAL) \
+                        and verbosity() >= 2:
                     print(
                         f"Info: '{suite_callee}' arg '{arg_name}' "
-                        f"(standard_name='{std_name}') has no host variable "
-                        f"match — treating as a host-caller block argument. "
-                        f"Check that the host metadata provides this variable.",
+                        f"(standard_name='{std_name}') has no host module "
+                        f"variable; it becomes an argument of ccpp_physics_run, "
+                        f"supplied by its caller.",
                         file=sys.stderr,
                     )
                 resolved_arg_ops.append(ResolvedArgOp(arg_name, ArgSourceKind.Block))
