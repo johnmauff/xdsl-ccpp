@@ -34,8 +34,6 @@ from xdsl_ccpp.dialects.ccpp_utils import ErrorExitOp as CCPPErrorExitOp
 from xdsl_ccpp.dialects.ccpp_utils import ReturnStmtOp as CCPPReturnStmtOp
 from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
 from xdsl_ccpp.dialects.ccpp_utils import CallStatementOp as CCPPCallStatementOp
-from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
-from xdsl_ccpp.dialects.ccpp_utils import CamQminPreambleOp as CCPPCamQminPreambleOp
 from xdsl_ccpp.dialects.ccpp_utils import CamSuiteDispatchOp as CCPPCamSuiteDispatchOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
@@ -1850,33 +1848,6 @@ class ftnPrintContext:
             case CCPPClearErrStateOp():
                 self.print(f"{op.errcode_var.data} = 0")
                 self.print(f"{op.errmsg_var.data} = ''")
-            case CCPPCamQminPreambleOp():
-                ev = op.errcode_var.data
-                em = op.errmsg_var.data
-                self.print("integer :: lc_n, lc_i")
-                self.print("real(kind=kind_phys), allocatable :: lc_qmin(:)")
-                self.print("if (allocated(lc_const_props)) then")
-                with self.descend() as blk:
-                    blk.print("lc_n = size(lc_const_props)")
-                self.print("else")
-                with self.descend() as blk:
-                    blk.print("lc_n = 0")
-                self.print("end if")
-                self.print("allocate(lc_qmin(lc_n))")
-                self.print("do lc_i = 1, lc_n")
-                with self.descend() as blk:
-                    blk.print(
-                        f"call lc_const_props(lc_i)%minimum("
-                        f"lc_qmin(lc_i), {ev}, {em})"
-                    )
-                    blk.print(f"if ({ev} /= 0) then")
-                    with blk.descend() as inner:
-                        inner.print("deallocate(lc_qmin)")
-                        inner.print("return")
-                    blk.print("end if")
-                self.print("end do")
-            case CCPPCamQminPostambleOp():
-                self.print("deallocate(lc_qmin)")
             case CCPPErrorPropagateOp():
                 ev = op.errcode_var.data
                 self.print(f"if ({ev} /= 0) return")

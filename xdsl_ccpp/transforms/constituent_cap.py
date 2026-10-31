@@ -57,6 +57,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _scf_if,
     fixed_interface_fn,
     _trim_eq_cond,
+    constituents_obj_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.transforms.util.typing import TypeConversions
@@ -266,7 +267,7 @@ def _generate_constituent_api(
     multi_instance = instance_local_name is not None
     instance_type_name = f"{h}_lc_instance_t"
     # Module variables named after the host, as capgen names them.
-    const_obj = f"{h}_constituents_obj"
+    const_obj = constituents_obj_name(h)
     const_stdnames = f"{h}_model_const_stdnames"
     const_indices = f"{h}_model_const_indices"
 

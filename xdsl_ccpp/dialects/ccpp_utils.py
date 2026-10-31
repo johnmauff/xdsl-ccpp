@@ -3080,62 +3080,6 @@ class ClearErrStateOp(IRDLOperation):
 
 
 @irdl_op_definition
-class CamQminPreambleOp(IRDLOperation):
-    """Emit the constituent-minimum (lc_qmin) preamble in cam_ccpp_physics_run.
-
-    Emitted when the run dispatcher takes ``ccpp_constituent_minimum_values``
-    as a block argument (i.e. at least one run-phase scheme reads qmin).
-    Prints as::
-
-        integer :: lc_n, lc_i
-        real(kind=kind_phys), allocatable :: lc_qmin(:)
-        if (allocated(lc_const_props)) then
-          lc_n = size(lc_const_props)
-        else
-          lc_n = 0
-        end if
-        allocate(lc_qmin(lc_n))
-        do lc_i = 1, lc_n
-          call lc_const_props(lc_i)%minimum(lc_qmin(lc_i), {errcode_var}, {errmsg_var})
-          if ({errcode_var} /= 0) then
-            deallocate(lc_qmin)
-            return
-          end if
-        end do
-
-    The declarations (``integer :: lc_n``, etc.) appear inline in the
-    subroutine body — valid in Fortran 2003+ and accepted by gfortran/nvhpc.
-    ``kind_phys`` is imported from ``ccpp_kinds`` at module scope and is
-    therefore available without a redundant subroutine-scope USE.
-    """
-
-    name = "ccpp_utils.cam_qmin_preamble"
-
-    errcode_var = prop_def(StringAttr)
-    errmsg_var  = prop_def(StringAttr)
-
-    def __init__(self, errcode_var: str, errmsg_var: str):
-        super().__init__(properties={
-            "errcode_var": StringAttr(errcode_var),
-            "errmsg_var":  StringAttr(errmsg_var),
-        })
-
-
-@irdl_op_definition
-class CamQminPostambleOp(IRDLOperation):
-    """Emit ``deallocate(lc_qmin)`` after the run dispatcher call.
-
-    Paired with ``CamQminPreambleOp`` to clean up the constituent-minimum
-    temporary array after ``ccpp_physics_run`` has used it.
-    """
-
-    name = "ccpp_utils.cam_qmin_postamble"
-
-    def __init__(self):
-        super().__init__()
-
-
-@irdl_op_definition
 class ErrorPropagateOp(IRDLOperation):
     """Emit an early-return guard on an integer error-code variable.
 
@@ -3398,8 +3342,6 @@ CCPPUtils = Dialect(
         CamDirectCallOp,
         CallStatementOp,
         ClearErrStateOp,
-        CamQminPreambleOp,
-        CamQminPostambleOp,
         ErrorPropagateOp,
         ReturnStmtOp,
         ErrorExitOp,
