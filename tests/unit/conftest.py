@@ -24,7 +24,17 @@ from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
-from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode, set_verbosity
+
+
+@pytest.fixture(autouse=True)
+def _default_verbosity():
+    """Start every test at the default --verbose level: the level is a
+    process global, and a test running ccppMain().run(verbose=0) or setting
+    it directly would otherwise change what later tests see on stderr."""
+    set_verbosity(1)
+    yield
+    set_verbosity(1)
 
 
 # ── Context factory ───────────────────────────────────────────────────────────

@@ -762,10 +762,15 @@ class ccppMain:
         Before any pass runs, all TablePropertiesOp are flat children of the
         top-level builtin.module.  Walk them to collect args with memory_space
         set and emit a single warning if --directive was omitted.
+
+        Only at --verbose 2: a CPU build of schemes whose metadata carries
+        GPU memory_space hints is normal (e.g. Kessler, SE).
         """
         if self.options_db.get("directive"):
             return
         if self.options_db.get("no_memory_space_warning"):
+            return
+        if self.options_db.get("verbose", 1) < 2:
             return
 
         top_module = self._parse_frontend(mlir_file)

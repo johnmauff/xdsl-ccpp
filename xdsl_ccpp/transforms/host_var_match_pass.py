@@ -19,6 +19,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     UNIT_CONVERSIONS,
     dims_compatible,
     normalize_units,
+    verbosity,
 )
 from xdsl_ccpp.util.errors import CcppInputError
 
@@ -40,6 +41,25 @@ def _parse_dim_names(arg_op) -> list:
         d.strip()
         for d in (arg_op.dim_names.data.split(",") if arg_op.dim_names is not None else [])
     ]
+
+
+def _report_reclassified_advected(reclassified: list[str]) -> None:
+    """Report the arguments made advected because other schemes in their
+    suite declare the constituent advected: one line at the default
+    verbosity, the list at --verbose 2. The result is right either way;
+    each one is a .meta file missing `advected = true`."""
+    if not reclassified or verbosity() < 1:
+        return
+    hint = "" if verbosity() >= 2 else " (--verbose 2 lists them)"
+    print(
+        f"Warning: {len(reclassified)} scheme arguments are missing "
+        f"advected = true, though other schemes in their suite declare these "
+        f"constituents advected; treated as advected{hint}",
+        file=sys.stderr,
+    )
+    if verbosity() >= 2:
+        for line in reclassified:
+            print(line, file=sys.stderr)
 
 
 @dataclass(frozen=True)
@@ -546,6 +566,7 @@ class HostVariableMatchPass(ModulePass):
         advected_declaring_by_suite = advected_declaring_by_suite or {}
         non_advected_producers_by_suite = non_advected_producers_by_suite or {}
         all_errors: list[str] = []
+        reclassified: list[str] = []  # arguments made advected (see below)
 
         for table_prop_op, arg_table_op in iter_arg_tables(
             ccpp_mod, table_type=TableTypeKind.Scheme, table_name_in=sdf_scheme_names
@@ -661,14 +682,11 @@ class HostVariableMatchPass(ModulePass):
                         ).get(std_name, set())
                     other_declaring.discard(scheme_name)
                 if other_declaring:
-                    print(
-                        f"Warning:   Scheme '{scheme_name}' argument "
+                    reclassified.append(
+                        f"  Scheme '{scheme_name}' argument "
                         f"'{arg_op.arg_name.data}' (standard_name="
-                        f"'{std_name}') is missing advected = true, but "
-                        f"scheme(s) {', '.join(sorted(other_declaring))} "
-                        f"declare it advected in this suite. Reclassifying "
-                        f"as advected.",
-                        file=sys.stderr,
+                        f"'{std_name}'): declared advected by "
+                        f"{', '.join(sorted(other_declaring))}"
                     )
                     arg_op.properties["advected"] = UnitAttr()
                     continue
@@ -762,6 +780,7 @@ class HostVariableMatchPass(ModulePass):
                             f"host model variable"
                         )
 
+        _report_reclassified_advected(reclassified)
         if all_errors:
             raise CcppInputError(
                 "Host model variable matching/compatibility failed:\n"
