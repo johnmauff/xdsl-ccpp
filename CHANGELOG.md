@@ -13614,3 +13614,36 @@ constants, and the scheme lists of all 30 CAM cases are unchanged (parsed and
 compared). CAM-SIMA: gnu RRTMGP pair s37a (XML reference and package-cap
 composite, 38 schemes each) passed with no physics-check differences, so
 RRTMGP's namelist is still read.
+
+## `capgen-api-qmin`: pass the constituents object's minimum values (2026-10-31)
+
+The capgen-API run adapter (`<host>_ccpp_physics_run`, `--capgen-api`)
+rebuilt the constituent minimum values on every call: allocate `lc_qmin`,
+call `lc_const_props(i)%minimum()` per constituent, pass it on, deallocate.
+It now passes `<host>_constituents_obj%vars_minvalue`, as original capgen
+does. `lock_data` (called by `<host>_ccpp_initialize_constituents`) fills
+that array from the same constituent properties, in the same order as
+`lc_const_props`; CAM-SIMA's one change to a minimum (water vapour,
+`const_set_qmin` in `cam_comp.F90`) happens before `lock_data`.
+
+- `capgen_api.py`: each framework argument maps to a builder of its
+  expression; the minimum values are a `MemberAccessExprOp` on the
+  constituents object. The `qmin_needed` plumbing is gone.
+- Removed `CamQminPreambleOp`, `CamQminPostambleOp`, their printer cases
+  and a stale `lc_qmin` pattern in `cap_compare.py`.
+- `constituents_obj_name()` (`cap_shared.py`) names the object for the
+  constituent API and the adapters.
+- `test_cam_host_constituent_api.py`: the run entry reads the minimum
+  values, matched through the framework's `ccpp_model_constituents_t`
+  table as in CAM-SIMA; a new test checks the adapter passes
+  `Test_constituents_obj%vars_minvalue` and has no `lc_qmin`.
+
+Verification: pytest 1272 passed; no goldens changed (the examples do not
+use `--capgen-api`). `cap_oracle diff` against `main`: 26 identical; the 20
+CAM cases whose run phase reads the minimum values change identically (the
+18-line rebuild replaced by the member access, and a duplicate
+`use ccpp_kinds, only: kind_phys` dropped; the unrestricted `use ccpp_kinds`
+remains). CAM-SIMA: gnu aux_sima xdsl60g 29 of 32 clean, including all
+three cam4 QPC4 cases; the 3 failures are the known F2000_C7/gw_cam7
+(`prec_dp`/`prec_sh`) and zm (`zm-ncdata-diffs`). nvhpc GPU Kessler s38a
+passed with no physics-check differences.

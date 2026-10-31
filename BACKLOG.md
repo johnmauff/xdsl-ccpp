@@ -51,6 +51,8 @@ measured data, and will drift as items are reassessed.
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
+| `generator-speed` | 4-7 days (verify once; parse the frontend MLIR once; parallel Fortran parsing with `--jobs` from `GMAKE_J`, incl. a small CAM-SIMA change; the shared cache optional, +2-3 days) | S |
+| `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
@@ -68,7 +70,6 @@ measured data, and will drift as items are reassessed.
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
-| `capgen-api-qmin` | 2-4 days (pass the constituent object's minimum values to the run phase instead of recomputing them per call; CAM caps change, needs a CAM-SIMA regression) | S |
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
@@ -185,6 +186,8 @@ separately), CHANGELOG.md L5850.
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
+| `generator-speed` | xdsl_ccpp cap generation is ~3-5x slower than original capgen (cam4 24.7 s vs ~5 s) | S; profiled 2026-10-31: 56% is the warn-only fparser2 source check | -- |
+| `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
 
@@ -364,6 +367,32 @@ wrappers (and other copied scheme utility files) should be excluded from
 `CCPP_CAP_OBJS`, and whether nvfortran's skipped finalization of a component
 deallocated through `intent(out)` is worth a compiler bug report.
 
+**`cam-autogen-repeat-generation`** -- CAM-SIMA's
+`cime_config/cam_autogen.py` (`generate_physics_suites`) regenerates the caps
+when `build_cache.ccpp_mismatch(...)` reports changed inputs, or whenever the
+scheme namelist reader is regenerated (`do_gen_nl` sets `do_gen_ccpp`). In
+the xdsl56g build logs generation ran at `buildnml`, again at `buildlib` in
+22 of 25 cases, and again at `case.run`; a build should generate once. Find
+which cache field differs between the calls (inputs, preprocessor string,
+`cache_generator`, or the namelist branch), and fix it in CAM-SIMA. Saves
+5-9 s per FPHYStest build and ~26 s for cam4 (`cam-sima-build-time`).
+
+Cause (2026-10-31): `ccpp_mismatch` checks `host_files` before the scheme
+namelist `.meta` files are appended to that list, and `update_ccpp` then
+cached the extended list, so every later check saw a different host-file set
+(confirmed on xdsl60g's pumas cache: cached 33, checked 28, the 5 extra are
+exactly its `scheme_namelist_meta_file`s). Upstream code (2021, `8f70d97`),
+unnoticed because `test_cam_autogen.py` only uses a `FakeBuildCache`. Fixed
+locally in CAM-SIMA's `xdsl-ccpp-adapter` checkout (uncommitted): cache the
+list as checked (`cache_host_files`), plus a regression test
+`test_generate_physics_suites_caches_checked_host_files` (fails on the old
+code, passes with the fix). Verified on s39a (gnu pumas): caps generated
+once per build, not at `case.run`; an unchanged rebuild does not regenerate
+(13 s); editing `qneg_namelist.xml` still regenerates the namelist reader
+and the caps. To do: upstream PR to ESCOMP/CAM-SIMA `development` (a branch
+with only `cime_config/cam_autogen.py` and
+`test/unit/python/test_cam_autogen.py`).
+
 **`cam-sima-build-time`** -- measured 2026-10-21 from the xdsl56g (gnu) build
 logs and object mtimes, read-only; scripts, README and the gnu result
 (`res_xdsl56g_gnu.json`) are in `/glade/derecho/scratch/dennis/Claude.CAM-SIMA/tools/cam_sima_buildtime/`. Fresh-case `case.build` median wall time: FPHYStest
@@ -382,8 +411,10 @@ transitively `use` per-suite generated modules (`physics_types`,
 `cam_ccpp_cap`, `phys_vars_init_check`). Cheaper levers, roughly in order:
 - generation runs twice per build (buildnml, then buildlib in 22 of 25 cases
   on a `cam_autogen.py` cache mismatch) and again at `case.run`: fixing the
-  mismatch saves 5-9 s (FPHYStest) to ~26 s (cam4) per build;
-- xdsl-ccpp generation for the cam4 suites is itself slow (53-109 s);
+  mismatch saves 5-9 s (FPHYStest) to ~26 s (cam4) per build
+  (`cam-autogen-repeat-generation`);
+- xdsl-ccpp generation for the cam4 suites is itself slow (53-109 s)
+  (`generator-speed`);
 - MPAS built partly serially: parallelising it recovers much of ~100 s;
 - 16 RRTMGP `mo_*.F90` files compile in suites that don't use RRTMGP;
 - ~25 unchanged `ccpp_physics/*.F90` utility files are re-copied by every
@@ -425,6 +456,74 @@ CAM's `cam_read_ccpp_scheme_namelists` (`runtime_opts.F90`), so only the
 order scheme namelists are read in changes; calls run in the right order.
 Fix: build the list from the flattened call order of the run phase (the
 order the XML suite gives), not from segment positions.
+
+**`generator-speed`** -- xdsl_ccpp generation is noticeably slower than
+capgen-v1. Measured 2026-10-30: cam4 (analy_ic_cam4) ~24 s and pumas ~6 s
+standalone (`cap_oracle.generate`, same for `main` and the then-current
+branch); 53-109 s for cam4 inside a CAM-SIMA build (`cam-sima-build-time`,
+which also includes `cam-autogen-repeat-generation`'s repeats). Never
+profiled. `ccpp_dsl` runs the passes in a `ccpp_opt` subprocess, so a plain
+cProfile of the command misses them: time each pass and the frontend
+(XML/`.meta` parsing, fparser2 source parsing, host matching, each
+`ccpp_opt` pass, printing, the MLIR text hand-off between processes) for
+cam4 and a small suite, profile the slowest, and time capgen-v1 on the same
+inputs. Then size the fixes (likely suspects: whole-module rescans repeated
+per scheme or per argument, the text round-trip, repeated fparser2 parses).
+
+Profiled 2026-10-31 (every Python process via a scratch `sitecustomize`
+cProfile hook on PYTHONPATH; no repo change). Plain wall time, xdsl_ccpp vs
+original capgen (`cap_oracle.run_capgen`) on the same inputs: held_suarez
+2.8 s vs 0.9 s, pumas 5.7 s vs 1.6 s, cam4 (analy_ic_cam4) 24.7 s vs
+4.5-5.1 s. cam4's profile (shares hold at real time):
+- 56% `ccpp_dsl.validate_fortran_sources`: fparser2 fully parses all 108
+  scheme `.F90` files (2.4 M `__new__` calls) to compare signatures with the
+  `.meta`. Warn-only by design. Share grows with suite size (held_suarez
+  18%, pumas 34%).
+- 16% IR verification in `ccpp_opt`: xdsl verifies the whole module after
+  each of ~10 passes (54% of `ccpp_opt`).
+- 14% parsing the frontend MLIR file three times: `ccpp_opt`,
+  `_check_memory_space_mismatch` and `_run_datatable` each parse it.
+- 7% the passes themselves (`suite_cap` 2.0 s, `ccpp_cap` 1.0 s profiled);
+  ~7% XML frontend, printing, imports.
+
+Plan (agreed 2026-10-31), in this order; every step keeps the generated
+caps byte-identical (`cap_oracle diff`). cam4 estimates are cumulative.
+1. **Verify the IR once**, at the end of `ccpp_opt`, not after every pass;
+   keep per-pass verification behind a debug option (and in CI/tests).
+   ~24.7 s -> ~21 s.
+2. **Parse the frontend MLIR once**: run `_check_memory_space_mismatch`
+   and the datatable step on IR already parsed, not by re-reading the
+   file. ~-2 s.
+3. **Parse the scheme Fortran in parallel.** `validate_fortran_sources`
+   parses each `.F90` serially. Measured for cam4 (one file at a time):
+   108 files, 13.8 s; the slowest is `zm_convr.F90` (2,629 lines, 1.86 s),
+   which bounds any parallel run. Modeled with longest-file-first
+   scheduling: 2 workers ~7 s, 4 ~3.7 s, 8 or more ~2 s. Wiring:
+   `ccpp_dsl --jobs N` (default 1) hands the files, largest first, to a
+   process pool (fparser2 is pure Python, so threads would not help;
+   forked workers inherit the loaded modules) and prints the warnings in
+   the original file order. CAM-SIMA passes the case's `GMAKE_J` (16 on
+   Derecho; `buildlib` already reads it) from `cam_config.py` through
+   `cam_autogen.py` to the xdsl_ccpp command (a few lines; the capgen path
+   is unaffected). Generation runs at `buildnml`, before compiling, so the
+   build's cores are idle then. Helps every first build, for every user.
+   ~-12 s at J=16, leaving cam4 at ~7 s against capgen's ~5 s.
+4. **Optional: a shared cache** of the fparser2 result per scheme `.F90`.
+   After step 3 it saves only the remaining ~2 s per generation, for
+   developers who regenerate often or build many cases (a regression parsed
+   930 files, 147 distinct); a regular user's first build gets nothing.
+   Decide after step 3. Design, if built: one directory shared by all
+   builds (e.g. `~/.cache/xdsl_ccpp/`, overridable by an environment
+   variable); key = file contents + preprocessor defines (SE and MPAS
+   preprocess the same file differently) + xdsl-ccpp version; entries
+   written to a temporary file and renamed into place, so concurrent
+   builds cannot corrupt them; an option disables it.
+
+Rejected for the Fortran check: a signature-only scanner (it would need
+capgen-scale grammar coverage -- `parse_fortran_file.py` is ~1,100 lines --
+and leave two Fortran readers to keep in agreement, since the `!$ccpp` tag
+and OpenACC-clause extraction still need fparser2), and making the check
+opt-in (it would stop running where it matters).
 
 **Resolved since last verification (2026-10-14), removed from the list
 above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool
@@ -1792,12 +1891,5 @@ diagnostic messages and single-token metadata keys.
   section in the CAM-SIMA style, move the example scripts to
   `export_suite`, deprecate then remove `emit_ir`, and decide whether the
   standalone script path stays supported. Found by `dead-code-coverage`.
-- `capgen-api-qmin` — **The capgen-API run adapter recomputes constituent
-  minimums on every call.** With `--capgen-api` (formerly `--cam-host`),
-  `{host}_ccpp_physics_run` allocates `lc_qmin`, calls `minimum()` for every
-  constituent, passes the array to `ccpp_physics_run`, and deallocates it
-  (`CamQminPreambleOp`/`CamQminPostambleOp`, ccpp_cap.py). Original capgen
-  passes `cam_constituents_obj%vars_minvalue` directly. Pass the stored
-  minimums instead; this changes the run interface and CAM's caps. Found in
-  `suite-cap-mode-flags` (B0 audit).
+- `capgen-api-qmin` — resolved 2026-10-31. CHANGELOG.md L13618.
 - `generic-suite-schemes` — resolved 2026-10-31. CHANGELOG.md L13591.
