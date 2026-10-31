@@ -78,7 +78,7 @@ def test_run_diff_reports(tmp_path, monkeypatch):
                 "head": {"cam4": "y\n", "kessler": "k\n"}}
     calls = []
 
-    def fake_generate(src_tree, case, out_dir):
+    def fake_generate(src_tree, case, out_dir, jobs=1):
         calls.append((src_tree, case.suite))
         os.makedirs(out_dir, exist_ok=True)
         if case.suite == "cam7":
@@ -112,7 +112,7 @@ def test_input_key_compares_contents_not_paths(tmp_path):
 
 
 def test_run_diff_parallel_keeps_case_order(tmp_path, monkeypatch):
-    def fake_generate(src_tree, case, out_dir):
+    def fake_generate(src_tree, case, out_dir, jobs=1):
         os.makedirs(out_dir, exist_ok=True)
         open(os.path.join(out_dir, "cap.F90"), "w").write(case.suite)
         return True, ""
@@ -203,7 +203,7 @@ def test_capgen_check_outcomes(tmp_path, monkeypatch):
         return {"rejected": ("rejected", "Invalid variable property name, 'memory_space'"),
                 "broken": ("error", "TypeError: ...")}.get(case.suite, ("ok", ""))
 
-    def fake_generate(src_tree, case, out_dir):
+    def fake_generate(src_tree, case, out_dir, jobs=1):
         os.makedirs(out_dir, exist_ok=True)
         return case.suite != "xdslfail", "error"
 
@@ -268,8 +268,38 @@ def test_generate_example_call_adds_output_flags(tmp_path, monkeypatch):
                                "--emit-datatable", f"{out}/datatable.xml"]
 
 
+def test_generation_jobs_share_the_cpus():
+    """The oracle's --jobs CPUs are shared among the generations that run at
+    once: few cases get several each, many cases one each."""
+    assert cap_oracle.generation_jobs(4, 1) == 4
+    assert cap_oracle.generation_jobs(4, 2) == 2
+    assert cap_oracle.generation_jobs(4, 3) == 1
+    assert cap_oracle.generation_jobs(4, 46) == 1
+    assert cap_oracle.generation_jobs(1, 1) == 1
+
+
+def test_generate_passes_jobs_only_when_the_tree_has_it(tmp_path, monkeypatch):
+    seen = []
+
+    class Done:
+        returncode, stderr = 0, ""
+
+    monkeypatch.setattr(cap_oracle.subprocess, "run",
+                        lambda cmd, cwd, env, **_: seen.append(cmd) or Done())
+    call = cap_oracle.ExampleCall("examples/x/ccpp", "/src/examples/x", ("--suites", "s.xml"))
+    for tree, has_jobs in (("new", True), ("old", False)):
+        tools = tmp_path / tree / "xdsl_ccpp" / "tools"
+        tools.mkdir(parents=True)
+        (tools / "ccpp_dsl.py").write_text('p.add_argument("--jobs")' if has_jobs else "")
+        cap_oracle.generate(str(tmp_path / tree), call, str(tmp_path / "o"), jobs=4)
+        cap_oracle.generate(str(tmp_path / tree), call, str(tmp_path / "o"))
+    with_jobs = ["--jobs" in cmd for cmd in seen]
+    assert with_jobs == [True, False, False, False]
+    assert seen[0][-2:] == ["--jobs", "4"]
+
+
 def test_run_diff_mixes_cases_and_example_calls(tmp_path, monkeypatch):
-    def fake_generate(src_tree, case, out_dir):
+    def fake_generate(src_tree, case, out_dir, jobs=1):
         os.makedirs(out_dir, exist_ok=True)
         text = "changed\n" if (src_tree == "head" and case.label == "examples/b/ccpp") else "same\n"
         open(os.path.join(out_dir, "cap.F90"), "w").write(text)

@@ -53,7 +53,8 @@ measured data, and will drift as items are reassessed.
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
-| `cap-oracle-jobs` | <1 day (pass `--jobs` to each generation, splitting the CPU limit among the concurrent ones) | XS |
+| `cap-oracle-jobs` | <1 day (share the oracle's `--jobs` CPUs among the generations running at once; implemented, timing pending) | XS |
+| `suite-owned-framework-var` | 1-2 days (exclude framework cap variables such as the constituent tendencies from the suite-owned sweep) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -191,6 +192,7 @@ separately), CHANGELOG.md L5850.
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
 | `cap-oracle-jobs` | `cap_oracle` gets little of `generator-speed`: its generations run without `--jobs` | XS; found 2026-10-31 | -- |
+| `suite-owned-framework-var` | The suite cap declares an unused, never-allocated module array for the framework's constituent tendencies (`ptend_q`, microp_aero_bam) and warns about it | XS; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -510,19 +512,37 @@ of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
 Profile with a scratch `sitecustomize` cProfile hook (see the
 `generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
 
+**`suite-owned-framework-var`** -- found 2026-10-31 in the
+`generation-error-output` survey. Generating microp_aero_bam prints
+`suite_cap.py: UserWarning: xdsl_ccpp: cannot resolve allocation dimensions
+for 'ptend_q' (std_name='ccpp_constituent_tendencies', dims=(horizontal_loop_extent,
+vertical_layer_dimension, number_of_ccpp_constituents)) during suite-owned var
+sweep -- no allocate() will be generated.` The suite cap
+(`microp_aero_bam_cap.F90`) declares a module-level `real(kind_phys),
+allocatable :: ptend_q(:,:,:)` that is never allocated or used: the run
+routine takes `ptend_q` as a dummy argument (shadowing it), and
+`cam_ccpp_cap.F90` passes the framework's `lc_const_tend`, which it
+allocates. So the result is right (microp_aero_bam runs clean), but the
+suite-owned sweep (`suitecap/suite_owned.py`) classifies a framework cap
+variable (`FRAMEWORK_STD_NAME_TO_CAP_VAR`, here
+`ccpp_constituent_tendencies`) as suite-owned. Exclude framework cap
+variables from the sweep; the dead declaration and the warning go away.
+Check which other suites declare such arrays (cap_oracle diff shows it).
+
 **`cap-oracle-jobs`** -- `cap_oracle diff` generates every case twice (with
-`main` and the working tree), 4 at a time by default (half this user's CPU
-limit on the login node), but calls each generation without `--jobs`. So
-the Fortran-vs-`.meta` check -- most of a generation -- stays serial, and
-with `--jobs 1` it runs inline before the frontend, so the
-`generator-speed` overlap does not apply either; the oracle gained only
-the verify-once/parse-once steps (93 -> ~81-91 s). Fix: pass `--jobs`
-to each generation (`generator_args` or `cap_oracle.generate`), sharing
-the CPU limit among the concurrent generations, e.g. limit // `--jobs`
-(4 x `--jobs 2` on an 8-CPU limit). The examples' recorded calls take it
-too. Expect well under a minute. Alternative considered: keep the overlap
-at `--jobs 1` by running the serial check in one background process
-(helps every default caller, one extra process each).
+`main` and the working tree), 4 at a time by default (half this user's
+8-CPU login-node limit, which builds share), but calls each generation
+without `--jobs`, so the Fortran-vs-`.meta` check stays serial. `--jobs`
+does not reduce the CPU work, only spreads it: for a full run (46
+generations) the 4 concurrent generations already keep ~4 CPUs busy, and
+`-j 8` already uses the whole limit. The gain is for runs of few cases,
+where CPUs sit idle. Design (2026-10-31): share the oracle's `--jobs` CPUs
+among the generations running at once -- `generation_jobs(jobs, n_cases)`
+= jobs // min(jobs, n_cases), passed as `ccpp_dsl --jobs` (1 case: 4; 2
+cases: 2; 46 cases: 1), only to trees whose `ccpp_dsl` has `--jobs` (an
+older `--base` may not). Never exceeds today's footprint. Implemented on
+`generation-error-output` (uncommitted); time a one-case oracle run once no
+build shares the CPUs.
 
 **`in-process-pipeline`** -- run the frontend and the `ccpp_opt` passes in
 one process. Today `ccpp_dsl` runs the XML frontend and `ccpp_opt` as
