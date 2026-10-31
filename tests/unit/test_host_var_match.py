@@ -13,6 +13,7 @@ import pytest
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, TablePropertiesOp, TableTypeKind
+from xdsl_ccpp.util.ccpp_conventions import set_verbosity
 from xdsl.dialects.builtin import ModuleOp
 
 from tests.unit.helpers import (
@@ -875,6 +876,8 @@ _RULE_B_CONSUMER_META = f"""\
 class TestAdvectedConsistency:
 
     def test_missing_flag_warns(self, run_host_match, capsys):
+        """At --verbose 2 each reclassified argument is listed."""
+        set_verbosity(2)
         run_host_match(
             scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
             host_metas=[_ADVECTED_HOST_META],
@@ -884,6 +887,20 @@ class TestAdvectedConsistency:
         assert "missing advected" in captured.err.lower()
         assert "advected_producer" in captured.err
 
+    def test_missing_flag_summarised_by_default(self, run_host_match, capsys):
+        """At the default verbosity: one line with the count, no list."""
+        run_host_match(
+            scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
+            host_metas=[_ADVECTED_HOST_META],
+            suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
+        )
+        err = capsys.readouterr().err
+        assert err.splitlines() == [
+            "Warning: 1 scheme arguments are missing advected = true, though "
+            "other schemes in their suite declare these constituents advected; "
+            "treated as advected (--verbose 2 lists them)"
+        ]
+
     def test_missing_flag_reclassifies_arg(self, run_host_match, capsys):
         """Unconditional: IR is corrected, arg is no longer host-matched."""
         module = run_host_match(
@@ -892,7 +909,7 @@ class TestAdvectedConsistency:
             suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
         )
         captured = capsys.readouterr()
-        assert "reclassifying" in captured.err.lower()
+        assert "treated as advected" in captured.err.lower()
         arg = _get_scheme_arg(module, "advected_consumer", "test_shared_advected_var")
         assert arg is not None
         assert arg.advected is not None
@@ -954,7 +971,7 @@ class TestAdvectedConsistency:
         )
         captured = capsys.readouterr()
         assert "missing advected" in captured.err.lower()
-        assert "reclassifying" in captured.err.lower()
+        assert "treated as advected" in captured.err.lower()
         arg = _get_scheme_arg(module, "rule_b_consumer", "test_rule_b_var")
         assert arg is not None
         assert arg.advected is not None

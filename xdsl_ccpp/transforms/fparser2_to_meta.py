@@ -25,6 +25,7 @@ from xdsl.dialects import builtin
 from xdsl.dialects.builtin import StringAttr
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TablePropertiesOp
+from xdsl_ccpp.util.errors import CcppInputError
 
 # Map Fortran intrinsic type names to CCPP type strings
 _TYPE_MAP: dict[str, str] = {
@@ -307,18 +308,18 @@ def _extract_ccpp_tags(
     for line_no, remainders in _join_comment_continuations(source_lines, span, _CCPP_TAG_SENTINELS):
         first = remainders[0]
         if not first.startswith("["):
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag missing '[name]': {first!r}"
             )
         close = first.find("]")
         if close == -1:
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an unterminated "
                 f"'[name]': {first!r}"
             )
         var_name = first[1:close].strip().lower()
         if not var_name:
-            raise ValueError(
+            raise CcppInputError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an empty '[name]'"
             )
 
@@ -328,14 +329,14 @@ def _extract_ccpp_tags(
         segments = [first[close + 1:].strip()] + remainders[1:]
         for seg in segments:
             if "=" not in seg:
-                raise ValueError(
+                raise CcppInputError(
                     f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag is "
                     f"missing 'key = value': {seg!r}"
                 )
             key, value = seg.split("=", 1)
             key = key.strip().lower()
             if not key:
-                raise ValueError(
+                raise CcppInputError(
                     f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag has an "
                     "empty key"
                 )
@@ -388,7 +389,7 @@ def _extract_device_resident_vars(
                     open_paren = pos + len(keyword)
                     close_paren = text.find(")", open_paren)
                     if close_paren == -1:
-                        raise ValueError(
+                        raise CcppInputError(
                             f"{filename}: '{keyword}(' clause has no closing "
                             f"')': {text!r}"
                         )
@@ -413,20 +414,23 @@ def _extract_subroutines(
     ``name``, ``type``, ``rank``, ``intent`` (or None), ``optional`` (bool),
     ``kind`` (str or None, for CHARACTER only: the length string).
 
-    ``preproc_defs``, when truthy, is applied to *f90_source* via
-    ``fortran_preprocess.preprocess_fortran_source`` before fparser2 ever
-    sees it -- fparser has no CPP-evaluation capability of its own (it only
-    tokenizes ``#if``/``#ifdef``/etc. as opaque directive nodes), so
-    conditional-compilation regions must already be resolved by this point.
+    *f90_source* is always run through
+    ``fortran_preprocess.preprocess_fortran_source`` with ``preproc_defs``
+    (none if empty) before fparser2 sees it -- fparser has no CPP-evaluation
+    capability of its own (it only tokenizes ``#if``/``#ifdef``/etc. as
+    opaque directive nodes), so conditional-compilation regions must already
+    be resolved by this point.
     """
     import fparser.two.Fortran2003 as f03
     from fparser.two.parser import ParserFactory
     from fparser.two.utils import walk
     from fparser.common.readfortran import FortranStringReader
 
-    if preproc_defs:
-        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
-        f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
+    # Always, even with no defines: #if/#ifdef regions must be resolved (an
+    # undefined name excludes its region, as for the compiler); fparser2 sees
+    # the directives as opaque nodes and can fail on disabled code (#if 0).
+    from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+    f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
 
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
@@ -458,7 +462,7 @@ def _extract_subroutines(
             tags = _extract_ccpp_tags(source_lines, span, filename)
             unknown_tagged = sorted(set(tags) - dummy_names)
             if unknown_tagged:
-                raise ValueError(
+                raise CcppInputError(
                     f"'{filename}': subroutine '{proc_name}' has a !ccpp tag "
                     f"for {unknown_tagged}, which is not one of its own dummy "
                     f"arguments ({sorted(dummy_names)})"
@@ -529,9 +533,11 @@ def extract_program_locals(
     from fparser.two.utils import walk
     from fparser.common.readfortran import FortranStringReader
 
-    if preproc_defs:
-        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
-        f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
+    # Always, even with no defines: #if/#ifdef regions must be resolved (an
+    # undefined name excludes its region, as for the compiler); fparser2 sees
+    # the directives as opaque nodes and can fail on disabled code (#if 0).
+    from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+    f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
 
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
@@ -584,7 +590,7 @@ def build_meta_module_from_source(
     """Parse *f90_source* and return a ``builtin.ModuleOp`` containing
     ``ccpp.table_properties`` / ``ccpp.arg_table`` / ``ccpp.arg`` ops.
 
-    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    ``preproc_defs`` (none if empty) resolves ``#ifdef``/``#if`` conditional
     compilation in *f90_source* before parsing -- see ``_extract_subroutines``.
 
     Every ``!$ccpp``-tag-derived key found by ``_extract_subroutines``
@@ -629,7 +635,7 @@ def build_meta_module_from_source(
                     if tag_dim_names:
                         dim_list = [d.strip() for d in tag_dim_names.split(",") if d.strip()]
                         if len(dim_list) != arg["rank"]:
-                            raise ValueError(
+                            raise CcppInputError(
                                 f"'{arg['name']}': !ccpp tag's dim_names has "
                                 f"{len(dim_list)} name(s) but the real "
                                 f"declaration has rank {arg['rank']}"
@@ -669,7 +675,7 @@ def build_meta_module_from_file(
 ) -> builtin.ModuleOp:
     """Read *f90_path* and return CCPP metadata IR extracted via fparser2.
 
-    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    ``preproc_defs`` (none if empty) resolves ``#ifdef``/``#if`` conditional
     compilation before parsing -- see ``build_meta_module_from_source``.
     """
     with open(f90_path) as f:

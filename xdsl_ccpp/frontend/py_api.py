@@ -91,7 +91,9 @@ from xdsl_ccpp.dialects.ccpp import (
     TablePropertiesOp,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
+    report_deprecated_uses,
     set_legacy_mode,
+    set_verbosity,
 )
 
 # ---------------------------------------------------------------------------
@@ -1574,13 +1576,24 @@ def export_suite(
         python3 suite.py --scheme-files=a.meta,b.F90 --host-files=host.meta
     """
     # This script has no argparse of its own; ccpp_dsl.py's --py mode
-    # forwards --legacy-mode as a bare token on this process's own argv
-    # (mirroring ccpp_param()'s existing sys.argv-scanning convention).
+    # forwards --legacy-mode and --verbose=N as tokens on this process's own
+    # argv (mirroring ccpp_param()'s existing sys.argv-scanning convention).
     # Must run before build_ir() constructs any ArgumentOp below.
     set_legacy_mode("--legacy-mode" in sys.argv)
-    print(build_ir(suites, additional,
-                   scheme_files=_argv_file_list("--scheme-files"),
-                   host_files=_argv_file_list("--host-files")))
+    set_verbosity(_argv_verbosity())
+    ir = build_ir(suites, additional,
+                  scheme_files=_argv_file_list("--scheme-files"),
+                  host_files=_argv_file_list("--host-files"))
+    report_deprecated_uses()
+    print(ir)
+
+
+def _argv_verbosity() -> int:
+    """The level of a ``--verbose=N`` token on argv (default 1)."""
+    for token in sys.argv[1:]:
+        if token.startswith("--verbose="):
+            return int(token[len("--verbose="):])
+    return 1
 
 
 def _argv_file_list(option: str) -> list[str] | None:

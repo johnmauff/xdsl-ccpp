@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -36,6 +35,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_EXTENT_STD_NAME,
     normalize_units,
 )
+from xdsl_ccpp.util.errors import warn_once
 from xdsl_ccpp.transforms.suitecap.block_args import (
     _alloc_output_error_args,
     _apply_kind_and_unit_casts,
@@ -141,16 +141,14 @@ def suite_arg_attrs(input_arg_list, names) -> ArrayAttr:
 def warn_unallocated(deferred_warnings: list, scheduled_allocs: set) -> None:
     """Warn for each suite-owned variable whose allocation was deferred and
     that no phase of the suite (or package) managed to allocate."""
-    import warnings
     for local_name, std_name, dim_desc in deferred_warnings:
         if std_name not in scheduled_allocs:
-            warnings.warn(
-                f"xdsl_ccpp: cannot resolve allocation dimensions for"
+            warn_once(
+                f"cannot resolve allocation dimensions for"
                 f" '{local_name}'"
                 f" (std_name='{std_name}', dims=({dim_desc}))"
                 f" during suite-owned var sweep"
                 f" -- no allocate() will be generated.",
-                stacklevel=3,
             )
 
 

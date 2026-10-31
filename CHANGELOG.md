@@ -13693,3 +13693,64 @@ the overlap). pytest 1273 passed (new: parallel-vs-serial output test).
 CAM-SIMA: a forced cam4 regeneration in a real build (`GMAKE_J=16`) took
 ~9 s with steps 1-3, against ~21 s serial; a forced `ccpp_opt` failure
 with `--jobs 4` exits cleanly with no leftover processes.
+
+## `generation-error-output`: quiet, readable generator output (2026-10-31)
+
+A cam4 generation printed 2,859 stderr lines, 2,826 of them one legacy
+warning repeated per argument (and ~5 times over); a failed generation
+buried its error in that noise and two Python tracebacks. At the default
+verbosity a generation now prints 1-3 lines; every message is a plain
+`Warning:`/`Error:` line, and the details are at `--verbose 2`.
+
+- Stage 1 -- legacy warnings: `ArgumentOp` records each deprecated
+  standard name (`ccpp_conventions.record_deprecated_use`, attributed to
+  its `.meta` file by `build_meta_ir`); the XML frontend, the Python-suite
+  frontend and `ccpp_dsl`'s Python-suite `.meta` merge report them once
+  (`report_deprecated_uses`): `--verbose 0` nothing, 1 one line per name
+  with counts, 2 the arguments by `.meta` file. `ccpp_dsl` forwards
+  `--verbose` to both frontends and `ccpp_opt`; the Fortran check discards
+  its copies (`deprecation_records_discarded`).
+- Stage 3 -- input errors: `CcppInputError` (a `ValueError`,
+  `util/errors.py`) is printed as `Error: <message>` with exit 1 by the
+  `ccpp_dsl`, `ccpp_opt` and XML-frontend entry points
+  (`report_input_errors`; traceback at `--verbose 2`). Marked: the
+  host-match failure, the deprecated-name rejection, the XML frontend's
+  checks, the preprocessor and `!$ccpp` tag errors (31 sites). Other
+  exceptions keep their traceback.
+- Stage 4 -- `run_dispatch.py`'s `Info:` lines (run-dispatcher arguments
+  the caller supplies) only at `--verbose 2`, reworded.
+- Stage 5 -- the Fortran-vs-`.meta` check always preprocesses (with no
+  defines too): `qneg.F90`'s `#if 0` blocks crashed fparser2 ("tuple index
+  out of range") in every case without defines. Over all 30 distinct
+  regression generations only those 10 warnings changed. Also fixed
+  `cam_case.read_case`, which read the build cache's namelist `.meta`
+  entries from an attribute although CAM-SIMA stores them as element text
+  (masked until the `cam_autogen.py` fix; it broke cap_oracle on new
+  cases).
+- Stage 6 -- `persistence` (`timestep`|`run`, capgen metadata) is a known
+  argument property, checked but not used.
+- Stage 7 -- the "missing advected = true ... reclassifying" warnings
+  (17 in cam4) become one summary line (list at `--verbose 2`); the
+  memory_space-without-`--directive` note only at `--verbose 2`.
+- Stage 8 -- the suite cap's four `warnings.warn` calls print plain
+  `Warning:` lines, once per process (`util.errors.warn_once`).
+- `cap_oracle` shares its `--jobs` CPUs among the generations running at
+  once (`generation_jobs`), passed as `ccpp_dsl --jobs` to trees that have
+  it: a one-case cam4 comparison 69 s -> 28.5 s; full runs unchanged.
+- Tests: `tests/unit/conftest.py` resets the verbosity before every test
+  (a process global that one test's `run(verbose=0)` leaked).
+
+CAM-SIMA (`xdsl-ccpp-adapter`): `cam_autogen.py` passes `--verbose 1`,
+prefixes each xdsl_ccpp stderr line with `xDSL-ccpp: ` and reports it once
+(in the error on failure, else in the log); `buildnml`/`buildlib` turn
+`CamAutoGenError` into `CIMEError`, so CIME reports a generation failure
+without a Python traceback.
+
+Verification: caps, `resolved_vars.json` and datatables unchanged at every
+stage (`cap_oracle diff` against `main`: 46 identical; the 30 distinct
+regression generations compared directly). pytest 1291 passed. Over the
+30 generations, default-level stderr: 187 lines after stage 5 -> 39 after
+stage 7. CAM-SIMA gnu aux_sima xdsl62g: 27 PASS, the 3 known failures
+(F2000_C7, gw_cam7: `prec_dp`/`prec_sh`/`prec_str`; zm:
+`zm-ncdata-diffs`), 2 still queued at wrap-up; gw_cam7's log shows the
+`ERROR:` + `Error:` block without a traceback.

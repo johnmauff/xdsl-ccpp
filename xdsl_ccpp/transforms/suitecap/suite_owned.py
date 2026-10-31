@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from xdsl.dialects import arith, memref
 
 from xdsl_ccpp.dialects import ccpp_utils
@@ -20,6 +19,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
 )
+from xdsl_ccpp.util.errors import warn_once
 from xdsl_ccpp.transforms.suitecap.block_args import (
     _alias_canonical_data_ops,
     _std_key,
@@ -76,15 +76,13 @@ class SuiteOwnedMixin:
                     already_scheduled_allocs.add(_pending.std_key)
             else:
                 # Unresolvable dimension: warn at generation time.
-                import warnings
                 _dim_desc = ", ".join(str(d) for d in _pending.alloc_dim_names)
-                warnings.warn(
-                    f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                warn_once(
+                    f"cannot resolve allocation dimensions for"
                     f" '{_pending.var_name}'"
                     f" (std_name='{_pending.std_key}', dims=({_dim_desc}))"
                     f" after scheme '{scheme_name}' ran"
                     f" -- no allocate() will be generated.",
-                    stacklevel=2,
                 )
         return ops
 
@@ -320,13 +318,11 @@ class SuiteOwnedMixin:
         else:
             # Unresolvable dimensions: warn at generation time.
             _alloc_dim_desc = ", ".join(str(d) for d in _alloc_dim_names)
-            import warnings
-            warnings.warn(
-                f"xdsl_ccpp: cannot resolve allocation dimensions for "
+            warn_once(
+                f"cannot resolve allocation dimensions for "
                 f"'{var_name}' (std_name='{fw_std_key}', dims=({_alloc_dim_desc}))"
                 f" -- no allocate() will be generated; this will likely cause a"
                 f" Fortran runtime error.",
-                stacklevel=2,
             )
 
     def _sweep_suite_owned_var_allocations(
@@ -392,14 +388,12 @@ class SuiteOwnedMixin:
                         (entry.local_name, entry.standard_name, _dim_desc)
                     )
                 else:
-                    import warnings
-                    warnings.warn(
-                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                    warn_once(
+                        f"cannot resolve allocation dimensions for"
                         f" '{entry.local_name}'"
                         f" (std_name='{entry.standard_name}', dims=({_dim_desc}))"
                         f" during suite-owned var sweep"
                         f" -- no allocate() will be generated.",
-                        stacklevel=2,
                     )
 
     def _build_framework_refs(

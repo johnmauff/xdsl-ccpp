@@ -48,11 +48,11 @@ measured data, and will drift as items are reassessed.
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-ncdata-diffs` | 5-10 days (cause upstream: stock capgen gives the same differences; fails on every compiler) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
-| `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
+| `suite-owned-framework-var` | 1-2 days (exclude framework cap variables such as the constituent tendencies from the suite-owned sweep) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -182,13 +182,13 @@ separately), CHANGELOG.md L5850.
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n, xdsl59g; stock capgen gives the same differences (zmcg1), so not xdsl_ccpp | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
-| `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
+| `suite-owned-framework-var` | The suite cap declares an unused, never-allocated module array for the framework's constituent tendencies (`ptend_q`, microp_aero_bam) and warns about it | XS; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -318,41 +318,7 @@ without `gravity_wave_drag_orographic_diagnostics`; cam4 and cam7 have
 both. Likely XML omissions: raise with the atmospheric_physics developers,
 and fix the XML and `suites-py/suite_cam5.py` together if confirmed.
 
-**`generation-error-output`** -- found 2026-10-24 comparing the gw_cam7
-FPHYStest failure under both generators. xdsl-ccpp's message is the better
-one: `host_var_match_pass` lists every unmatched argument at once (scheme,
-argument, standard name: `prec_dp`, `prec_sh`, `prec_str` of
-`compute_total_precipitation_rate`), where capgen stops at the first and
-omits the argument name. But in xdsl57n's `TestStatus.log` it is buried:
-- 1,580 `Warning(LEGACY): arg '...': standard_name 'horizontal_loop_extent'
-  is deprecated` lines, printed by the arg op's verifier in
-  `xdsl_ccpp/dialects/ccpp.py` each time it runs (so repeated across
-  passes);
-- an unrelated `Warning: fparser2 failed to parse ... qneg.F90 for
-  Fortran-vs-.meta validation: tuple index out of range`
-  (`tools/ccpp_dsl.py`);
-- the `ValueError` arrives inside the optimizer's Python traceback, which
-  `cam_autogen.py` wraps in CIME's.
-
-**Design decision (user, 2026-10-24): tie the legacy warnings to
-`--verbose`.** Both views are useful: the full per-argument list is a guide
-to which `.meta` files still need updating, and normal builds should be
-quiet. So `--verbose 2` keeps every `Warning(LEGACY)` line (as now); the
-default level prints a short summary (each deprecated name once, with a
-count); `--verbose 0` prints none. There is no such control today: the
-warning is printed unconditionally from `ArgumentOp.__init__` in
-`dialects/ccpp.py` (once per argument, and again whenever IR is re-parsed,
-e.g. in the `ccpp_opt` subprocess), and `--verbose` only reaches
-`ccpp_dsl.py`'s `print_verbose_message`. The level must be carried to the
-`ccpp_opt` subprocess and the Python-suite frontend (which reads `sys.argv`
-itself), e.g. as a module setting next to `set_legacy_mode` in
-`util/ccpp_conventions.py`; `cam_autogen.py` can then choose the level.
-Not started (user deferred).
-
-Also to do: report user-input errors such as host-match
-failures as a plain `Error:` message with exit status 1, keeping the
-traceback for internal errors or a verbose flag; show the fparser2 warning
-only when verbose (and check why qneg.F90 fails to parse).
+**ID: `generation-error-output`. Resolved (2026-10-31)** -- CHANGELOG.md L13697.
 
 **`rrtmgp-wrapper-acc-trigger`** -- found 2026-10-24. Upstream's capgen GPU
 RRTMGP test (CAM-SIMA tpr_n, `development`, no atmospheric_physics #468)
@@ -476,6 +442,25 @@ of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
   hot loops.
 Profile with a scratch `sitecustomize` cProfile hook (see the
 `generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
+
+**`suite-owned-framework-var`** -- found 2026-10-31 in the
+`generation-error-output` survey. Generating microp_aero_bam prints
+`suite_cap.py: UserWarning: xdsl_ccpp: cannot resolve allocation dimensions
+for 'ptend_q' (std_name='ccpp_constituent_tendencies', dims=(horizontal_loop_extent,
+vertical_layer_dimension, number_of_ccpp_constituents)) during suite-owned var
+sweep -- no allocate() will be generated.` The suite cap
+(`microp_aero_bam_cap.F90`) declares a module-level `real(kind_phys),
+allocatable :: ptend_q(:,:,:)` that is never allocated or used: the run
+routine takes `ptend_q` as a dummy argument (shadowing it), and
+`cam_ccpp_cap.F90` passes the framework's `lc_const_tend`, which it
+allocates. So the result is right (microp_aero_bam runs clean), but the
+suite-owned sweep (`suitecap/suite_owned.py`) classifies a framework cap
+variable (`FRAMEWORK_STD_NAME_TO_CAP_VAR`, here
+`ccpp_constituent_tendencies`) as suite-owned. Exclude framework cap
+variables from the sweep; the dead declaration and the warning go away.
+Check which other suites declare such arrays (cap_oracle diff shows it).
+
+**ID: `cap-oracle-jobs`. Resolved (2026-10-31)** -- CHANGELOG.md L13697.
 
 **`in-process-pipeline`** -- run the frontend and the `ccpp_opt` passes in
 one process. Today `ccpp_dsl` runs the XML frontend and `ccpp_opt` as

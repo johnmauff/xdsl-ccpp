@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 from xdsl_ccpp.tools.cap_compare import compare
 from xdsl_ccpp.tools.cam_case import CamCase, generator_args, read_case, suite_groups
@@ -101,11 +102,21 @@ def read_example_calls(build_dir: str) -> list[ExampleCall]:
     return calls
 
 
+@lru_cache
+def _accepts_jobs(src_tree: str) -> bool:
+    """Whether <src_tree>'s ccpp_dsl has --jobs (an older --base may not)."""
+    try:
+        return '"--jobs"' in open(os.path.join(src_tree, "xdsl_ccpp", "tools", "ccpp_dsl.py")).read()
+    except OSError:
+        return False
+
+
 def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str,
-             extra_path: tuple[str, ...] = ()) -> tuple[bool, str]:
+             extra_path: tuple[str, ...] = (), jobs: int = 1) -> tuple[bool, str]:
     """Generate <case>'s caps with the xdsl-ccpp in <src_tree>, with
     <extra_path> after it on PYTHONPATH (code_coverage.py's measurement
-    hook). Returns (success, the end of stderr)."""
+    hook) and ccpp_dsl --jobs <jobs> when above 1 and the tree has it.
+    Returns (success, the end of stderr)."""
     os.makedirs(out_dir, exist_ok=True)
     if isinstance(case, ExampleCall):
         args = [*case.args, "-o", out_dir, "--tempdir", os.path.join(out_dir, "tmp"),
@@ -113,6 +124,8 @@ def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str,
         cwd, path = case.cwd, (src_tree,)
     else:
         args, cwd, path = generator_args(case, out_dir), src_tree, (src_tree, *case.python_path)
+    if jobs > 1 and _accepts_jobs(src_tree):
+        args = [*args, "--jobs", str(jobs)]
     env = dict(os.environ, PYTHONPATH=os.pathsep.join((*path, *extra_path)))
     proc = subprocess.run(
         [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_dsl", *args],
@@ -157,14 +170,14 @@ def compare_dirs(base_dir: str, head_dir: str, base_tree: str = "", head_tree: s
     return diffs
 
 
-def _check(group: list[CamCase], key: str, base_tree: str, head_tree: str,
-           out: str) -> tuple[bool, str]:
-    """Generate one distinct case with both revisions and compare.
-    Returns (identical, report line)."""
+def _check(group: list[CamCase], key: str, gen_jobs: int, base_tree: str,
+           head_tree: str, out: str) -> tuple[bool, str]:
+    """Generate one distinct case with both revisions (ccpp_dsl --jobs
+    <gen_jobs>) and compare. Returns (identical, report line)."""
     case = group[0]
     name = f"{case.label}-{key}"
     dirs = {rev: os.path.join(out, name, rev) for rev in ("base", "head")}
-    results = {rev: generate(tree, case, dirs[rev])
+    results = {rev: generate(tree, case, dirs[rev], jobs=gen_jobs)
                for rev, tree in (("base", base_tree), ("head", head_tree))}
     shared = f" (+{len(group) - 1} cases with the same inputs)" if len(group) > 1 else ""
     ok = {rev: r[0] for rev, r in results.items()}
@@ -188,15 +201,23 @@ def _check(group: list[CamCase], key: str, base_tree: str, head_tree: str,
     return False, f"DIFFERENT  {case.label}{shared}: {summary}\n           {diff_path}"
 
 
+def generation_jobs(jobs: int, n_cases: int) -> int:
+    """ccpp_dsl --jobs for each generation: the <jobs> CPUs shared among the
+    generations that run at once, so a run of few cases still uses them all
+    (1 case: <jobs>; as many cases as <jobs> or more: 1)."""
+    return max(1, jobs // max(1, min(jobs, n_cases)))
+
+
 def _run_checks(cases: list[CamCase], check, report, jobs: int) -> bool:
-    """Run check(group, key) for each distinct case (cases with the same
-    inputs grouped), <jobs> at a time; report in case order. True if all
-    checks passed."""
+    """Run check(group, key, gen_jobs) for each distinct case (cases with the
+    same inputs grouped), <jobs> at a time, each generation using
+    generation_jobs CPUs; report in case order. True if all checks passed."""
     by_key: dict[str, list[CamCase]] = {}
     for case in cases:
         by_key.setdefault(case.input_key, []).append(case)
+    gen_jobs = generation_jobs(jobs, len(by_key))
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        futures = [pool.submit(check, group, key) for key, group in by_key.items()]
+        futures = [pool.submit(check, group, key, gen_jobs) for key, group in by_key.items()]
         passed = True
         for future in futures:
             ok, line = future.result()
@@ -210,7 +231,8 @@ def run_diff(cases: list[CamCase], base_tree: str, head_tree: str, out: str,
     """Generate and compare every distinct case with both revisions; True if
     all identical."""
     return _run_checks(
-        cases, lambda group, key: _check(group, key, base_tree, head_tree, out), report, jobs)
+        cases, lambda group, key, gen_jobs: _check(group, key, gen_jobs, base_tree, head_tree, out),
+        report, jobs)
 
 
 # Runs original capgen as cam_autogen.py does; arguments as JSON on stdin.
@@ -253,9 +275,11 @@ def run_capgen(case: CamCase, out_dir: str) -> tuple[str, str]:
     return status, "\n".join(proc.stderr.splitlines()[-3:])
 
 
-def _check_capgen(group: list[CamCase], key: str, head_tree: str, out: str) -> tuple[bool, str]:
+def _check_capgen(group: list[CamCase], key: str, gen_jobs: int, head_tree: str,
+                  out: str) -> tuple[bool, str]:
     """Generate one distinct case with capgen and the working tree's
-    xdsl-ccpp, and compare. Returns (equivalent, report line)."""
+    xdsl-ccpp (ccpp_dsl --jobs <gen_jobs>), and compare. Returns
+    (equivalent, report line)."""
     case = group[0]
     shared = f" (+{len(group) - 1} cases with the same inputs)" if len(group) > 1 else ""
     name = f"{case.suite}-{key}"
@@ -265,7 +289,7 @@ def _check_capgen(group: list[CamCase], key: str, head_tree: str, out: str) -> t
         return True, f"NO CAPGEN  {case.suite}{shared}: capgen rejects it: {err.splitlines()[-1] if err else ''}"
     if status == "error":
         return False, f"ERROR      {case.suite}{shared}: running capgen failed\n           {err}"
-    ok_xdsl, err = generate(head_tree, case, dirs["xdsl"])
+    ok_xdsl, err = generate(head_tree, case, dirs["xdsl"], jobs=gen_jobs)
     if not ok_xdsl:
         return False, f"XDSL FAILS {case.suite}{shared}: capgen generates it, xdsl-ccpp does not\n           {err}"
     diffs, renames = compare(dirs["capgen"], dirs["xdsl"], suite_groups(case))
@@ -291,7 +315,8 @@ def run_capgen_check(cases: list[CamCase], head_tree: str, out: str, report=prin
         else:
             comparable.append(dataclasses.replace(case, directive=None))
     return _run_checks(
-        comparable, lambda group, key: _check_capgen(group, key, head_tree, out), report, jobs)
+        comparable, lambda group, key, gen_jobs: _check_capgen(group, key, gen_jobs, head_tree, out),
+        report, jobs)
 
 
 def _cpu_quota() -> float | None:

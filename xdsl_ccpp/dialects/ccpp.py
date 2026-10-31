@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from enum import StrEnum, auto
 from typing import ClassVar
@@ -34,7 +33,12 @@ from xdsl.irdl import (
 from xdsl.traits import NoTerminator
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.util.ccpp_conventions import deprecated_std_name_warning, is_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import (
+    deprecated_std_name_warning,
+    is_legacy_mode,
+    record_deprecated_use,
+)
+from xdsl_ccpp.util.errors import CcppInputError
 
 
 class TableTypeKind(StrEnum):
@@ -505,7 +509,7 @@ class ArgumentOp(IRDLOperation):
         "kind", "intent", "units", "memory_space", "optional",
         "allocatable", "advected", "constituent", "protected", "state_variable",
         "default_value", "diagnostic_name", "diagnostic_name_fixed", "active",
-        "top_at_one",
+        "top_at_one", "persistence",
     ])
 
     def __init__(
@@ -582,7 +586,9 @@ class ArgumentOp(IRDLOperation):
         # own strict posture -- whether declared as the arg's own
         # standard_name or as one of its dimension names. --legacy-mode
         # downgrades this to a warning and preserves full support (matches
-        # capgen-v1's own --legacy-mode flag).
+        # capgen-v1's own --legacy-mode flag); the warning is recorded and
+        # reported once by the frontend (report_deprecated_uses), at its
+        # --verbose level.
         _checked_std_names = []
         if "standard_name" in properties:
             _checked_std_names.append(properties["standard_name"].data)
@@ -592,16 +598,24 @@ class ArgumentOp(IRDLOperation):
             _warning = deprecated_std_name_warning(_std_name)
             if _warning is not None:
                 if is_legacy_mode():
-                    print(
-                        f"Warning(LEGACY): arg '{arg_name.data}': {_warning} ",
-                        file=sys.stderr,
-                    )
+                    record_deprecated_use(arg_name.data, _std_name)
                 else:
-                    raise ValueError(
+                    raise CcppInputError(
                         f"arg '{arg_name.data}': {_warning}. Pass --legacy-mode "
                         f"to accept this deprecated standard_name (matches "
                         f"capgen-v1's --legacy-mode flag)."
                     )
+
+        # persistence (capgen: when a suite-owned array is allocated --
+        # 'timestep', the default, or 'run'). Checked, as capgen does, but not
+        # used: xdsl_ccpp allocates suite-owned data its own way.
+        if "persistence" in attributes:
+            persistence = str(attributes["persistence"]).strip().lower()
+            if persistence not in ("timestep", "run"):
+                raise CcppInputError(
+                    f"arg '{arg_name.data}': persistence must be 'timestep' or "
+                    f"'run', got '{attributes['persistence']}'"
+                )
 
         # Silently ignore unrecognised keys
 

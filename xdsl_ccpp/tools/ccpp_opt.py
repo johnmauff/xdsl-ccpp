@@ -26,6 +26,8 @@ from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.scheme_io_capture_pass import SchemeIOCapturePass
+from xdsl_ccpp.util.ccpp_conventions import set_verbosity
+from xdsl_ccpp.util.errors import report_input_errors
 
 # Set (to anything but "" or "0") to verify the IR after every pass by
 # default; the test suite sets it (tests/conftest.py).
@@ -35,6 +37,15 @@ VERIFY_EACH_PASS_ENV = "XDSL_CCPP_VERIFY_EACH_PASS"
 class CCPPOptMain(xDSLOptMain):
     def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
         super().register_all_arguments(arg_parser)
+        arg_parser.add_argument(
+            "--verbose",
+            type=int,
+            choices=[0, 1, 2],
+            default=1,
+            help="Verbosity: at 2, an error in the input (e.g. a scheme argument "
+                 "with no host match) shows its traceback, not only its message. "
+                 "Forwarded from ccpp_dsl.py's own --verbose.",
+        )
         arg_parser.add_argument(
             "--verify-each-pass",
             action="store_true",
@@ -134,7 +145,9 @@ class CCPPOptMain(xDSLOptMain):
 
 
 def main():
-    CCPPOptMain().run()
+    opt = CCPPOptMain()
+    set_verbosity(opt.args.verbose)
+    report_input_errors(opt.run)
 
 
 if __name__ == "__main__":
