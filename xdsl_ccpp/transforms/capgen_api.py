@@ -17,17 +17,17 @@ from xdsl.ir import Block, Region
 
 from xdsl_ccpp.dialects.ccpp_utils import (
     CamDirectCallOp,
-    CamQminPostambleOp,
-    CamQminPreambleOp,
     CamSuiteDispatchOp,
     ClearErrStateOp,
     DdtMethodCallOp,
     ErrorPropagateOp,
     KeywordArgExprOp,
+    MemberAccessExprOp,
     VarRefExprOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    constituents_obj_name,
     fixed_interface_fn,
     framework_cap_var_ref,
 )
@@ -93,18 +93,22 @@ def generate_capgen_api_wrappers(
     char_base = TypeConversions.getBaseType("character")
     suite_name_type  = memref.MemRefType(char_base, [DYNAMIC_INDEX])
 
-    # Cap-local framework variables: standard_name -> (reference, None,
-    # qmin_needed); reference is an identifier or a CapVarRef. Every other
-    # argument (the loop bounds, errmsg/errcode, ...) is a host variable,
-    # looked up in the host's MODULE-type metadata (host_var_map_lc) and
-    # use-associated from its module, as original capgen does.
+    # Cap-local framework variables: standard_name -> builder of the
+    # argument expression. The minimum values are the constituents object's
+    # own array, filled by lock_data (cam_ccpp_initialize_constituents), as
+    # original capgen passes them. Every other argument (the loop bounds,
+    # errmsg/errcode, ...) is a host variable, looked up in the host's
+    # MODULE-type metadata (host_var_map_lc) and use-associated from its
+    # module, as original capgen does.
+    const_obj = constituents_obj_name(host)
     _CAM_STD_EXPRS = {
-        "ccpp_constituent_properties":     ("lc_const_props", None, False),
-        "ccpp_constituent_minimum_values": ("lc_qmin",        None, True),
+        "ccpp_constituent_properties": lambda: VarRefExprOp("lc_const_props"),
+        "ccpp_constituent_minimum_values":
+            lambda: MemberAccessExprOp(VarRefExprOp(const_obj), "vars_minvalue"),
     }
     for _std in FRAMEWORK_STD_NAME_TO_CAP_VAR:
         assert _std not in _CAM_STD_EXPRS, f"_CAM_STD_EXPRS collision for '{_std}'"
-        _CAM_STD_EXPRS[_std] = (framework_cap_var_ref(_std), None, False)
+        _CAM_STD_EXPRS[_std] = framework_cap_var_ref(_std).expr_op
 
     def _make_use_global(var_name, module_name):
         g = llvm.GlobalOp(
@@ -125,29 +129,27 @@ def generate_capgen_api_wrappers(
                 _seen_globals[key] = _make_use_global(var_name, mod_name)
 
     def _build_dispatcher_call(fn_suffix):
-        """Return (call_args, global_specs, qmin_needed) for one dispatcher.
+        """Return (call_args, global_specs) for one dispatcher.
 
         call_args:    list -- an expression op for each positional arg, and
                       None for the suite part (the caller supplies it).
         global_specs: list[(var_name, module_name)] -- vars needing USE stubs.
-        qmin_needed:  bool -- True when ccpp_constituent_minimum_values is used.
 
-        Returns (None, [], False) when the dispatcher is absent from lifecycle_fns.
+        Returns (None, []) when the dispatcher is absent from lifecycle_fns.
 
         arg_to_std is keyed by the dispatcher's dummy-argument names,
         which _build_run_block_signature records in its arg_attrs
         (SUITE_ARG_NAME).
         """
         if lifecycle_fns is None:
-            return None, [], False
+            return None, []
         entry = lifecycle_fns.get(fn_suffix)
         if entry is None:
-            return None, [], False
+            return None, []
 
         fn, arg_to_std = entry
         call_args  = []
         gspecs     = []
-        qmin_needed = False
 
         for a, attrs in zip(fn.args, arg_attr_values(fn)):
             arg_name = attrs.get(SUITE_ARG_NAME, a.name_hint or "")
@@ -166,27 +168,23 @@ def generate_capgen_api_wrappers(
                     f"Ensure _generate_run_fn returns non_host_std_to_canonical "
                     f"and ccpp_cap.py stores it in lifecycle_fns."
                 )
-            cam_entry = _CAM_STD_EXPRS.get(std_name)
-            if cam_entry is None and host_var_map_lc is not None:
-                hv = host_var_map_lc.get(std_name.lower())
-                if hv is not None:
-                    var_name, module_name = hv
-                    cam_entry = (var_name, module_name, False)
-            if cam_entry is None:
+            build = _CAM_STD_EXPRS.get(std_name)
+            if build is not None:
+                call_args.append(build())
+                continue
+            hv = host_var_map_lc.get(std_name.lower()) if host_var_map_lc is not None else None
+            if hv is None:
                 raise ValueError(
                     f"generate_capgen_api_wrappers: no host variable for "
                     f"standard_name '{std_name}' (dispatcher '{fn_suffix}', "
                     f"arg '{arg_name}'): declare it in a MODULE-type host "
                     f"metadata table."
                 )
-            ref, mod, qmin = cam_entry
-            call_args.append(VarRefExprOp(ref) if isinstance(ref, str) else ref.expr_op())
-            if mod:
-                gspecs.append((ref, mod))
-            if qmin:
-                qmin_needed = True
+            var_name, module_name = hv
+            call_args.append(VarRefExprOp(var_name))
+            gspecs.append((var_name, module_name))
 
-        return call_args, gspecs, qmin_needed
+        return call_args, gspecs
 
     def _build_suite_groups(infix):
         """Return list of (suite_name, group_names) for CamSuiteDispatchOp."""
@@ -261,7 +259,7 @@ def generate_capgen_api_wrappers(
         ErrorPropagateOp(errcode),
     ]
     if has_physics_init:
-        _init_args, _init_gspecs, _ = _build_dispatcher_call("ccpp_physics_init")
+        _init_args, _init_gspecs = _build_dispatcher_call("ccpp_physics_init")
         _add_globals(_init_gspecs)
         _init_body.append(_suite_dispatch(
             "ccpp_physics_init", f"{host}_ccpp_physics_initialize", "init", _init_args,
@@ -277,7 +275,7 @@ def generate_capgen_api_wrappers(
     # --- cam_ccpp_physics_finalize ---
     _final_body = []
     if has_physics_final:
-        _final_args, _final_gspecs, _ = _build_dispatcher_call("ccpp_physics_final")
+        _final_args, _final_gspecs = _build_dispatcher_call("ccpp_physics_final")
         _add_globals(_final_gspecs)
         _final_body += [
             _suite_dispatch(
@@ -298,7 +296,7 @@ def generate_capgen_api_wrappers(
 
     # --- cam_ccpp_physics_timestep_initial ---
     if has_tsinit:
-        _tsinit_args, _tsinit_gspecs, _ = _build_dispatcher_call("ccpp_physics_timestep_init")
+        _tsinit_args, _tsinit_gspecs = _build_dispatcher_call("ccpp_physics_timestep_init")
         _add_globals(_tsinit_gspecs)
         _tsinit_body = [
             _suite_dispatch(
@@ -317,22 +315,14 @@ def generate_capgen_api_wrappers(
     ))
 
     # --- cam_ccpp_physics_run ---
-    _run_call_args, _run_gspecs, _run_has_qmin = _build_dispatcher_call("ccpp_physics_run")
+    _run_call_args, _run_gspecs = _build_dispatcher_call("ccpp_physics_run")
     if _run_call_args is None:
         _run_call_args = _names("suite_name", "suite_part", errmsg, errcode)
     else:
         _run_call_args = [VarRefExprOp("suite_part") if a is None else a
                           for a in _run_call_args]
     _add_globals(_run_gspecs)
-    if _run_has_qmin:
-        _add_globals([("kind_phys", "ccpp_kinds")])
-    _run_body = []
-    if _run_has_qmin:
-        _run_body.append(CamQminPreambleOp(errcode, errmsg))
-    _run_body.append(CamDirectCallOp("ccpp_physics_run", _run_call_args))
-    if _run_has_qmin:
-        _run_body.append(CamQminPostambleOp())
-    _run_body.append(func.ReturnOp())
+    _run_body = [CamDirectCallOp("ccpp_physics_run", _run_call_args), func.ReturnOp()]
     wrappers.append(_build_funcop(
         f"{host}_ccpp_physics_run",
         ["suite_name", "suite_part"],
@@ -342,7 +332,7 @@ def generate_capgen_api_wrappers(
 
     # --- cam_ccpp_physics_timestep_final ---
     if has_tsfinal:
-        _tsfinal_args, _tsfinal_gspecs, _ = _build_dispatcher_call(
+        _tsfinal_args, _tsfinal_gspecs = _build_dispatcher_call(
             "ccpp_physics_timestep_final"
         )
         _add_globals(_tsfinal_gspecs)

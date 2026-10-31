@@ -12,6 +12,8 @@ Tests here cover the --capgen-api invariants:
      ccpp_scheme_utils_set_constituents).
   3. gather_constituents and update_constituents subroutines are emitted and
      contain copy_in / copy_out calls on <host>_constituents_obj.
+  4. the run adapter passes <host>_constituents_obj%vars_minvalue as the
+     constituent minimum values, as original capgen does.
 """
 
 from io import StringIO
@@ -44,10 +46,31 @@ _HOST_META = """\
   type = integer
 """
 
-# The run entry intentionally uses only the mandatory args so the capgen-API
-# lifecycle wrapper (_generate_cam_lifecycle_wrappers) needs no host variables
-# beyond errmsg/errcode.  The tests here are about the constituent API
-# module-level subroutines (register/gather/update), not the run dispatcher.
+# The framework's constituents DDT, which CAM-SIMA passes in --host-files
+# (ccpp_framework/src/ccpp_constituent_prop_mod.meta): it declares the
+# constituent minimum values the run entry below reads.
+_CONSTITUENTS_DDT_META = """\
+[ccpp-table-properties]
+  name = ccpp_model_constituents_t
+  type = ddt
+[ccpp-arg-table]
+  name = ccpp_model_constituents_t
+  type = ddt
+[ num_layer_vars ]
+  standard_name = number_of_ccpp_constituents
+  units = count
+  dimensions = ()
+  type = integer
+[ vars_minvalue ]
+  standard_name = ccpp_constituent_minimum_values
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (number_of_ccpp_constituents)
+"""
+
+# Besides the mandatory args, the run entry reads only the constituent
+# minimum values, a framework variable, so the capgen-API run adapter needs
+# no host variables beyond errmsg/errcode.
 _SCHEME_META = f"""\
 [ccpp-table-properties]
   name = cld_liq
@@ -65,6 +88,12 @@ _SCHEME_META = f"""\
 [ccpp-arg-table]
   name = cld_liq_run
   type = scheme
+[ qmin ]
+  standard_name = ccpp_constituent_minimum_values
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (number_of_ccpp_constituents)
+  intent = in
 {CCPP_MANDATORY_ARGS}
 """
 
@@ -81,7 +110,7 @@ _SUITE_XML = """\
 def _fortran_output(run_host_match, ccpp_context) -> str:
     module = run_host_match(
         scheme_metas=[_SCHEME_META],
-        host_metas=[_HOST_META],
+        host_metas=[_HOST_META, _CONSTITUENTS_DDT_META],
         suite_xml=_SUITE_XML,
     )
     ArgOwnershipPass().apply(ccpp_context, module)
@@ -161,3 +190,13 @@ class TestCamHostGatherUpdateRoutines:
         fortran = _fortran_output(run_host_match, ccpp_context)
         assert f"public :: {_GATHER_FN}" in fortran
         assert f"public :: {_UPDATE_FN}" in fortran
+
+
+class TestCamHostRunAdapter:
+    def test_run_passes_constituent_minimum_values(self, run_host_match, ccpp_context):
+        """The run adapter passes the constituents object's minimum-value
+        array (filled by lock_data) instead of rebuilding it on every call."""
+        fortran = _fortran_output(run_host_match, ccpp_context)
+        body = _unwrapped(_fn_body(fortran, "Test_ccpp_physics_run"))
+        assert "Test_constituents_obj%vars_minvalue" in body
+        assert "lc_qmin" not in fortran

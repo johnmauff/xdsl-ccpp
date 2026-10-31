@@ -57,7 +57,6 @@ EQUIVALENT_EXPRESSIONS = [
     (r"cam_constituents_obj%const_metadata\b", "$cprops"),
     (r"(?<![$\w])lc_const_props\b", "$cprops"),
     (r"cam_constituents_obj%vars_minvalue\b", "$qmin"),
-    (r"(?<![$\w])lc_qmin\b", "$qmin"),
     (r"(?<![$\w])(errcode|errflg)\b", "$errflg"),
     # the register phase's dynamic-constituent arrays
     (r"^lc_(\w*(constituents|consts))$", r"\1"),

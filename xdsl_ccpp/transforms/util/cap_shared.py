@@ -553,6 +553,12 @@ def bind_c_extents_attr(per_arg: list) -> builtin.ArrayAttr:
     ])
 
 
+def constituents_obj_name(host: str) -> str:
+    """The cap's ccpp_model_constituents_t module variable, named after the
+    host as capgen names it (<host>_constituents_obj)."""
+    return f"{host}_constituents_obj"
+
+
 def derive_camel_case_name(suite_name: str) -> str:
     """Convert a snake_case suite name to CamelCase, stripping any '_suite'
     suffix.
