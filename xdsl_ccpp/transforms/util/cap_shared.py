@@ -1926,6 +1926,47 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
         )
 
 
+_UPDATE_OP_TYPES = (AccUpdateSelfOp, AccUpdateDeviceOp, OmpTargetUpdateFromOp, OmpTargetUpdateToOp)
+
+
+def merge_adjacent_updates(root) -> None:
+    """Merge each sequence of adjacent update directives of the same kind
+    (``update self``, ``update device`` or their OpenMP forms) under *root*
+    into one, so ``update self(a)`` followed by ``update self(b)`` becomes
+    ``update self(a, b)``. Run after all syncs are emitted: they come from
+    several places (emit_coalesced_updates groups only runs with the same
+    first and last call, and the suite-owned and host-variable syncs are
+    emitted separately). Adjacent updates of one kind move different data at
+    the same point, so merging them changes nothing but the directive count.
+    A variable is listed once (by its Fortran text: a section and its whole
+    array stay distinct)."""
+    blocks = [block for op in root.walk() for region in op.regions for block in region.blocks]
+    for block in blocks:
+        ops = list(block.ops)
+        i = 0
+        while i < len(ops):
+            kind = type(ops[i])
+            if kind not in _UPDATE_OP_TYPES:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(ops) and type(ops[j]) is kind:
+                j += 1
+            if j - i > 1:
+                refs, seen = [], set()
+                for update in ops[i:j]:
+                    for ref in update.arrays:
+                        key = _expr_text(ref) or id(ref)
+                        if key not in seen:
+                            seen.add(key)
+                            refs.append(ref)
+                Rewriter.insert_op(kind(refs), InsertPoint.before(ops[i]))
+                for update in ops[i:j]:
+                    update.detach()
+                    update.erase()
+            i = j
+
+
 def directive_op(directive: str, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):
     """Return the ACC or OMP op for one GPU directive role, given each
     side's already-built kwargs dict and the pass's own `self.directive`

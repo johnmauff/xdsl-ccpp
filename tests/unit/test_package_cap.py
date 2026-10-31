@@ -394,8 +394,12 @@ def test_segment_syncs_host_use_of_a_device_argument(tmp_path):
         "    producer()\n    consumer()\n    hook()"))
     step_1 = _routine(caps["pkg_package_cap.F90"], "step_1_run")
     produce, consume = step_1.index("call producer_run("), step_1.index("call consumer_run(")
-    assert produce < step_1.index("update self(temp)") < consume
-    assert consume < step_1.index("update device(temp)")
+    # temp may share its update directive with another variable synced at
+    # the same point (merge_adjacent_updates).
+    update_self = re.search(r"update self\([^)]*\btemp\b", step_1).start()
+    update_device = re.search(r"update device\([^)]*\btemp\b", step_1).start()
+    assert produce < update_self < consume
+    assert consume < update_device
     assert "!$acc update" not in caps["pkg_suite_cap.F90"]
 
 

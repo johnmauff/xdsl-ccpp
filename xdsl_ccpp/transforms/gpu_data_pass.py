@@ -17,6 +17,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     directive_op,
     emit_coalesced_updates,
+    merge_adjacent_updates,
     find_diverged_capscratch_vars,
     find_diverged_suite_vars,
     fn_phase,
@@ -692,3 +693,7 @@ class GPUDataPass(ModulePass):
                     self._process_physics_fn(
                         child, meta_data, diverged_vars, diverged_capscratch_vars
                     )
+
+        # One update directive per kind at each point, whichever step
+        # emitted it (suite cap, package caps, this pass).
+        merge_adjacent_updates(op)
