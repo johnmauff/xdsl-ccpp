@@ -13532,3 +13532,58 @@ Result: `xdsl_ccpp/` is 1,572 lines smaller (1,893 excluding the new tool),
 plus 1,384 lines of example scripts. `cap_oracle diff` against `main`:
 identical for all 46 generations. pytest: 1267 passed (one `--meta-file`
 test removed).
+
+## `suite-cap-mode-flags`: phase specs, `--capgen-api`, one instance pair (2026-10-30)
+
+The suite-cap generator built several products under loose mode switches
+(`physics_mode`, `emit_scheme_calls`, a hidden `generating_package_cap`
+toggle, `cam_host`, the instance pair). Each product now states what it
+builds.
+
+Part A -- suite and package caps (caps identical):
+- `PhaseSpec` (`suitecap/records.py`): one frozen record per generated
+  function -- target/generated postfix, phase tag, `column_range` (was
+  `physics_mode`), `emit_scheme_calls`, check/set state, `suite_hooks`,
+  `package_scoped`. `generateSubroutineCall` reads the spec and stamps the
+  phase tag; the suite cap's and package cap's phase tables are spec lists.
+- `package_scoped` replaces `gen.generating_package_cap` (try/finally plus
+  `getattr`s). The package cap no longer mutates the generator and prints
+  its deferred "never allocated" warnings (`warn_unallocated`) like the
+  suite cap; they were collected and dropped.
+- Removed the dead `group_name` parameter, the `tgt is None` branches and
+  redundant `physics_mode and tgt == "_run"` guards.
+
+Part B -- CAM host. Audit (B0): `--cam-host` meant "also emit original
+capgen's host API" (`{host}_ccpp_physics_*`, `{host}_ccpp_*_constituents`)
+on top of xdsl-ccpp's capgen-v1 API; CAM-SIMA is the one host using it.
+- B1 (CAM caps identical): `--cam-host` renamed `--capgen-api` (alias kept;
+  `cam_host` options key mapped). Every hard-coded `cam_` name is built from
+  `--host-name`, as capgen does (the six adapters, `<host>_constituents_obj`,
+  `<host>_model_const_stdnames/indices`); example caps changed by those
+  renames only. The adapters' errmsg/errcode and column bounds come from host
+  metadata instead of a hard-coded physics_grid/physics_types table.
+  `CamHostConstituentApiOp`/`NonCamHostConstituentApiOp` merged into
+  `ConstituentApiOp` (printed identically). The datatable's framework-file
+  list is keyed on `--framework-src-dir`, not on the CAM flag. Adapters and
+  gather/update moved to `transforms/capgen_api.py`. The TDB-001 "hack"
+  comment reworded: capgen always generates the constituent API.
+- B2: `register_constituents` has one argument order for every host,
+  `(host_constituents, errmsg, errcode)`; CAM's was `(..., errcode, errmsg)`
+  and its only caller (`cam_comp.F90`) passes them by keyword. 4 lines change
+  per CAM cap. Kept for capgen parity, `--capgen-api` only:
+  `{host}_ccpp_gather/update_constituents`.
+- Logged `capgen-api-qmin` and `generic-suite-schemes`.
+
+Part C -- `host_instance_pair(meta_data)` (`cap_shared.py`) returns an
+`InstancePair(instance, count)` or None unless the host declares both;
+`ccpp_cap` passes it to the constituent and lifecycle caps as one argument,
+replacing the duplicate derivation and two both-or-neither asserts. The suite
+cap's per-phase derivation stays (it reads the phase's own arguments).
+
+Verification: pytest 1271 passed. `cap_oracle diff` against `main`: A, B1
+and C identical for all CAM cases (example caps: the B1 renames only); B2 the
+4 lines per CAM cap. CAM-SIMA: nvhpc GPU Kessler (s36a) passed with no
+physics-check differences; gnu aux_sima xdsl59g 29 of 32 clean -- the three
+failures are known (F2000_C7 and gw_cam7: `prec_dp`/`prec_sh`, zm:
+`zm-ncdata-diffs`, which stock capgen reproduces). code_coverage: no new
+dead code. Generation time unchanged (cam4 ~24 s).
