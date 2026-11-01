@@ -377,16 +377,16 @@ def _render_test_driver_phase_block(
     (decls, body_lines) -- decls only for names first introduced by this
     phase, body_lines this phase's own read/call/compare sequence.
 
-    Replays every real call this phase's own tag has on disk, not just
-    the first: a shared `call_count`/`found` pair (declared once by the
-    caller, reused across every phase's own loop) drives a `do ... exit`
-    loop around this phase's whole read/call/compare sequence, reading
-    call_count=1, 2, 3, ... and stopping the moment any one of this
-    phase's own reads reports found=.false. -- the real signal that no
-    more captured calls exist for this tag (scheme-io-capture-multi-
-    timestep). A real FPHYStest run already produces several calls per
-    tag (one per chunk/timestep); replaying only the first, as earlier
-    versions of this driver did, silently ignored that data. Array
+    Replays every captured call of this phase, not just the first: a
+    shared `call_count`/`found` pair (declared once by the caller, reused
+    across every phase's own loop) drives a `do ... exit` loop that opens
+    the call's capture file (ccpp_capture_open_call: <table>_<n>.nc,
+    scheme-io-capture-netcdf) for call_count=1, 2, 3, ..., reads its `in`
+    group, calls the scheme, reads the `out` group, and stops at the
+    first call with no file. No file at all for call 1 is a FAIL (the
+    driver would otherwise pass without testing anything). A real
+    FPHYStest run produces several calls per table (one per
+    chunk/timestep). Array
     allocations move inside the loop with an `allocated()` guard (not
     allocated once up front): a real scheme's own column count can
     legitimately differ from one captured call to the next (different
@@ -422,12 +422,8 @@ def _render_test_driver_phase_block(
         declared.add(name)
         decls.append(decl_line)
 
-    def _read_lines(tag_with_timing: str, var_name: str) -> list:
-        return [
-            f'call ccpp_capture_read("{tag_with_timing}", {var_name}, '
-            f"call_count=call_count, found=found)",
-            "if (.not. found) exit",
-        ]
+    def _read_lines(group: str, captured_name: str, var_name: str) -> list:
+        return [f'call ccpp_capture_read("{group}", "{captured_name}", {var_name})']
 
     for p in params:
         call_kwargs.append(f"{p.name}={p.name}")
@@ -463,9 +459,8 @@ def _render_test_driver_phase_block(
             else:
                 exit_delete.append(p.name)
 
-        tag = f"{table_name}:{p.name}:{p.category}"
         if p.category in ("in", "inout"):
-            lines = _read_lines(f"{tag}:before", p.name)
+            lines = _read_lines("in", p.name, p.name)
             if p.rank == 0:
                 scalar_before_reads += lines
             else:
@@ -479,7 +474,7 @@ def _render_test_driver_phase_block(
                 _declare(expected, f"{decl_type}, allocatable :: {expected}({colons})")
                 allocates.append(f"if (allocated({expected})) deallocate({expected})")
                 allocates.append(f"allocate({expected}({', '.join(p.dims)}))")
-            after_reads += _read_lines(f"{tag}:after", expected)
+            after_reads += _read_lines("out", p.name, expected)
             if p.rank == 0:
                 # Scalar: no "which index" diagnostic makes sense, and the
                 # driver already has both values in scope -- print them
@@ -521,7 +516,13 @@ def _render_test_driver_phase_block(
         _render_driver_exit_data(directive, exit_copyout, exit_delete) if directive else None
     )
 
-    body: list[str] = [f"  ! -- {table_name} --", "  call_count = 1", "  do"]
+    body: list[str] = [
+        f"  ! -- {table_name} --",
+        "  call_count = 1",
+        "  do",
+        f'    call ccpp_capture_open_call("{table_name}", call_count, found)',
+        "    if (.not. found) exit",
+    ]
     # Order matters: scalar "before" reads must land before the
     # allocate()s that size arrays off of them, which must in turn land
     # before the array "before" reads they size. The enter-data directive
@@ -553,8 +554,16 @@ def _render_test_driver_phase_block(
     if exit_data_line is not None:
         body += [f"    {exit_data_line}"]
     body += [f"    {r}" for r in after_reads]
+    body += ["    call ccpp_capture_close()"]
     body += [f"    {c}" for c in compares]
-    body += ["    call_count = call_count + 1", "  end do"]
+    body += [
+        "    call_count = call_count + 1",
+        "  end do",
+        "  if (call_count == 1) then",
+        f"    write(*,*) 'FAIL: no captured calls of {table_name} found'",
+        "    n_failed = n_failed + 1",
+        "  end if",
+    ]
     return decls, body
 
 
@@ -620,7 +629,8 @@ def render_scheme_io_capture_test_driver(
         "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
         f"program test_{scheme_name}",
         "  use ccpp_kinds, only: kind_phys",
-        "  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare, &",
+        "  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &",
+        "                              ccpp_capture_read, ccpp_capture_compare, &",
         "                              ccpp_capture_tolerance_override",
     ]
     lines += use_lines

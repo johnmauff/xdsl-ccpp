@@ -5,7 +5,8 @@
 ! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.
 program test_kessler
   use ccpp_kinds, only: kind_phys
-  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare, &
+  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &
+                              ccpp_capture_read, ccpp_capture_compare, &
                               ccpp_capture_tolerance_override
   use kessler, only: kessler_init
   use kessler, only: kessler_run
@@ -47,6 +48,7 @@ program test_kessler
   real(kind=kind_phys), allocatable :: relhum(:, :)
   real(kind=kind_phys), allocatable :: relhum_expected(:, :)
   character(len=64) :: scheme_name
+  character(len=64) :: scheme_name_expected
 
   tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)
   n_failed = 0
@@ -54,12 +56,11 @@ program test_kessler
   ! -- kessler_init --
   call_count = 1
   do
-    call ccpp_capture_read("kessler_init:lv_in:in:before", lv_in, call_count=call_count, found=found)
+    call ccpp_capture_open_call("kessler_init", call_count, found)
     if (.not. found) exit
-    call ccpp_capture_read("kessler_init:pref_in:in:before", pref_in, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_init:rhoqr_in:in:before", rhoqr_in, call_count=call_count, found=found)
-    if (.not. found) exit
+    call ccpp_capture_read("in", "lv_in", lv_in)
+    call ccpp_capture_read("in", "pref_in", pref_in)
+    call ccpp_capture_read("in", "rhoqr_in", rhoqr_in)
 
     call kessler_init(lv_in=lv_in, pref_in=pref_in, rhoqr_in=rhoqr_in, errmsg=errmsg, errflg=errflg)
 
@@ -68,21 +69,23 @@ program test_kessler
       n_failed = n_failed + 1
     end if
 
+    call ccpp_capture_close()
     call_count = call_count + 1
   end do
+  if (call_count == 1) then
+    write(*,*) 'FAIL: no captured calls of kessler_init found'
+    n_failed = n_failed + 1
+  end if
   ! -- kessler_run --
   call_count = 1
   do
-    call ccpp_capture_read("kessler_run:ncol:in:before", ncol, call_count=call_count, found=found)
+    call ccpp_capture_open_call("kessler_run", call_count, found)
     if (.not. found) exit
-    call ccpp_capture_read("kessler_run:nz:in:before", nz, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:dt:in:before", dt, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:lyr_surf:in:before", lyr_surf, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:lyr_toa:in:before", lyr_toa, call_count=call_count, found=found)
-    if (.not. found) exit
+    call ccpp_capture_read("in", "ncol", ncol)
+    call ccpp_capture_read("in", "nz", nz)
+    call ccpp_capture_read("in", "dt", dt)
+    call ccpp_capture_read("in", "lyr_surf", lyr_surf)
+    call ccpp_capture_read("in", "lyr_toa", lyr_toa)
     if (allocated(cpair)) deallocate(cpair)
     allocate(cpair(ncol, nz))
     if (allocated(rair)) deallocate(rair)
@@ -117,24 +120,15 @@ program test_kessler
     allocate(relhum(ncol, nz))
     if (allocated(relhum_expected)) deallocate(relhum_expected)
     allocate(relhum_expected(ncol, nz))
-    call ccpp_capture_read("kessler_run:cpair:in:before", cpair, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:rair:in:before", rair, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:rho:in:before", rho, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:z:in:before", z, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:pk:in:before", pk, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:theta:inout:before", theta, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qv:inout:before", qv, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qc:inout:before", qc, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qr:inout:before", qr, call_count=call_count, found=found)
-    if (.not. found) exit
+    call ccpp_capture_read("in", "cpair", cpair)
+    call ccpp_capture_read("in", "rair", rair)
+    call ccpp_capture_read("in", "rho", rho)
+    call ccpp_capture_read("in", "z", z)
+    call ccpp_capture_read("in", "pk", pk)
+    call ccpp_capture_read("in", "theta", theta)
+    call ccpp_capture_read("in", "qv", qv)
+    call ccpp_capture_read("in", "qc", qc)
+    call ccpp_capture_read("in", "qr", qr)
 
     call kessler_run(ncol=ncol, nz=nz, dt=dt, lyr_surf=lyr_surf, lyr_toa=lyr_toa, cpair=cpair, rair=rair, rho=rho, z=z, pk=pk, theta=theta, qv=qv, qc=qc, qr=qr, precl=precl, relhum=relhum, scheme_name=scheme_name, errmsg=errmsg, errflg=errflg)
 
@@ -143,18 +137,14 @@ program test_kessler
       n_failed = n_failed + 1
     end if
 
-    call ccpp_capture_read("kessler_run:theta:inout:after", theta_expected, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qv:inout:after", qv_expected, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qc:inout:after", qc_expected, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:qr:inout:after", qr_expected, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:precl:out:after", precl_expected, call_count=call_count, found=found)
-    if (.not. found) exit
-    call ccpp_capture_read("kessler_run:relhum:out:after", relhum_expected, call_count=call_count, found=found)
-    if (.not. found) exit
+    call ccpp_capture_read("out", "theta", theta_expected)
+    call ccpp_capture_read("out", "qv", qv_expected)
+    call ccpp_capture_read("out", "qc", qc_expected)
+    call ccpp_capture_read("out", "qr", qr_expected)
+    call ccpp_capture_read("out", "precl", precl_expected)
+    call ccpp_capture_read("out", "relhum", relhum_expected)
+    call ccpp_capture_read("out", "scheme_name", scheme_name_expected)
+    call ccpp_capture_close()
     ok = ccpp_capture_compare(theta, theta_expected, tolerance, diag_max_abs_diff, diag_mean_abs_diff, diag_first_mismatch_index)
     call report("theta", call_count, ok, n_failed)
     if (.not. ok) write(*,*) '  max abs diff=', diag_max_abs_diff, ' mean abs diff=', diag_mean_abs_diff, ' first mismatch at linear index=', diag_first_mismatch_index
@@ -173,8 +163,15 @@ program test_kessler
     ok = ccpp_capture_compare(relhum, relhum_expected, tolerance, diag_max_abs_diff, diag_mean_abs_diff, diag_first_mismatch_index)
     call report("relhum", call_count, ok, n_failed)
     if (.not. ok) write(*,*) '  max abs diff=', diag_max_abs_diff, ' mean abs diff=', diag_mean_abs_diff, ' first mismatch at linear index=', diag_first_mismatch_index
+    ok = ccpp_capture_compare(scheme_name, scheme_name_expected)
+    call report("scheme_name", call_count, ok, n_failed)
+    if (.not. ok) write(*,*) '  actual=', scheme_name, ' expected=', scheme_name_expected
     call_count = call_count + 1
   end do
+  if (call_count == 1) then
+    write(*,*) 'FAIL: no captured calls of kessler_run found'
+    n_failed = n_failed + 1
+  end if
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'

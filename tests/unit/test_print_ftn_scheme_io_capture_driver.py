@@ -5,7 +5,7 @@ boundary rationale). No prior test file exercised this function's output
 text directly; everything up to now was covered only indirectly through
 the real examples/kessler end-to-end verification. Covers
 scheme-io-capture-multi-timestep (every captured call for a phase is
-replayed in a loop, not just the first) and
+replayed in a loop over its NetCDF files, not just the first) and
 scheme-io-capture-compare-diagnostics (a FAIL reports more than a bare
 pass/fail: max/mean abs diff and a mismatch location for array compares,
 the actual/expected values directly for scalar compares).
@@ -32,16 +32,24 @@ def test_single_phase_replays_in_a_loop_not_just_call_one():
         "kessler", [("kessler_run", params)], _TOLERANCE,
     )
 
-    # A real loop, not a one-shot call_count=1 read.
+    # A real loop over the call's capture files (<table>_<n>.nc), not a
+    # one-shot read of call 1.
     assert "call_count = 1" in source
     assert "  do\n" in source
+    assert 'call ccpp_capture_open_call("kessler_run", call_count, found)' in source
     assert "if (.not. found) exit" in source
     assert "call_count = call_count + 1" in source
     assert "  end do" in source
-    # Every read in the loop drives off the shared loop variable, not a
-    # hardcoded literal.
-    assert 'call_count=1)' not in source
-    assert "call_count=call_count, found=found" in source
+    # Inputs come from the file's `in` group, results from `out`; the file
+    # is closed before the compares.
+    assert 'call ccpp_capture_read("in", "ncol", ncol)' in source
+    assert 'call ccpp_capture_read("in", "theta", theta)' in source
+    assert 'call ccpp_capture_read("out", "theta", theta_expected)' in source
+    assert (source.index('ccpp_capture_read("out", "theta"')
+            < source.index("call ccpp_capture_close()")
+            < source.index("ok = ccpp_capture_compare(theta"))
+    # No captured call at all is a FAIL, not a vacuous pass.
+    assert "FAIL: no captured calls of kessler_run found" in source
     # report() now carries the call_count so a human can tell which
     # replayed call failed.
     assert "ok = ccpp_capture_compare(theta, theta_expected, " in source

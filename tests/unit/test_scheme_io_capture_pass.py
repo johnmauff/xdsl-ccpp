@@ -1,9 +1,11 @@
 """Unit tests for `--capture-scheme` (SchemeIOCapturePass).
 
-scheme-io-capture (BACKLOG.md). PR 1 scope: the pass itself, unit-tested
-only -- the real ccpp_capture_mod.F90 runtime library doesn't exist yet
-(a later PR), so these tests assert on the generated call *text* and
-*position*, not a real compile. Same harness/style as
+scheme-io-capture (BACKLOG.md), NetCDF format (scheme-io-capture-netcdf):
+each captured scheme call gets `ccpp_capture_begin(table, 'before')`, one
+`ccpp_capture(name, value, standard_name, units, dim_names)` per argument
+and `ccpp_capture_end()` before the call, and the same with 'after' after
+it. These tests assert on the generated call *text* and *position*, not a
+real compile. Same harness/style as
 test_gpu_debug_sync.py/test_gpu_directives.py/test_gpu_debug_print_pass.py:
 synthetic .meta/suite-XML fixtures run through the real pipeline, sliced
 subroutine-body text, substring/position/count assertions.
@@ -19,7 +21,10 @@ from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
-from xdsl_ccpp.transforms.scheme_io_capture_pass import SchemeIOCapturePass
+from xdsl_ccpp.transforms.scheme_io_capture_pass import (
+    SchemeIOCapturePass,
+    _is_capture_supported,
+)
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
 pytestmark = pytest.mark.usefixtures("legacy_mode")
@@ -30,9 +35,9 @@ pytestmark = pytest.mark.usefixtures("legacy_mode")
 #  - io_var:    intent=inout, real(kind_phys), device-resident, rank 2
 #               -> two captures (before + after), each preceded by a sync.
 #  - skip_opt:  intent=in, optional          -> never captured.
-#  - skip_str:  type=character (not in {integer,logical,real(kind_phys)})
-#               -> never captured (also covers errmsg's own type, just
-#               confirmed via a second, non-mandatory argument).
+#  - skip_str:  type=character, intent=in    -> captured before (character
+#               values are supported since the NetCDF format; the name is
+#               historical).
 # errmsg/errflg come from CCPP_MANDATORY_ARGS and must never be captured.
 _SCHEME_META = f"""\
 [ccpp-table-properties]
@@ -150,48 +155,63 @@ def test_no_effect_for_unmatched_scheme_name(run_host_match, ccpp_context):
     assert "ccpp_capture_" not in fortran
 
 
+_RUN = "test_io_capture_scheme_run"
+_BEGIN_BEFORE = f"call ccpp_capture_begin('{_RUN}', 'before')"
+_BEGIN_AFTER = f"call ccpp_capture_begin('{_RUN}', 'after')"
+_SCHEME_CALL = f"call {_RUN}("
+
+
+def _block(fortran: str, begin: str) -> str:
+    """The text from `begin` to the next ccpp_capture_end()."""
+    start = fortran.index(begin)
+    return fortran[start:fortran.index("call ccpp_capture_end()", start)]
+
+
 def test_intent_in_scalar_captured_before_only(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    call = 'call test_io_capture_scheme_run('
-    before_tag = "'test_io_capture_scheme_run:in_var:in:before'"
-    assert before_tag in fortran
-    # Exactly one capture for an in-only scalar -- no :after tag at all.
-    assert 'in_var:in:after' not in fortran
-    assert f'call ccpp_capture({before_tag}, in_var)' in fortran
-    # Positioned before the real call, not after.
-    assert fortran.index(before_tag) < fortran.index(call)
+    capture = "call ccpp_capture('in_var', in_var, 'test_capture_in_var', 'K', '')"
+    assert capture in _block(fortran, _BEGIN_BEFORE)
+    assert "'in_var'" not in _block(fortran, _BEGIN_AFTER)
+    assert fortran.index(_BEGIN_BEFORE) < fortran.index(_SCHEME_CALL)
 
 
 def test_intent_out_scalar_captured_after_only(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    call = 'call test_io_capture_scheme_run('
-    after_tag = "'test_io_capture_scheme_run:out_var:out:after'"
-    assert after_tag in fortran
-    assert 'out_var:out:before' not in fortran
-    assert f'call ccpp_capture({after_tag}, out_var)' in fortran
-    assert fortran.index(call) < fortran.index(after_tag)
+    capture = "call ccpp_capture('out_var', out_var, 'test_capture_out_var', 'count', '')"
+    assert capture in _block(fortran, _BEGIN_AFTER)
+    assert "'out_var'" not in _block(fortran, _BEGIN_BEFORE)
+    assert fortran.index(_SCHEME_CALL) < fortran.index(_BEGIN_AFTER)
+
+
+def test_before_and_after_blocks_frame_the_call(run_host_match, ccpp_context):
+    """begin/end pairs are emitted around every captured call, even with
+    nothing to write on one side (init has no outputs): 'before' opens
+    and counts the call's file, 'after' reopens it."""
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
+    init_after = "call ccpp_capture_begin('test_io_capture_scheme_init', 'after')"
+    assert init_after in fortran
+    assert fortran.count("call ccpp_capture_end()") == 4  # init + run, before + after
+    for procedure in ("ccpp_capture", "ccpp_capture_begin", "ccpp_capture_end"):
+        assert f"use ccpp_capture_mod, only: {procedure}\n" in fortran
 
 
 def test_intent_inout_array_captured_both_with_device_sync(run_host_match, ccpp_context):
     fortran = _fortran_output(
         run_host_match, ccpp_context, scheme="test_io_capture_scheme", directive="acc",
     )
-    before_tag = "'test_io_capture_scheme_run:io_var:inout:before'"
-    after_tag = "'test_io_capture_scheme_run:io_var:inout:after'"
-    assert f'call ccpp_capture({before_tag}, io_var)' in fortran
-    assert f'call ccpp_capture({after_tag}, io_var)' in fortran
-    # A device-resident arg must get an update-self sync immediately
-    # before each capture read.
+    # Metadata dimension names name the file's dimensions.
+    io_capture = "'horizontal_loop_extent,vertical_layer_dimension')"
+    assert "'io_var', io_var, 'test_capture_io_var', 'K'" in _block(fortran, _BEGIN_BEFORE)
+    assert io_capture in _block(fortran, _BEGIN_BEFORE)
+    assert "'io_var', io_var" in _block(fortran, _BEGIN_AFTER)
+    # A device-resident arg is synced to the host before each block.
     assert fortran.count("update self(io_var)") == 2
-    # Ordering: sync-then-capture before the call, call-then-sync-then-
-    # capture after it.
-    call_pos = fortran.index("call test_io_capture_scheme_run(")
+    call_pos = fortran.index(_SCHEME_CALL)
     before_sync_pos = fortran.rindex("update self(io_var)", 0, call_pos)
-    before_capture_pos = fortran.index(before_tag)
-    assert before_sync_pos < before_capture_pos < call_pos
-    after_capture_pos = fortran.index(after_tag)
-    after_sync_pos = fortran.rindex("update self(io_var)", call_pos, after_capture_pos)
-    assert call_pos < after_sync_pos < after_capture_pos
+    assert before_sync_pos < fortran.index(_BEGIN_BEFORE) < call_pos
+    after_pos = fortran.index(_BEGIN_AFTER)
+    after_sync_pos = fortran.rindex("update self(io_var)", call_pos, after_pos)
+    assert call_pos < after_sync_pos < after_pos
 
 
 def test_no_device_sync_without_directive(run_host_match, ccpp_context):
@@ -200,48 +220,53 @@ def test_no_device_sync_without_directive(run_host_match, ccpp_context):
     # declared memory_space=device.
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     assert "update self(io_var)" not in fortran
-    assert "'test_io_capture_scheme_run:io_var:inout:before'" in fortran
+    assert "'io_var', io_var" in _block(fortran, _BEGIN_BEFORE)
 
 
 def test_optional_argument_never_captured(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    # Tags are the only place a captured arg's own name appears in
-    # generated code (quoted string literals, odd-indexed splits on `"`)
-    # -- skip_opt must never appear in one.
-    for tag_fragment in fortran.split('"')[1::2]:
-        assert "skip_opt" not in tag_fragment
+    assert "'skip_opt'" not in fortran
 
 
-def test_unsupported_type_never_captured(run_host_match, ccpp_context):
+def test_character_argument_captured(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    for tag_fragment in fortran.split('"')[1::2]:
-        assert "skip_str" not in tag_fragment
+    assert ("call ccpp_capture('skip_str', skip_str, 'test_capture_skip_str', 'none', '')"
+            in _block(fortran, _BEGIN_BEFORE))
+
+
+@pytest.mark.parametrize("arg_type, kind, rank, supported", [
+    ("real", "kind_phys", 3, True),
+    ("real", "kind_phys", 4, False),
+    ("real", "kind_r4", 1, False),
+    ("integer", None, 0, True),
+    ("logical", None, 2, True),
+    ("character", "len=64", 0, True),
+    ("character", "len=64", 1, True),
+    ("character", "len=64", 2, False),
+    ("ccpp_constituent_prop_ptr_t", None, 1, False),
+])
+def test_capture_type_scope(arg_type, kind, rank, supported):
+    assert _is_capture_supported(arg_type, kind, rank) is supported
 
 
 def test_errmsg_errflg_never_captured(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    for tag_fragment in fortran.split('"')[1::2]:
-        assert "errmsg" not in tag_fragment
-        assert "errflg" not in tag_fragment
+    assert "'errmsg'" not in fortran
+    assert "'errflg'" not in fortran
 
 
 def test_phase_filter_restricts_to_one_entry_point(run_host_match, ccpp_context):
-    # The scheme's own callee subroutines (test_io_capture_scheme_run/
-    # _init) are never printed in generated output -- only the suite-level
-    # wrapper that calls them is -- so check by tag content (each tag
-    # embeds its own table_name) rather than slicing a subroutine body
-    # that doesn't exist in this text at all.
     fortran = _fortran_output(
         run_host_match, ccpp_context, scheme="test_io_capture_scheme", phase="run",
     )
-    assert "test_io_capture_scheme_run:in_var" in fortran
-    assert "test_io_capture_scheme_init:in_var" not in fortran
+    assert _BEGIN_BEFORE in fortran
+    assert "'test_io_capture_scheme_init'" not in fortran
 
 
 def test_no_phase_filter_captures_every_entry_point(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
-    assert "test_io_capture_scheme_run:in_var" in fortran
-    assert "test_io_capture_scheme_init:in_var" in fortran
+    assert _BEGIN_BEFORE in fortran
+    assert "call ccpp_capture_begin('test_io_capture_scheme_init', 'before')" in fortran
 
 
 # Separate fixture (not the shared _HOST_META above) so the existing
@@ -279,15 +304,13 @@ def test_capture_guarded_by_host_mpi_root_flag(run_host_match, ccpp_context):
     fortran = out.getvalue()
 
     assert "use test_io_capture_host, only: masterproc" in fortran
-    before_tag = "'test_io_capture_scheme_run:in_var:in:before'"
-    call_text = f"call ccpp_capture({before_tag}, in_var)"
-    assert call_text in fortran
-    # The guard must actually wrap this specific capture call, not just
-    # appear somewhere unrelated in the file.
-    guard_idx = fortran.index("if (masterproc) then")
-    call_idx = fortran.index(call_text)
-    end_if_idx = fortran.index("end if", call_idx)
-    assert guard_idx < call_idx < end_if_idx
+    # The guard wraps the whole begin ... end block.
+    begin_idx = fortran.index(_BEGIN_BEFORE)
+    guard_idx = fortran.rindex("if (masterproc) then", 0, begin_idx)
+    end_idx = fortran.index("call ccpp_capture_end()", begin_idx)
+    end_if_idx = fortran.index("end if", begin_idx)
+    assert guard_idx < begin_idx < end_idx < end_if_idx
+    assert "'in_var', in_var" in fortran[begin_idx:end_idx]
 
 
 def test_no_guard_when_host_lacks_mpi_root_flag(run_host_match, ccpp_context):

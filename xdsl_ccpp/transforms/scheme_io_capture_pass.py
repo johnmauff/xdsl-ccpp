@@ -8,12 +8,14 @@ history-file output: the real goal is data-driven, scheme-level
 regression tests built from realistic, captured atmospheric states,
 independent of a full CAM build/run. Captures every (supported) input/
 output argument of a chosen scheme (optionally restricted to one
-lifecycle phase) to disk, by inserting a call into the ccpp_capture_mod
-runtime Fortran library immediately before/after the scheme's own call,
-by intent:
-  - intent=in:    one capture, immediately before the call.
-  - intent=out:   one capture, immediately after the call.
-  - intent=inout: both -- before and after are directly comparable.
+lifecycle phase) to one NetCDF file per call (scheme-io-capture-netcdf:
+<table>_<n>.nc, see ccpp_capture_mod.F90), by inserting calls into the
+ccpp_capture_mod runtime Fortran library immediately before and after
+the scheme's own call:
+  - before: ccpp_capture_begin(table, 'before'), one
+    ccpp_capture(name, value, standard_name, units, dim_names) per
+    intent in/inout argument (group `in`), ccpp_capture_end().
+  - after: the same with 'after' for intent out/inout (group `out`).
 
 Call-site discovery reuses cap_shared.iter_scheme_call_sites -- the same
 machinery gpu_debug_print_pass.py's own Part C uses (extracted there
@@ -22,10 +24,9 @@ This pass differs from that one in what it inserts (a capture call per
 argument, not a diagnostic print) and where (every supported intent in/
 out/inout argument, not just sliced device-resident ones).
 
-v1 scope, deliberately narrow (see the design proposal's own reasoning):
-only {integer, logical, real(kind_phys)} x {rank 0..3} are supported --
-this is, in practice, the real cross product that appears in CCPP
-metadata. Everything else (character, DDT/derived types, any other real
+Scope: {integer, logical, real(kind_phys)} x {rank 0..3}, plus character
+scalars and rank-1 arrays -- in practice the cross product that appears
+in CCPP metadata. Everything else (DDT/derived types, any other real
 kind) is silently skipped, not a hard error -- a scheme mixing supported
 and unsupported arguments should still get the supported ones captured.
 Also skipped: errmsg/errflg (not physically meaningful to dump) and
@@ -55,11 +56,10 @@ also emit a standalone `test_<table_name>.F90` program that replays
 the first (scheme-io-capture-multi-timestep). A real multi-task CAM-SIMA
 run routinely calls one scheme several times (once per chunk/timestep),
 and a run-once replay was silently ignoring that captured data. The
-generated driver loops `call_count = 1, 2, 3, ...`, reading each call's
-own fixture via ccpp_capture_mod.F90's `found` status parameter to detect
-"no more captured calls for this tag" (not an error -- see
-ccpp_capture_mod.F90's own read-procedure docstrings) and stopping there,
-calling the real scheme subroutine with each call's own inputs and
+generated driver loops `call_count = 1, 2, 3, ...`, opening each call's
+file (ccpp_capture_open_call, whose `found` signals "no more captured
+calls") and stopping there, calling the real scheme subroutine with each
+call's own inputs (group `in`) and
 comparing its outputs against that same call's captured 'after' snapshot
 -- not against a fresh calculation. Declarations and the call's own keyword
 argument list are derived from the identical per-argument metadata this
@@ -166,7 +166,7 @@ _TEST_DRIVER_TOLERANCE = "1.0e-10_kind_phys"
 # real convention (dozens of real schemes consume it), unlike `mpi_rank`
 # (also host-exposed, but not currently consumed by any real scheme).
 # Used to guard every inserted capture call so only one task ever writes
-# a given tag's file -- confirmed directly against a real 24-task
+# a given call's file -- confirmed directly against a real 24-task
 # CAM-SIMA build that without this guard, every task races to write the
 # same filename and corrupts it (a captured `ncol` decoded to garbage).
 # Resolved once per `apply()` call via the host's own metadata (not a
@@ -199,6 +199,11 @@ _LIFECYCLE_PHASE_ORDER = {
 # simply by never matching a type here.
 _TYPE_CODE = {"integer", "logical"}
 _MAX_SUPPORTED_RANK = 3
+# Character values: scalars and rank-1 arrays (scheme-io-capture-netcdf).
+_MAX_CHARACTER_RANK = 1
+
+# ccpp_capture_mod procedures a capture call site uses.
+_CAPTURE_PROCEDURES = ("ccpp_capture_begin", "ccpp_capture", "ccpp_capture_end")
 
 
 def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int) -> bool:
@@ -211,6 +216,8 @@ def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int)
     already rejects any kind but CCPP_KIND_PHYS, so there's no ambiguity
     to resolve) -- this function only gates whether to capture at all,
     it no longer needs to name a concrete procedure itself."""
+    if arg_type == "character":
+        return rank <= _MAX_CHARACTER_RANK
     if rank > _MAX_SUPPORTED_RANK:
         return False
     if arg_type == "real":
@@ -240,6 +247,27 @@ def _driver_param_category(arg) -> str:
     if not _is_capture_supported(arg_type, kind, rank):
         return "unverified"
     return intent
+
+
+def _attr_text(arg, name: str) -> str:
+    """A metadata argument's attribute as text, "" when absent."""
+    return str(arg.getAttr(name)) if arg.hasAttr(name) else ""
+
+
+def _capture_dim_names(arg) -> "list[str]":
+    """The capture file's dimension names for an array argument: its
+    metadata dimensions (standard names), a `lower:upper` range named by
+    its upper bound (as _resolve_array_dims does). [] for a scalar or when
+    the metadata has none (the runtime then names them <var>_dim<i>)."""
+    if not arg.hasAttr("dim_names"):
+        return []
+    names = []
+    for raw in arg.getAttr("dim_names"):
+        name = raw.strip()
+        if ":" in name:
+            name = name.split(":")[-1].strip()
+        names.append(name)
+    return names
 
 
 def _resolve_array_dims(arg, std_name_to_param: dict) -> "list[str] | None":
@@ -426,6 +454,10 @@ class SchemeIOCapturePass(ModulePass):
             if param_names is None:
                 continue
 
+            # (value, param name, metadata arg, device-resident?) captured
+            # before / after the call.
+            before: list = []
+            after: list = []
             for value, param_name in zip(_call_args(call_op), param_names):
                 arg = args_by_name.get(param_name)
                 if arg is None:
@@ -447,20 +479,19 @@ class SchemeIOCapturePass(ModulePass):
                 if _expr_text(value) is None:
                     continue
 
+                entry = (value, param_name, arg, param_name in device_names)
+                if intent in ("in", "inout"):
+                    before.append(entry)
+                if intent in ("out", "inout"):
+                    after.append(entry)
+
+            if before or after:
                 self._ensure_capture_decl(call_op, declared_decls)
                 if mpi_root_ref is not None:
                     self._ensure_host_var_decl(call_op, mpi_root_ref[0], mpi_root_ref[1], declared_decls)
                 mpi_root_var = mpi_root_ref[0] if mpi_root_ref is not None else None
-                if intent in ("in", "inout"):
-                    self._insert_capture(
-                        value, table_name, param_name, intent,
-                        "before", param_name in device_names, call_op, mpi_root_var,
-                    )
-                if intent in ("out", "inout"):
-                    self._insert_capture(
-                        value, table_name, param_name, intent,
-                        "after", param_name in device_names, call_op, mpi_root_var,
-                    )
+                self._insert_captures(table_name, "before", before, call_op, mpi_root_var)
+                self._insert_captures(table_name, "after", after, call_op, mpi_root_var)
 
             if self.test_driver_dir and table_name not in captured_tables:
                 params = _build_test_driver_params(param_names, args_by_name, device_names)
@@ -478,8 +509,8 @@ class SchemeIOCapturePass(ModulePass):
             self._maybe_emit_test_driver(self.scheme, captured_tables)
 
     def _ensure_capture_decl(self, call_op, declared_decls: set) -> None:
-        """Insert a declaration FuncOp for ccpp_capture_mod's generic
-        `ccpp_capture` name, at the top level of call_op's enclosing
+        """Insert declaration FuncOps for the ccpp_capture_mod procedures a
+        capture call site uses (_CAPTURE_PROCEDURES), at the top level of call_op's enclosing
         suite-cap module -- exactly the same construction
         run_dispatch.py/lifecycle_cap.py use for a real scheme callee
         declaration (func.FuncOp.external + a `module` attribute), which
@@ -496,13 +527,14 @@ class SchemeIOCapturePass(ModulePass):
         module_op = _enclosing_module(call_op)
         if module_op is None:
             return
-        key = (id(module_op), "ccpp_capture")
-        if key in declared_decls:
-            return
-        declared_decls.add(key)
-        decl = func.FuncOp.external("ccpp_capture", [], [])
-        decl.attributes["module"] = StringAttr("ccpp_capture_mod")
-        Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
+        for procedure in _CAPTURE_PROCEDURES:
+            key = (id(module_op), procedure)
+            if key in declared_decls:
+                continue
+            declared_decls.add(key)
+            decl = func.FuncOp.external(procedure, [], [])
+            decl.attributes["module"] = StringAttr("ccpp_capture_mod")
+            Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
 
     def _ensure_host_var_decl(self, call_op, var_name: str, module: str, declared_decls: set) -> None:
         """Insert a declaration for a real host VARIABLE (not a callable),
@@ -570,57 +602,51 @@ class SchemeIOCapturePass(ModulePass):
         with open(out_path, "w") as f:
             f.write(source)
 
-    def _insert_capture(
-        self, value, table_name, param_name, intent,
-        timing, is_device, call_op, mpi_root_var,
-    ) -> None:
-        """Insert one capture call immediately before/after call_op
-        (timing), syncing a device-resident argument to the host first if
-        needed (same construction GPUDataPass's own debug_sync option
-        uses -- cap_shared.directive_op -- reused rather than reinvented;
-        not reusing any sync GPUDataPass may have already inserted
-        elsewhere for an unrelated reason).
+    def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var) -> None:
+        """Insert one file's worth of capture calls immediately before
+        (timing="before") or after (timing="after") call_op:
 
-        Anchors are explicit, not "insert twice at the same InsertPoint",
-        so the relative order of sync-then-capture is never ambiguous:
-          timing="before": [sync?, capture, call_op]
-          timing="after":  [call_op, sync?, capture]
-        In both cases the sync (when present) always precedes the
-        capture it's guarding, and the capture is always the op adjacent
-        to call_op on the "before"/"after" side with no sync present.
+            [sync, ...]                          -- device-resident values
+            if (<mpi_root_var>) then             -- when the host has one
+              call ccpp_capture_begin(table, timing)
+              call ccpp_capture(name, value, standard_name, units, dim_names)
+              ...
+              call ccpp_capture_end()
+            end if
 
-        When `mpi_root_var` is given (the host's own mpi-root flag, e.g.
-        `masterproc`), the capture call itself is wrapped in
-        `if (<mpi_root_var>) then ... end if` -- confirmed necessary
-        against a real 24-task CAM-SIMA build, where every task racing to
-        write the same filename corrupted it. The device-sync above is
-        deliberately left unguarded (every task still syncs its own
-        device data to host): that's a pure per-task memory copy with no
-        shared-file risk, so guarding it would only save a little work on
-        non-root tasks, not fix a correctness problem. When
-        `mpi_root_var` is None (the host declares no such standard name
-        at all, e.g. the standalone examples/kessler), the call is
-        unconditional, exactly as before this guard existed.
+        Emitted even with no entries: "before" opens the call's file (and
+        counts the call), "after" reopens it. A device-resident value is
+        synced to the host first (cap_shared.directive_op, as GPUDataPass's
+        debug_sync does); the sync is not guarded -- every task copies its
+        own device data, only the file write is root-only (a real 24-task
+        CAM-SIMA build corrupted shared capture files without the guard).
         """
-        capture_anchor = (
-            InsertPoint.before(call_op) if timing == "before" else InsertPoint.after(call_op)
-        )
-        if is_device and self.directive:
-            sync_op = directive_op(
-                self.directive,
-                AccUpdateSelfOp, {"array_refs": [value]},
-                OmpTargetUpdateFromOp, {"array_refs": [value]},
-            )
-            Rewriter.insert_op(sync_op, capture_anchor)
-            capture_anchor = InsertPoint.after(sync_op)
-        tag = f"{table_name}:{param_name}:{intent}:{timing}"
-        capture = CallStatementOp(
-            "ccpp_capture", arg_ops=[StringLiteralExprOp(tag), ValueExprOp(value)],
-        )
-        if mpi_root_var is None:
-            capture_ops = [capture]
-        else:
-            capture_ops = _scf_if(VarRefExprOp(mpi_root_var, result_type=i1), [capture])
-        for op in capture_ops:
-            Rewriter.insert_op(op, capture_anchor)
-            capture_anchor = InsertPoint.after(op)
+        syncs = []
+        if self.directive:
+            device_values = [value for value, _, _, is_device in entries if is_device]
+            if device_values:
+                syncs.append(directive_op(
+                    self.directive,
+                    AccUpdateSelfOp, {"array_refs": device_values},
+                    OmpTargetUpdateFromOp, {"array_refs": device_values},
+                ))
+        writes = [CallStatementOp(
+            "ccpp_capture_begin",
+            arg_ops=[StringLiteralExprOp(table_name), StringLiteralExprOp(timing)],
+        )]
+        for value, param_name, arg, _ in entries:
+            writes.append(CallStatementOp("ccpp_capture", arg_ops=[
+                StringLiteralExprOp(param_name),
+                ValueExprOp(value),
+                StringLiteralExprOp(_attr_text(arg, "standard_name")),
+                StringLiteralExprOp(_attr_text(arg, "units")),
+                StringLiteralExprOp(",".join(_capture_dim_names(arg))),
+            ]))
+        writes.append(CallStatementOp("ccpp_capture_end", arg_ops=[]))
+        if mpi_root_var is not None:
+            writes = _scf_if(VarRefExprOp(mpi_root_var, result_type=i1), writes)
+
+        anchor = InsertPoint.before(call_op) if timing == "before" else InsertPoint.after(call_op)
+        for op in syncs + writes:
+            Rewriter.insert_op(op, anchor)
+            anchor = InsertPoint.after(op)
