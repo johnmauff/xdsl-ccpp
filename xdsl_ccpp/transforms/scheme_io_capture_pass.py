@@ -16,6 +16,9 @@ the scheme's own call:
     ccpp_capture(name, value, standard_name, units, dim_names) per
     intent in/inout argument (group `in`), ccpp_capture_end().
   - after: the same with 'after' for intent out/inout (group `out`).
+With --capture-test-driver-dir, the "before" block starts with
+ccpp_capture_set_dir(<that dir>), so the run writes its files next to the
+generated drivers (CCPP_CAPTURE_DIR in the run's environment overrides it).
 
 Call-site discovery reuses cap_shared.iter_scheme_call_sites -- the same
 machinery gpu_debug_print_pass.py's own Part C uses (extracted there
@@ -204,6 +207,9 @@ _MAX_CHARACTER_RANK = 1
 
 # ccpp_capture_mod procedures a capture call site uses.
 _CAPTURE_PROCEDURES = ("ccpp_capture_begin", "ccpp_capture", "ccpp_capture_end")
+# Called first in each "before" block when a driver directory is set, so the
+# run writes its files next to the drivers (CCPP_CAPTURE_DIR still wins).
+_SET_DIR_PROCEDURE = "ccpp_capture_set_dir"
 
 
 def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int) -> bool:
@@ -538,7 +544,10 @@ class SchemeIOCapturePass(ModulePass):
         module_op = _enclosing_module(call_op)
         if module_op is None:
             return
-        for procedure in _CAPTURE_PROCEDURES:
+        procedures = _CAPTURE_PROCEDURES
+        if self.test_driver_dir:
+            procedures = (_SET_DIR_PROCEDURE,) + procedures
+        for procedure in procedures:
             key = (id(module_op), procedure)
             if key in declared_decls:
                 continue
@@ -623,6 +632,7 @@ class SchemeIOCapturePass(ModulePass):
 
             [sync, ...]                          -- device-resident values
             if (<mpi_root_var>) then             -- when the host has one
+              call ccpp_capture_set_dir(driver dir) -- "before", with a driver dir
               call ccpp_capture_begin(table, timing)
               call ccpp_capture(name, value, standard_name, units, dim_names)
               ...
@@ -645,10 +655,16 @@ class SchemeIOCapturePass(ModulePass):
                     AccUpdateSelfOp, {"array_refs": device_values},
                     OmpTargetUpdateFromOp, {"array_refs": device_values},
                 ))
-        writes = [CallStatementOp(
+        writes = []
+        if self.test_driver_dir and timing == "before":
+            writes.append(CallStatementOp(
+                _SET_DIR_PROCEDURE,
+                arg_ops=[StringLiteralExprOp(os.path.abspath(self.test_driver_dir))],
+            ))
+        writes.append(CallStatementOp(
             "ccpp_capture_begin",
             arg_ops=[StringLiteralExprOp(table_name), StringLiteralExprOp(timing)],
-        )]
+        ))
         for value, param_name, arg, _ in entries:
             writes.append(CallStatementOp("ccpp_capture", arg_ops=[
                 StringLiteralExprOp(param_name),

@@ -13,7 +13,10 @@
 ! File layout (scheme-io-capture-netcdf): one NetCDF-4 file per scheme call,
 ! <CCPP_CAPTURE_DIR>/<table>_<n>.nc, where <table> is the scheme's
 ! subroutine (e.g. kessler_run) and <n> counts that table's calls in this
-! process (1, 2, ...). CCPP_CAPTURE_DIR defaults to the working directory.
+! process (1, 2, ...). The directory is CCPP_CAPTURE_DIR when set in the
+! environment, else the one given to ccpp_capture_set_dir (the generator's
+! --capture-test-driver-dir, so data and test drivers share a directory),
+! else the working directory.
 ! Global attributes: ccpp_table, ccpp_call, ccpp_capture_format_version.
 ! Group `in` holds the arguments as passed (intent in and inout, written
 ! before the call), group `out` the results (intent out and inout, written
@@ -48,6 +51,7 @@ module ccpp_capture_mod
   implicit none
   private
 
+  public :: ccpp_capture_set_dir
   public :: ccpp_capture_begin
   public :: ccpp_capture_end
   public :: ccpp_capture
@@ -122,6 +126,9 @@ module ccpp_capture_mod
   integer, save :: lc_grpid = -1
   character(len=1024), save :: lc_path = ''
 
+  ! Capture directory when CCPP_CAPTURE_DIR is unset ('' = working dir).
+  character(len=1024), save :: lc_default_dir = ''
+
   integer :: lc_no_shape(0)
 
 contains
@@ -180,7 +187,7 @@ contains
     lc_call_number = 1
   end function lc_call_number
 
-  ! <CCPP_CAPTURE_DIR>/<table>_<n>.nc
+  ! <capture directory>/<table>_<n>.nc (see the header)
   function lc_file_path(table, n) result(path)
     character(len=*), intent(in) :: table
     integer, intent(in) :: n
@@ -190,8 +197,12 @@ contains
     integer :: dir_len, status
 
     call get_environment_variable('CCPP_CAPTURE_DIR', dir, dir_len, status)
+    if (status /= 0 .or. dir_len == 0) then
+      dir = lc_default_dir
+      dir_len = len_trim(dir)
+    end if
     write(num, '(I0)') n
-    if (status == 0 .and. dir_len > 0) then
+    if (dir_len > 0) then
       path = trim(dir) // '/' // trim(table) // '_' // trim(num) // '.nc'
     else
       path = trim(table) // '_' // trim(num) // '.nc'
@@ -347,6 +358,14 @@ contains
   ! ---------------------------------------------------------------------
   ! Writing
   ! ---------------------------------------------------------------------
+
+  ! Directory for the capture files when CCPP_CAPTURE_DIR is unset. The
+  ! generated caps call this before each capture with the generator's
+  ! --capture-test-driver-dir.
+  subroutine ccpp_capture_set_dir(dir)
+    character(len=*), intent(in) :: dir
+    lc_default_dir = dir
+  end subroutine ccpp_capture_set_dir
 
   ! timing 'before': create the next call's file for `table`, `in` current.
   ! timing 'after': reopen the current call's file, `out` current.
@@ -839,15 +858,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual))
-    integer :: loc(1)
     mismatch = (actual /= expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_int_1d
@@ -857,15 +874,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual,1), size(actual,2))
-    integer :: loc(2)
     mismatch = (actual /= expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_int_2d
@@ -875,16 +890,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
-    integer :: loc(3)
     mismatch = (actual /= expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
-                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_int_3d
@@ -900,15 +912,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual))
-    integer :: loc(1)
     mismatch = .not. (actual .eqv. expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_log_1d
@@ -918,15 +928,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual,1), size(actual,2))
-    integer :: loc(2)
     mismatch = .not. (actual .eqv. expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_log_2d
@@ -936,16 +944,13 @@ contains
     integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
     logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
-    integer :: loc(3)
     mismatch = .not. (actual .eqv. expected)
     ok = .not. any(mismatch)
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
-                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_log_3d
@@ -964,7 +969,6 @@ contains
     logical :: ok
     real(kind=kind_phys) :: diff(size(actual))
     logical :: mismatch(size(actual))
-    integer :: loc(1)
     diff = abs(actual - expected)
     mismatch = (diff > tolerance)
     ok = .not. any(mismatch)
@@ -974,8 +978,7 @@ contains
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_r8_1d
@@ -988,7 +991,6 @@ contains
     logical :: ok
     real(kind=kind_phys) :: diff(size(actual,1), size(actual,2))
     logical :: mismatch(size(actual,1), size(actual,2))
-    integer :: loc(2)
     diff = abs(actual - expected)
     mismatch = (diff > tolerance)
     ok = .not. any(mismatch)
@@ -998,8 +1000,7 @@ contains
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_r8_2d
@@ -1012,7 +1013,6 @@ contains
     logical :: ok
     real(kind=kind_phys) :: diff(size(actual,1), size(actual,2), size(actual,3))
     logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
-    integer :: loc(3)
     diff = abs(actual - expected)
     mismatch = (diff > tolerance)
     ok = .not. any(mismatch)
@@ -1022,9 +1022,7 @@ contains
       if (ok) then
         first_mismatch_index = 0
       else
-        loc = findloc(mismatch, .true.)
-        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
-                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+        first_mismatch_index = first_true_index(reshape(mismatch, [size(mismatch)]))
       end if
     end if
   end function ccpp_capture_compare_r8_3d
@@ -1083,5 +1081,21 @@ contains
     end if
   end function ccpp_capture_tolerance_override
 
+  ! Position of the first .true. in *mask* (0 if none): the compares'
+  ! first-mismatch index, column-major for a flattened array. A loop, not
+  ! FINDLOC: nvfortran's runtime aborts on FINDLOC of a logical array
+  ! ("FINDLOC: unimplemented for data type").
+  pure function first_true_index(mask) result(idx)
+    logical, intent(in) :: mask(:)
+    integer :: idx
+    integer :: i
+    idx = 0
+    do i = 1, size(mask)
+      if (mask(i)) then
+        idx = i
+        return
+      end if
+    end do
+  end function first_true_index
 
 end module ccpp_capture_mod

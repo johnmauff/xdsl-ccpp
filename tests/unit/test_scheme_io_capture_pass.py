@@ -126,7 +126,8 @@ _HOST_META = """\
 _SUITE_XML = minimal_suite_xml("test_io_capture_scheme", suite_name="test_io_capture_suite")
 
 
-def _fortran_output(run_host_match, ccpp_context, scheme="", phase="", directive=None) -> str:
+def _fortran_output(run_host_match, ccpp_context, scheme="", phase="", directive=None,
+                    test_driver_dir=None) -> str:
     module = run_host_match(
         scheme_metas=[_SCHEME_META],
         host_metas=[_HOST_META],
@@ -139,7 +140,9 @@ def _fortran_output(run_host_match, ccpp_context, scheme="", phase="", directive
     CCPPCAP().apply(ccpp_context, module)
     if directive:
         GPUCcppCapPass(directive=directive).apply(ccpp_context, module)
-    SchemeIOCapturePass(scheme=scheme, phase=phase, directive=directive).apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme=scheme, phase=phase, directive=directive, test_driver_dir=test_driver_dir,
+    ).apply(ccpp_context, module)
     out = StringIO()
     print_to_ftn(module, out)
     return out.getvalue()
@@ -193,6 +196,26 @@ def test_before_and_after_blocks_frame_the_call(run_host_match, ccpp_context):
     assert fortran.count("call ccpp_capture_end()") == 4  # init + run, before + after
     for procedure in ("ccpp_capture", "ccpp_capture_begin", "ccpp_capture_end"):
         assert f"use ccpp_capture_mod, only: {procedure}\n" in fortran
+
+
+def test_driver_dir_becomes_the_capture_directory(run_host_match, ccpp_context, tmp_path):
+    """With a driver directory, each "before" block first points the
+    runtime at it (ccpp_capture_set_dir), so data and drivers share it."""
+    fortran = _fortran_output(
+        run_host_match, ccpp_context, scheme="test_io_capture_scheme",
+        test_driver_dir=str(tmp_path),
+    )
+    set_dir = "call ccpp_capture_set_dir("
+    assert fortran.count(set_dir) == 2  # init + run, "before" only
+    assert fortran.count(f"'{tmp_path}')") == 2
+    init_after = fortran.index("call ccpp_capture_begin('test_io_capture_scheme_init', 'after')")
+    assert fortran.index(set_dir, init_after) < fortran.index(_BEGIN_BEFORE) < fortran.index(_SCHEME_CALL)
+    assert "use ccpp_capture_mod, only: ccpp_capture_set_dir\n" in fortran
+
+
+def test_no_set_dir_without_driver_dir(run_host_match, ccpp_context):
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
+    assert "ccpp_capture_set_dir" not in fortran
 
 
 def test_intent_inout_array_captured_both_with_device_sync(run_host_match, ccpp_context):
@@ -473,3 +496,13 @@ def test_gpu_residency_omitted_without_directive(run_host_match, ccpp_context, t
     driver_source = driver_path.read_text()
     assert "!$acc" not in driver_source
     assert "!$omp" not in driver_source
+
+
+def test_wrap_paren_list_puts_an_overlong_item_on_its_own_line():
+    """An item longer than a line (a long path literal) must not leave an
+    empty continuation line before it (`&` alone ends the statement)."""
+    from xdsl_ccpp.backend.print_ftn import wrap_paren_list
+
+    item = "'" + "x" * 120 + "'"
+    lines = wrap_paren_list("call f(", [item], ")", 99, "    ")
+    assert lines == ["call f( &", "    " + item + ")"]

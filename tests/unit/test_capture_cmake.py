@@ -1,7 +1,10 @@
 """The CMake build written next to the scheme I/O capture test drivers
-(tools/capture_cmake.py, ccpp_dsl --capture-test-driver-dir)."""
+(tools/capture_cmake.py, ccpp_dsl --capture-test-driver-dir), and
+--capture-scheme's SCHEME[:PHASE] parsing."""
 
 import os
+
+import pytest
 
 from xdsl_ccpp.tools.capture_cmake import (
     render_capture_cmakelists,
@@ -9,7 +12,8 @@ from xdsl_ccpp.tools.capture_cmake import (
     scheme_meta_files,
     support_sources,
 )
-from xdsl_ccpp.tools.ccpp_dsl import ccppMain
+from xdsl_ccpp.tools.ccpp_dsl import _capture_spec, ccppMain
+from xdsl_ccpp.util.errors import CcppInputError
 
 K = "examples/kessler"
 
@@ -35,7 +39,9 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
                  "ccpp_capture_mod.F90"):
         assert f'/{name}"' in text
     assert "find_program(NF_CONFIG nf-config REQUIRED)" in text
-    assert "message(FATAL_ERROR" in text  # CCPP_CAPTURE_DIR is required
+    # CCPP_CAPTURE_DIR defaults to the driver directory (the run writes there).
+    assert 'set(CCPP_CAPTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH' in text
+    assert "FATAL_ERROR" not in text
     assert "option(CCPP_CAPTURE_OPENACC" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
@@ -85,3 +91,20 @@ def test_ccpp_dsl_writes_a_fragment_per_captured_scheme(tmp_path):
     # Two capture-pass instances share one set of declarations in the cap.
     cap = (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
     assert cap.count("use ccpp_capture_mod, only: ccpp_capture_begin\n") == 1
+
+
+@pytest.mark.parametrize("spec, expected", [
+    ("kessler", ("kessler", "")),
+    ("kessler:run", ("kessler", "run")),
+    ("kessler:initialize", ("kessler", "initialize")),
+    (" kessler : timestep_final ", ("kessler", "timestep_final")),
+])
+def test_capture_spec_phase(spec, expected):
+    assert _capture_spec(spec) == expected
+
+
+@pytest.mark.parametrize("spec", ["kessler:init", "kessler:all", ":run"])
+def test_capture_spec_rejects_unknown_phase_or_missing_scheme(spec):
+    # A table suffix such as `init` used to capture nothing, silently.
+    with pytest.raises(CcppInputError):
+        _capture_spec(spec)

@@ -158,7 +158,9 @@ def wrap_paren_list(
     cur = cont_indent
     for i, item in enumerate(items):
         sep = ", " if i < len(items) - 1 else ""
-        if len(cur) + len(item) + len(sep) + 4 > max_col:
+        # Never flush an empty line: an item too long for any line (a long
+        # string literal) goes on a line of its own.
+        if cur.strip() and len(cur) + len(item) + len(sep) + 4 > max_col:
             lines.append(cur + cont_marker)
             cur = cont_indent + item + sep
         else:

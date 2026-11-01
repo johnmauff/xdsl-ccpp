@@ -26,8 +26,28 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_legacy_mode,
     set_verbosity,
 )
-from xdsl_ccpp.util.errors import report_input_errors, warn_once
+from xdsl_ccpp.util.errors import CcppInputError, report_input_errors, warn_once
 from xdsl_ccpp.util.options_db import coerce_list_option
+
+# Phase names --capture-scheme accepts after ':' (cap_shared's lifecycle
+# phases); no phase captures every phase.
+_CAPTURE_PHASES = (
+    "register", "initialize", "timestep_initial", "run", "timestep_final", "finalize",
+)
+
+
+def _capture_spec(spec: str) -> "tuple[str, str]":
+    """(scheme, phase) of one --capture-scheme SCHEME[:PHASE] entry; phase
+    is "" (every phase) when none is given."""
+    scheme, _, phase = (part.strip() for part in spec.partition(":"))
+    if not scheme:
+        raise CcppInputError(f"--capture-scheme '{spec}': no scheme name")
+    if phase and phase not in _CAPTURE_PHASES:
+        raise CcppInputError(
+            f"--capture-scheme '{spec}': unknown phase '{phase}' "
+            f"(one of: {', '.join(_CAPTURE_PHASES)}; omit it for every phase)"
+        )
+    return scheme, phase
 
 
 def _validate_fortran_source(meta_path: str, f90_path: str, preproc_defs) -> str:
@@ -218,8 +238,9 @@ class ccppMain:
             default=[],
             metavar="SCHEME[:PHASE]",
             help="Opt-in: instrument every call to SCHEME (optionally restricted "
-                 "to one lifecycle PHASE, e.g. 'kessler:run'; omit ':PHASE' to "
-                 "capture every phase) with calls into the ccpp_capture_mod "
+                 "to one lifecycle PHASE: register, initialize, timestep_initial, "
+                 "run, timestep_final or finalize, e.g. 'kessler:run'; omit "
+                 "':PHASE' to capture every phase) with calls into the ccpp_capture_mod "
                  "runtime library, dumping each input/output argument to disk. "
                  "For building data-driven, scheme-level regression tests from "
                  "realistic captured atmospheric states -- not a debugging aid "
@@ -237,9 +258,10 @@ class ccppMain:
                  "program (test_<scheme>.F90) into DIR that replays each "
                  "captured call (reads its inputs, calls the scheme, compares "
                  "its outputs), plus test_<scheme>.cmake and a CMakeLists.txt "
-                 "to build and run the drivers: cmake -S DIR -B build "
-                 "-DCCPP_CAPTURE_DIR=<dir with the .nc files>; cmake --build "
-                 "build; ctest --test-dir build.",
+                 "to build and run the drivers. The captured run writes its "
+                 ".nc files into DIR too (CCPP_CAPTURE_DIR in the run's "
+                 "environment overrides it): cmake -S DIR -B build; cmake "
+                 "--build build; ctest --test-dir build.",
         )
         parser.add_argument(
             "--capture-tolerance",
@@ -952,7 +974,7 @@ class ccppMain:
             # more than once. Must run at the same point
             # generate-gpu-debug-prints does, for the same reason (real
             # KeywordCallOps for every scheme call only exist by here).
-            scheme_name, _, phase = spec.partition(":")
+            scheme_name, phase = _capture_spec(spec)
             capture_opts = [f"scheme={scheme_name}"]
             if phase:
                 capture_opts.append(f"phase={phase}")
@@ -1344,7 +1366,7 @@ class ccppMain:
         meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
         scheme_sources: dict = {}
         for spec in self.options_db.get("capture_scheme") or []:
-            scheme = spec.partition(":")[0]
+            scheme = _capture_spec(spec)[0]
             if scheme in scheme_sources:
                 continue
             if not os.path.isfile(os.path.join(driver_dir, f"test_{scheme}.F90")):

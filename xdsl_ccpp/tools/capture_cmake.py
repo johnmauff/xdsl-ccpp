@@ -11,13 +11,15 @@ scheme. This module writes, next to them:
 
 Usage::
 
-    cmake -S <driver dir> -B build -DCCPP_CAPTURE_DIR=<dir with the .nc files>
+    cmake -S <driver dir> -B build [-DCCPP_CAPTURE_DIR=<dir with the .nc files>]
     cmake --build build
     ctest --test-dir build
 
 The fragments are per scheme so that several captured schemes, each written
 by its own capture-pass instance or generation, collect in one directory;
-the top file is the same for all of them.
+the top file is the same for all of them. The captured run writes its
+files into the driver directory too (the caps call ccpp_capture_set_dir with
+it), so CCPP_CAPTURE_DIR defaults to that directory.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ _TOP_TEMPLATE = """\
 # caps. Builds the scheme I/O capture test drivers in this directory (one
 # test_<scheme>.cmake each) and runs them against captured NetCDF files:
 #
-#   cmake -S <this dir> -B build -DCCPP_CAPTURE_DIR=<dir with the .nc files>
+#   cmake -S <this dir> -B build
 #   cmake --build build
 #   ctest --test-dir build --output-on-failure
 #
@@ -62,11 +64,10 @@ _TOP_TEMPLATE = """\
 cmake_minimum_required(VERSION 3.19)
 project(ccpp_capture_tests LANGUAGES Fortran)
 
-set(CCPP_CAPTURE_DIR "" CACHE PATH
-    "Directory holding the captured <table>_<n>.nc files (the run directory)")
-if(NOT CCPP_CAPTURE_DIR)
-  message(FATAL_ERROR "Set -DCCPP_CAPTURE_DIR=<directory with the captured .nc files>")
-endif()
+# The captured run writes its <table>_<n>.nc files into this directory
+# unless CCPP_CAPTURE_DIR was set in its environment.
+set(CCPP_CAPTURE_DIR "${{CMAKE_CURRENT_SOURCE_DIR}}" CACHE PATH
+    "Directory holding the captured <table>_<n>.nc files")
 option(CCPP_CAPTURE_OPENACC "Build the drivers with OpenACC" OFF)
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
 set(CCPP_CAPTURE_EXTRA_SOURCES "" CACHE STRING
