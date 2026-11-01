@@ -4,8 +4,9 @@
 ! scheme call (an `in` and an `out` group) holding every supported
 ! (type, rank), reads it back and compares; also checks the call counter,
 ! the `found` signal for a call that was never captured, missing
-! variables, a shape mismatch, mismatch detection and diagnostics, and the
-! tolerance override default.
+! variables, a shape mismatch, mismatch detection and diagnostics, the
+! tolerance override default, the global attributes (ccpp_capture_set_info,
+! ccpp_capture_attribute, ccpp_capture_date) and ccpp_capture_set_dir.
 !
 ! Run from this directory, with netcdf-fortran built by the same compiler
 ! (on Derecho load the compiler first: `module load gcc netcdf`, or
@@ -21,7 +22,10 @@
 ! into the current directory (CCPP_CAPTURE_DIR unset) and leaves them.
 program test_ccpp_capture_mod
   use ccpp_kinds, only: kind_phys
+  use netcdf
   use ccpp_capture_mod, only: ccpp_capture_begin, ccpp_capture_end, ccpp_capture, &
+                              ccpp_capture_set_dir, ccpp_capture_set_info, &
+                              ccpp_capture_attribute, &
                               ccpp_capture_open_call, ccpp_capture_close, &
                               ccpp_capture_read, ccpp_capture_compare, &
                               ccpp_capture_tolerance_override
@@ -50,6 +54,7 @@ program test_ccpp_capture_mod
   call test_deliberate_mismatch_is_detected(n_failed)
   call test_compare_diagnostics(n_failed)
   call test_tolerance_override_default_when_unset(n_failed)
+  call test_global_attributes(n_failed)
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
@@ -93,7 +98,10 @@ contains
     c1 = [character(len=8) :: 'q', 'cldliq', 'rainqm']
     r2_out = 2.0_kind_phys * r2
 
+    call ccpp_capture_set_info('test_label', 'test_generator 1.0')
     call ccpp_capture_begin('test_table', 'before')
+    call ccpp_capture_attribute('current_timestep_number', 5)
+    call ccpp_capture_attribute('a_note', 'hello')
     call ccpp_capture('i0', i0, standard_name='an_integer', units='1')
     call ccpp_capture('i1', i1, dim_names='four')
     call ccpp_capture('i2', i2, dim_names='horizontal_loop_extent,three')
@@ -116,8 +124,10 @@ contains
     call ccpp_capture_end()
   end subroutine write_call_1
 
-  ! Call 2 of test_table: a second file, numbered by the per-table counter.
+  ! Call 2 of test_table: a second file, numbered by the per-table counter,
+  ! written through ccpp_capture_set_dir ('.': <dir>/<table>_<n>.nc).
   subroutine write_call_2()
+    call ccpp_capture_set_dir('.')
     call ccpp_capture_begin('test_table', 'before')
     call ccpp_capture('i0', 7)
     call ccpp_capture_end()
@@ -281,5 +291,31 @@ contains
     call report('tolerance override: default returned when unset', &
         abs(tolerance - 1.0e-10_kind_phys) < 1.0e-20_kind_phys, n_failed)
   end subroutine test_tolerance_override_default_when_unset
+
+  subroutine test_global_attributes(n_failed)
+    integer, intent(inout) :: n_failed
+    integer :: ncid, status, step
+    character(len=64) :: text
+
+    status = nf90_open('test_table_1.nc', NF90_NOWRITE, ncid)
+    call report('call 1 file opens', status == NF90_NOERR, n_failed)
+    if (status /= NF90_NOERR) return
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_capture_label', text)
+    call report('ccpp_capture_label', status == NF90_NOERR .and. text == 'test_label', n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_generator', text)
+    call report('ccpp_generator', status == NF90_NOERR .and. text == 'test_generator 1.0', n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_capture_date', text)
+    call report('ccpp_capture_date', status == NF90_NOERR .and. len_trim(text) == 19, n_failed)
+    step = -1
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'current_timestep_number', step)
+    call report('integer attribute', status == NF90_NOERR .and. step == 5, n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'a_note', text)
+    call report('character attribute', status == NF90_NOERR .and. text == 'hello', n_failed)
+    status = nf90_close(ncid)
+  end subroutine test_global_attributes
 
 end program test_ccpp_capture_mod

@@ -310,11 +310,10 @@ def _render_driver_enter_data(directive: str, copyin_names: "list[str]", create_
     needs_in/needs_out distinction the real cap's own AccEnterDataOp
     printer makes (ccpp_utils.py/print_ftn.py's own module-level case).
     Returns None when both lists are empty (no device-resident args this
-    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: a
-    test driver only ever contains directive text at all when
-    --directive was explicitly passed at cap-generation time, so there's
-    no single-source CPU/GPU dual-build concern here to toggle at compile
-    time -- generate without --directive for a CPU-only driver instead.
+    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: the
+    capture pass always asks for directives (OpenACC by default), which
+    are comments unless the driver is compiled with OpenACC/OpenMP, so
+    one driver serves a CPU and a GPU replay.
     """
     if directive == "acc":
         clauses = []

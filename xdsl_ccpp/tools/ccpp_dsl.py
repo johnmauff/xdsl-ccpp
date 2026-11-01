@@ -50,6 +50,19 @@ def _capture_spec(spec: str) -> "tuple[str, str]":
     return scheme, phase
 
 
+def _capture_label(label: str) -> str:
+    """A --capture-label value: one directory name (it names the data
+    subdirectory under --capture-test-driver-dir)."""
+    label = label.strip()
+    # Also no quotes or backslashes: it is quoted in the pass pipeline.
+    if not label or label in (".", "..") or any(c in label for c in '/\\"\''):
+        raise CcppInputError(
+            f"--capture-label '{label}': must be a single directory name "
+            "(e.g. the case name), without '/', '\\' or quotes"
+        )
+    return label
+
+
 def _validate_fortran_source(meta_path: str, f90_path: str, preproc_defs) -> str:
     """Compare one scheme's .meta file with its paired .F90 and return what
     that printed to stderr (the mismatch warnings), so the comparisons can
@@ -259,9 +272,21 @@ class ccppMain:
                  "captured call (reads its inputs, calls the scheme, compares "
                  "its outputs), plus test_<scheme>.cmake and a CMakeLists.txt "
                  "to build and run the drivers. The captured run writes its "
-                 ".nc files into DIR too (CCPP_CAPTURE_DIR in the run's "
-                 "environment overrides it): cmake -S DIR -B build; cmake "
-                 "--build build; ctest --test-dir build.",
+                 ".nc files into DIR/LABEL (--capture-label), or DIR without "
+                 "a label; CCPP_CAPTURE_DIR in the run's environment "
+                 "overrides it. ctest runs each driver once per data "
+                 "directory: cmake -S DIR -B build; cmake --build build; "
+                 "ctest --test-dir build.",
+        )
+        parser.add_argument(
+            "--capture-label",
+            default=None,
+            metavar="LABEL",
+            help="Only meaningful together with --capture-scheme: a label "
+                 "for this capture (e.g. the CAM-SIMA case name), written "
+                 "into every capture file (ccpp_capture_label) and, with "
+                 "--capture-test-driver-dir, the name of the data "
+                 "subdirectory DIR/LABEL. One directory name, no '/'.",
         )
         parser.add_argument(
             "--capture-tolerance",
@@ -994,6 +1019,9 @@ class ccppMain:
                 # backslash/double-quote need it for a filesystem path).
                 escaped = test_driver_dir.replace("\\", "\\\\").replace('"', '\\"')
                 capture_opts.append(f'test_driver_dir="{escaped}"')
+            label = self.options_db.get("capture_label")
+            if label:
+                capture_opts.append(f'label="{_capture_label(label)}"')
             tolerance = self.options_db.get("capture_tolerance")
             if tolerance is not None:
                 # Quoted, not a bare numeric token: the pass-pipeline

@@ -16,9 +16,13 @@ the scheme's own call:
     ccpp_capture(name, value, standard_name, units, dim_names) per
     intent in/inout argument (group `in`), ccpp_capture_end().
   - after: the same with 'after' for intent out/inout (group `out`).
-With --capture-test-driver-dir, the "before" block starts with
-ccpp_capture_set_dir(<that dir>), so the run writes its files next to the
-generated drivers (CCPP_CAPTURE_DIR in the run's environment overrides it).
+Each "before" block also records the capture's label (e.g. the CAM-SIMA
+case name, --capture-label) and the generator version
+(ccpp_capture_set_info), and the host's current_timestep_number when it
+has one (ccpp_capture_attribute). With --capture-test-driver-dir, it starts
+with ccpp_capture_set_dir(<that dir>/<label>), so the run writes its files
+under the generated drivers, one subdirectory per label
+(CCPP_CAPTURE_DIR in the run's environment overrides it).
 
 Call-site discovery reuses cap_shared.iter_scheme_call_sites -- the same
 machinery gpu_debug_print_pass.py's own Part C uses (extracted there
@@ -120,13 +124,15 @@ calls apply() inserts directly into the IR, below, are a different case:
 those are CallStatementOps in the generated cap's own IR tree.)
 """
 
+import functools
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import builtin, func, llvm
-from xdsl.dialects.builtin import StringAttr, i1, i8
+from xdsl.dialects.builtin import StringAttr, i1, i8, i32
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -206,10 +212,36 @@ _MAX_SUPPORTED_RANK = 3
 _MAX_CHARACTER_RANK = 1
 
 # ccpp_capture_mod procedures a capture call site uses.
-_CAPTURE_PROCEDURES = ("ccpp_capture_begin", "ccpp_capture", "ccpp_capture_end")
+_CAPTURE_PROCEDURES = (
+    "ccpp_capture_set_info", "ccpp_capture_begin", "ccpp_capture", "ccpp_capture_end",
+)
 # Called first in each "before" block when a driver directory is set, so the
-# run writes its files next to the drivers (CCPP_CAPTURE_DIR still wins).
+# run writes its files under it (CCPP_CAPTURE_DIR still wins).
 _SET_DIR_PROCEDURE = "ccpp_capture_set_dir"
+# Writes a global attribute: the host's timestep number, when it has one.
+_ATTRIBUTE_PROCEDURE = "ccpp_capture_attribute"
+_STEP_STD_NAME = "current_timestep_number"
+
+
+@functools.lru_cache(maxsize=1)
+def _generator_version() -> str:
+    """'xdsl_ccpp <version>', plus the commit of a git checkout (local
+    state only), for the ccpp_generator attribute of each capture file."""
+    from importlib import metadata
+
+    try:
+        text = f"xdsl_ccpp {metadata.version('xdsl-ccpp')}"
+    except metadata.PackageNotFoundError:
+        text = "xdsl_ccpp"
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+    return f"{text} ({commit})" if commit else text
 
 
 def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int) -> bool:
@@ -408,6 +440,9 @@ class SchemeIOCapturePass(ModulePass):
     phase: str = ""
     directive: "str | None" = None
     test_driver_dir: "str | None" = None
+    # The capture's label (e.g. the CAM-SIMA case name): written into each
+    # file, and with test_driver_dir the files go to <test_driver_dir>/<label>.
+    label: "str | None" = None
     # A string, not a float: ccpp_dsl.py passes this through the
     # pass-pipeline spec as a quoted string specifically to dodge that
     # parser's own int-vs-float NUMBER-token ambiguity for an exponent
@@ -422,6 +457,7 @@ class SchemeIOCapturePass(ModulePass):
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         meta_data = {}
         mpi_root_ref = None
+        step_ref = None
         if ccpp_mod is not None:
             bmdd = BuildMetaDataDescriptions()
             bmdd.traverse(ccpp_mod)
@@ -430,6 +466,9 @@ class SchemeIOCapturePass(ModulePass):
             entry = host_var_index.get(_MPI_ROOT_STD_NAME)
             if entry is not None:
                 mpi_root_ref = (entry[0], entry[1])  # (var_name, module_name)
+            entry = host_var_index.get(_STEP_STD_NAME)
+            if entry is not None:
+                step_ref = (entry[0], entry[1])
 
         # Tracks which enclosing suite-cap modules already have which
         # `use <module>, only: <name>` declarations inserted -- a capture
@@ -503,12 +542,18 @@ class SchemeIOCapturePass(ModulePass):
                     after.append(entry)
 
             if before or after:
-                self._ensure_capture_decl(call_op, declared_decls)
-                if mpi_root_ref is not None:
-                    self._ensure_host_var_decl(call_op, mpi_root_ref[0], mpi_root_ref[1], declared_decls)
+                self._ensure_capture_decl(call_op, declared_decls, step_ref is not None)
+                for ref in (mpi_root_ref, step_ref):
+                    if ref is not None:
+                        self._ensure_host_var_decl(call_op, ref[0], ref[1], declared_decls)
                 mpi_root_var = mpi_root_ref[0] if mpi_root_ref is not None else None
-                self._insert_captures(table_name, "before", before, call_op, mpi_root_var)
+                step_var = step_ref[0] if step_ref is not None else None
+                self._insert_captures(table_name, "before", before, call_op, mpi_root_var, step_var)
                 self._insert_captures(table_name, "after", after, call_op, mpi_root_var)
+                data_dir = self._data_dir()
+                if data_dir:
+                    # The model cannot create it; it must exist before the run.
+                    os.makedirs(data_dir, exist_ok=True)
 
             if self.test_driver_dir and table_name not in captured_tables:
                 params = _build_test_driver_params(param_names, args_by_name, device_names)
@@ -525,7 +570,16 @@ class SchemeIOCapturePass(ModulePass):
         if self.test_driver_dir and captured_tables:
             self._maybe_emit_test_driver(self.scheme, captured_tables)
 
-    def _ensure_capture_decl(self, call_op, declared_decls: set) -> None:
+    def _data_dir(self) -> "str | None":
+        """Where the run writes its files unless CCPP_CAPTURE_DIR is set:
+        <test_driver_dir>/<label>, or test_driver_dir without a label;
+        None without a driver directory (the run's working directory)."""
+        if not self.test_driver_dir:
+            return None
+        driver_dir = os.path.abspath(self.test_driver_dir)
+        return os.path.join(driver_dir, self.label) if self.label else driver_dir
+
+    def _ensure_capture_decl(self, call_op, declared_decls: set, with_attribute: bool = False) -> None:
         """Insert declaration FuncOps for the ccpp_capture_mod procedures a
         capture call site uses (_CAPTURE_PROCEDURES), at the top level of call_op's enclosing
         suite-cap module -- exactly the same construction
@@ -547,6 +601,8 @@ class SchemeIOCapturePass(ModulePass):
         procedures = _CAPTURE_PROCEDURES
         if self.test_driver_dir:
             procedures = (_SET_DIR_PROCEDURE,) + procedures
+        if with_attribute:
+            procedures = procedures + (_ATTRIBUTE_PROCEDURE,)
         for procedure in procedures:
             key = (id(module_op), procedure)
             if key in declared_decls:
@@ -618,22 +674,28 @@ class SchemeIOCapturePass(ModulePass):
             if self.tolerance is not None
             else _TEST_DRIVER_TOLERANCE
         )
+        # The driver always carries device data directives (OpenACC unless
+        # --directive says otherwise): they are comments in a CPU build, so
+        # one driver replays a capture on CPU and, built with OpenACC, on GPU.
         source = render_scheme_io_capture_test_driver(
-            scheme_name, phase_tables, tolerance, self.directive,
+            scheme_name, phase_tables, tolerance, self.directive or "acc",
         )
         os.makedirs(self.test_driver_dir, exist_ok=True)
         out_path = os.path.join(self.test_driver_dir, f"test_{scheme_name}.F90")
         with open(out_path, "w") as f:
             f.write(source)
 
-    def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var) -> None:
+    def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var, step_var=None) -> None:
         """Insert one file's worth of capture calls immediately before
         (timing="before") or after (timing="after") call_op:
 
             [sync, ...]                          -- device-resident values
             if (<mpi_root_var>) then             -- when the host has one
-              call ccpp_capture_set_dir(driver dir) -- "before", with a driver dir
+              call ccpp_capture_set_dir(data dir)  -- "before", with a driver dir
+              call ccpp_capture_set_info(label, generator)  -- "before"
               call ccpp_capture_begin(table, timing)
+              call ccpp_capture_attribute('current_timestep_number', <step>)
+                                                   -- "before", when the host has one
               call ccpp_capture(name, value, standard_name, units, dim_names)
               ...
               call ccpp_capture_end()
@@ -656,15 +718,25 @@ class SchemeIOCapturePass(ModulePass):
                     OmpTargetUpdateFromOp, {"array_refs": device_values},
                 ))
         writes = []
-        if self.test_driver_dir and timing == "before":
+        data_dir = self._data_dir()
+        if data_dir and timing == "before":
             writes.append(CallStatementOp(
-                _SET_DIR_PROCEDURE,
-                arg_ops=[StringLiteralExprOp(os.path.abspath(self.test_driver_dir))],
+                _SET_DIR_PROCEDURE, arg_ops=[StringLiteralExprOp(data_dir)],
             ))
+        if timing == "before":
+            writes.append(CallStatementOp("ccpp_capture_set_info", arg_ops=[
+                StringLiteralExprOp(self.label or ""),
+                StringLiteralExprOp(_generator_version()),
+            ]))
         writes.append(CallStatementOp(
             "ccpp_capture_begin",
             arg_ops=[StringLiteralExprOp(table_name), StringLiteralExprOp(timing)],
         ))
+        if step_var is not None and timing == "before":
+            writes.append(CallStatementOp(_ATTRIBUTE_PROCEDURE, arg_ops=[
+                StringLiteralExprOp(_STEP_STD_NAME),
+                VarRefExprOp(step_var, result_type=i32),
+            ]))
         for value, param_name, arg, _ in entries:
             writes.append(CallStatementOp("ccpp_capture", arg_ops=[
                 StringLiteralExprOp(param_name),

@@ -18,8 +18,10 @@ Usage::
 The fragments are per scheme so that several captured schemes, each written
 by its own capture-pass instance or generation, collect in one directory;
 the top file is the same for all of them. The captured run writes its
-files into the driver directory too (the caps call ccpp_capture_set_dir with
-it), so CCPP_CAPTURE_DIR defaults to that directory.
+files under the driver directory (the caps call ccpp_capture_set_dir with
+<driver dir>/<label>, e.g. the case name), and each driver becomes one test
+per directory holding its scheme's files: test_<scheme>.<label>, so several
+captures of a scheme (a CPU and a GPU run, say) share one build.
 """
 
 from __future__ import annotations
@@ -53,21 +55,25 @@ _TOP_TEMPLATE = """\
 #
 #   cmake -S <this dir> -B build
 #   cmake --build build
-#   ctest --test-dir build --output-on-failure
+#   ctest --test-dir build --output-on-failure      (-R <label> for one capture)
+#
+# Each driver runs once per directory holding its scheme's captures: this
+# directory and each subdirectory (one per capture label, e.g. a CAM-SIMA
+# case name), as test_<scheme>.<label>. A capture added later is picked up
+# by the next build. -DCCPP_CAPTURE_DIR=<dir> instead runs each driver
+# once, against <dir>.
 #
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
 # PATH, or -DNF_CONFIG=...). -DCCPP_CAPTURE_OPENACC=ON builds with OpenACC
-# (CCPP_CAPTURE_ACC_FLAGS, default -acc) for GPU replay; the drivers carry
-# their own enter/exit data directives when the caps were generated with
-# --directive. CCPP_CAPTURE_TOLERANCE in the environment overrides the
+# (CCPP_CAPTURE_ACC_FLAGS, default -acc) for GPU replay of the same
+# captures: the drivers always carry their own enter/exit data directives
+# (comments in a CPU build). CCPP_CAPTURE_TOLERANCE in the environment overrides the
 # drivers' real-valued tolerance at run time.
 cmake_minimum_required(VERSION 3.19)
 project(ccpp_capture_tests LANGUAGES Fortran)
 
-# The captured run writes its <table>_<n>.nc files into this directory
-# unless CCPP_CAPTURE_DIR was set in its environment.
-set(CCPP_CAPTURE_DIR "${{CMAKE_CURRENT_SOURCE_DIR}}" CACHE PATH
-    "Directory holding the captured <table>_<n>.nc files")
+set(CCPP_CAPTURE_DIR "" CACHE PATH
+    "Run every driver against this directory only (default: one test per capture directory found here)")
 option(CCPP_CAPTURE_OPENACC "Build the drivers with OpenACC" OFF)
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
 set(CCPP_CAPTURE_EXTRA_SOURCES "" CACHE STRING
@@ -102,6 +108,42 @@ target_compile_options(ccpp_capture_support PUBLIC ${{_nf_fflags}})
 target_link_libraries(ccpp_capture_support PUBLIC ${{_nf_flibs}})
 
 enable_testing()
+
+# add_test for driver <target> in each directory holding <scheme>'s captures.
+function(ccpp_capture_add_tests target scheme)
+  if(CCPP_CAPTURE_DIR)
+    add_test(NAME ${{target}} COMMAND ${{target}} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
+    return()
+  endif()
+  set(_pattern "^${{scheme}}_(register|init|timestep_init|run|timestep_final|final)_[0-9]+\\\\.nc$")
+  set(_dirs "${{CMAKE_CURRENT_SOURCE_DIR}}")
+  file(GLOB _entries LIST_DIRECTORIES true CONFIGURE_DEPENDS "${{CMAKE_CURRENT_SOURCE_DIR}}/*")
+  foreach(_entry IN LISTS _entries)
+    if(IS_DIRECTORY "${{_entry}}")
+      list(APPEND _dirs "${{_entry}}")
+    endif()
+  endforeach()
+  set(_found FALSE)
+  foreach(_dir IN LISTS _dirs)
+    file(GLOB _files RELATIVE "${{_dir}}" CONFIGURE_DEPENDS "${{_dir}}/*.nc")
+    list(FILTER _files INCLUDE REGEX "${{_pattern}}")
+    if(NOT _files)
+      continue()
+    endif()
+    if(_dir STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+      set(_name ${{target}})
+    else()
+      get_filename_component(_label "${{_dir}}" NAME)
+      set(_name ${{target}}.${{_label}})
+    endif()
+    add_test(NAME ${{_name}} COMMAND ${{target}} WORKING_DIRECTORY "${{_dir}}")
+    set(_found TRUE)
+  endforeach()
+  if(NOT _found)
+    message(WARNING "${{target}}: no captured ${{scheme}} files here or in a subdirectory; no test")
+  endif()
+endfunction()
+
 file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${{CMAKE_CURRENT_SOURCE_DIR}}/test_*.cmake")
 foreach(_test IN LISTS _ccpp_capture_tests)
   include(${{_test}})
@@ -117,7 +159,7 @@ add_executable(test_{scheme}
 set_target_properties(test_{scheme} PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/test_{scheme})
 target_link_libraries(test_{scheme} PRIVATE ccpp_capture_support)
-add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY ${{CCPP_CAPTURE_DIR}})
+ccpp_capture_add_tests(test_{scheme} {scheme})
 """
 
 

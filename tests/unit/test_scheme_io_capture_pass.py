@@ -213,6 +213,37 @@ def test_driver_dir_becomes_the_capture_directory(run_host_match, ccpp_context, 
     assert "use ccpp_capture_mod, only: ccpp_capture_set_dir\n" in fortran
 
 
+def test_label_names_the_data_subdirectory(run_host_match, ccpp_context, tmp_path):
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META], host_metas=[_HOST_META], suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", test_driver_dir=str(tmp_path), label="case.c01b",
+    ).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    fortran = out.getvalue()
+
+    assert (tmp_path / "case.c01b").is_dir()
+    assert fortran.count(f"'{tmp_path / 'case.c01b'}')") == 2
+    assert fortran.count("call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp") == 2
+    # The drivers stay in the driver directory itself.
+    assert (tmp_path / "test_test_io_capture_scheme.F90").exists()
+
+
+def test_set_info_records_generator_in_each_before_block(run_host_match, ccpp_context):
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
+    set_info = "call ccpp_capture_set_info('', 'xdsl_ccpp"
+    assert fortran.count(set_info) == 2  # init + run
+    assert fortran.index(set_info, fortran.index(
+        "call ccpp_capture_begin('test_io_capture_scheme_init', 'after')")) < fortran.index(_BEGIN_BEFORE)
+    # This host has no current_timestep_number: no attribute call.
+    assert "ccpp_capture_attribute" not in fortran
+
+
 def test_no_set_dir_without_driver_dir(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     assert "ccpp_capture_set_dir" not in fortran
@@ -334,6 +365,37 @@ def test_capture_guarded_by_host_mpi_root_flag(run_host_match, ccpp_context):
     end_if_idx = fortran.index("end if", begin_idx)
     assert guard_idx < begin_idx < end_idx < end_if_idx
     assert "'in_var', in_var" in fortran[begin_idx:end_idx]
+
+
+_HOST_META_WITH_STEP = _HOST_META + """\
+[ nstep ]
+  standard_name = current_timestep_number
+  units = count
+  type = integer
+  dimensions = ()
+"""
+
+
+def test_host_timestep_number_recorded_in_before_file(run_host_match, ccpp_context):
+    """A host with current_timestep_number (CAM-SIMA's nstep) gets it
+    written into each call's file, so a capture can be matched to its
+    model step."""
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META], host_metas=[_HOST_META_WITH_STEP], suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme").apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    fortran = out.getvalue()
+
+    attribute = "call ccpp_capture_attribute('current_timestep_number', nstep)"
+    assert "use test_io_capture_host, only: nstep" in fortran
+    assert "use ccpp_capture_mod, only: ccpp_capture_attribute" in fortran
+    assert attribute in _block(fortran, _BEGIN_BEFORE)
+    assert attribute not in _block(fortran, _BEGIN_AFTER)
 
 
 def test_no_guard_when_host_lacks_mpi_root_flag(run_host_match, ccpp_context):
@@ -476,9 +538,10 @@ def test_gpu_residency_device_array_reaches_written_driver(run_host_match, ccpp_
     assert "!$acc exit data copyout(io_var)" in driver_source
 
 
-def test_gpu_residency_omitted_without_directive(run_host_match, ccpp_context, tmp_path):
+def test_gpu_residency_defaults_to_openacc_without_directive(run_host_match, ccpp_context, tmp_path):
     # Same device-resident scheme, but no --directive at generation time
-    # -- the driver must come out exactly like a plain CPU-only one.
+    # (a CPU capture): the driver still carries OpenACC data directives --
+    # comments in a CPU build -- so the same capture replays on a GPU.
     module = run_host_match(
         scheme_metas=[_GPU_SCHEME_META],
         host_metas=[_GPU_HOST_META],
@@ -494,7 +557,8 @@ def test_gpu_residency_omitted_without_directive(run_host_match, ccpp_context, t
 
     driver_path = tmp_path / "test_test_io_capture_gpu_scheme.F90"
     driver_source = driver_path.read_text()
-    assert "!$acc" not in driver_source
+    assert "!$acc enter data copyin(io_var)" in driver_source
+    assert "!$acc exit data copyout(io_var)" in driver_source
     assert "!$omp" not in driver_source
 
 

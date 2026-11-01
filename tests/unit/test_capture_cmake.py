@@ -12,7 +12,7 @@ from xdsl_ccpp.tools.capture_cmake import (
     scheme_meta_files,
     support_sources,
 )
-from xdsl_ccpp.tools.ccpp_dsl import _capture_spec, ccppMain
+from xdsl_ccpp.tools.ccpp_dsl import _capture_label, _capture_spec, ccppMain
 from xdsl_ccpp.util.errors import CcppInputError
 
 K = "examples/kessler"
@@ -25,8 +25,7 @@ def test_fragment_builds_driver_and_scheme_sources_and_registers_the_test():
     assert '"/src/kessler.F90"' in text
     assert '"/src/dep.F90"' in text
     assert "target_link_libraries(test_kessler PRIVATE ccpp_capture_support)" in text
-    assert ("add_test(NAME test_kessler COMMAND test_kessler "
-            "WORKING_DIRECTORY ${CCPP_CAPTURE_DIR})") in text
+    assert "ccpp_capture_add_tests(test_kessler kessler)" in text
     # Each driver keeps its .mod files apart (schemes may share dependencies).
     assert "${CMAKE_BINARY_DIR}/mod/test_kessler" in text
 
@@ -39,8 +38,13 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
                  "ccpp_capture_mod.F90"):
         assert f'/{name}"' in text
     assert "find_program(NF_CONFIG nf-config REQUIRED)" in text
-    # CCPP_CAPTURE_DIR defaults to the driver directory (the run writes there).
-    assert 'set(CCPP_CAPTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH' in text
+    # One test per capture directory found; CCPP_CAPTURE_DIR forces one.
+    assert 'set(CCPP_CAPTURE_DIR "" CACHE PATH' in text
+    assert "function(ccpp_capture_add_tests target scheme)" in text
+    assert "set(_name ${target}.${_label})" in text
+    # The file-name filter keeps kessler_update's files out of kessler's tests.
+    assert ('"^${scheme}_(register|init|timestep_init|run|timestep_final|final)'
+            '_[0-9]+\\\\.nc$"') in text
     assert "FATAL_ERROR" not in text
     assert "option(CCPP_CAPTURE_OPENACC" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
@@ -101,6 +105,38 @@ def test_ccpp_dsl_writes_a_fragment_per_captured_scheme(tmp_path):
 ])
 def test_capture_spec_phase(spec, expected):
     assert _capture_spec(spec) == expected
+
+
+@pytest.mark.parametrize("label", ["case.c01b", " SMS_Ln2.ne3pg3.c01b "])
+def test_capture_label_accepts_a_directory_name(label):
+    assert _capture_label(label) == label.strip()
+
+
+@pytest.mark.parametrize("label", ["", ".", "..", "a/b", 'a"b', "a\\b"])
+def test_capture_label_rejects_anything_but_one_directory_name(label):
+    with pytest.raises(CcppInputError):
+        _capture_label(label)
+
+
+def test_ccpp_dsl_label_names_the_data_subdirectory(tmp_path):
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    drivers = tmp_path / "drivers"
+    options_db.update({
+        "host_files": [f"{K}/host_ftn/kessler_host_mod.meta", f"{K}/host_ftn/kessler_host_sub.meta"],
+        "scheme_files": [f"{K}/scheme/kessler.meta", f"{K}/scheme/kessler_update.meta"],
+        "suites": [f"{K}/scheme/kessler_suite.xml"],
+        "capture_scheme": ["kessler"],
+        "capture_test_driver_dir": str(drivers),
+        "capture_label": "case.c01b",
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+
+    assert (drivers / "case.c01b").is_dir()  # created for the run to write into
+    cap = (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
+    assert f"'{drivers / 'case.c01b'}')" in cap
+    assert "call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp " in cap
 
 
 @pytest.mark.parametrize("spec", ["kessler:init", "kessler:all", ":run"])

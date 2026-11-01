@@ -17,7 +17,11 @@
 ! environment, else the one given to ccpp_capture_set_dir (the generator's
 ! --capture-test-driver-dir, so data and test drivers share a directory),
 ! else the working directory.
-! Global attributes: ccpp_table, ccpp_call, ccpp_capture_format_version.
+! Global attributes: ccpp_table, ccpp_call, ccpp_capture_format_version,
+! ccpp_capture_date (when written, local time), ccpp_generator and
+! ccpp_capture_label (from ccpp_capture_set_info: the generator version and
+! the capture's label, e.g. the CAM-SIMA case name), plus any the caps add
+! with ccpp_capture_attribute (e.g. current_timestep_number).
 ! Group `in` holds the arguments as passed (intent in and inout, written
 ! before the call), group `out` the results (intent out and inout, written
 ! after it). Each variable has attributes ccpp_type (integer, logical,
@@ -52,6 +56,8 @@ module ccpp_capture_mod
   private
 
   public :: ccpp_capture_set_dir
+  public :: ccpp_capture_set_info
+  public :: ccpp_capture_attribute
   public :: ccpp_capture_begin
   public :: ccpp_capture_end
   public :: ccpp_capture
@@ -78,6 +84,11 @@ module ccpp_capture_mod
     module procedure ccpp_capture_char_0d
     module procedure ccpp_capture_char_1d
   end interface ccpp_capture
+
+  interface ccpp_capture_attribute
+    module procedure ccpp_capture_attribute_int
+    module procedure ccpp_capture_attribute_char
+  end interface ccpp_capture_attribute
 
   interface ccpp_capture_read
     module procedure ccpp_capture_read_int_0d
@@ -128,6 +139,10 @@ module ccpp_capture_mod
 
   ! Capture directory when CCPP_CAPTURE_DIR is unset ('' = working dir).
   character(len=1024), save :: lc_default_dir = ''
+
+  ! Written into every file (ccpp_capture_set_info; '' = not written).
+  character(len=1024), save :: lc_label = ''
+  character(len=256),  save :: lc_generator = ''
 
   integer :: lc_no_shape(0)
 
@@ -367,12 +382,38 @@ contains
     lc_default_dir = dir
   end subroutine ccpp_capture_set_dir
 
+  ! The capture's label (e.g. the CAM-SIMA case name) and the generator
+  ! version, written as global attributes ccpp_capture_label and
+  ! ccpp_generator into each file created after this call.
+  subroutine ccpp_capture_set_info(label, generator)
+    character(len=*), intent(in) :: label, generator
+    lc_label = label
+    lc_generator = generator
+  end subroutine ccpp_capture_set_info
+
+  ! A global attribute of the file being written (between
+  ! ccpp_capture_begin and ccpp_capture_end; no-op when none is open).
+  subroutine ccpp_capture_attribute_int(name, value)
+    character(len=*), intent(in) :: name
+    integer, intent(in) :: value
+    if (lc_ncid < 0) return
+    if (lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, name, value), 'attribute', name)) continue
+  end subroutine ccpp_capture_attribute_int
+
+  subroutine ccpp_capture_attribute_char(name, value)
+    character(len=*), intent(in) :: name, value
+    if (lc_ncid < 0) return
+    if (lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, name, value), 'attribute', name)) continue
+  end subroutine ccpp_capture_attribute_char
+
   ! timing 'before': create the next call's file for `table`, `in` current.
   ! timing 'after': reopen the current call's file, `out` current.
   subroutine ccpp_capture_begin(table, timing)
     character(len=*), intent(in) :: table, timing
     integer :: n, grp_out
     logical :: ok
+    integer :: now(8)
+    character(len=19) :: stamp
 
     if (lc_ncid >= 0) call ccpp_capture_end()
     if (timing == 'before') then
@@ -388,6 +429,15 @@ contains
       if (ok) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, 'ccpp_call', n), 'attribute', table)
       if (ok) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, 'ccpp_capture_format_version', &
                                          ccpp_capture_format_version), 'attribute', table)
+      call date_and_time(values=now)
+      write(stamp, '(I4.4,"-",I2.2,"-",I2.2,"T",I2.2,":",I2.2,":",I2.2)') &
+        now(1), now(2), now(3), now(5), now(6), now(7)
+      if (ok) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, 'ccpp_capture_date', stamp), &
+                            'attribute', table)
+      if (ok .and. len_trim(lc_generator) > 0) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, &
+        'ccpp_generator', trim(lc_generator)), 'attribute', table)
+      if (ok .and. len_trim(lc_label) > 0) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, &
+        'ccpp_capture_label', trim(lc_label)), 'attribute', table)
       if (ok) ok = lc_check(nf90_def_grp(lc_ncid, 'out', grp_out), 'define group out', table)
       if (ok) ok = lc_check(nf90_def_grp(lc_ncid, 'in', lc_grpid), 'define group in', table)
       if (.not. ok) call ccpp_capture_end()

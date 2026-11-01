@@ -129,6 +129,7 @@ program test_kessler
     call ccpp_capture_read("in", "qv", qv)
     call ccpp_capture_read("in", "qc", qc)
     call ccpp_capture_read("in", "qr", qr)
+    !$acc enter data copyin(cpair, rair, rho, z, pk, theta, qv, qc, qr) create(precl, relhum)
 
     call kessler_run(ncol=ncol, nz=nz, dt=dt, lyr_surf=lyr_surf, lyr_toa=lyr_toa, cpair=cpair, rair=rair, rho=rho, z=z, pk=pk, theta=theta, qv=qv, qc=qc, qr=qr, precl=precl, relhum=relhum, scheme_name=scheme_name, errmsg=errmsg, errflg=errflg)
 
@@ -137,6 +138,7 @@ program test_kessler
       n_failed = n_failed + 1
     end if
 
+    !$acc exit data copyout(theta, qv, qc, qr, precl, relhum) delete(cpair, rair, rho, z, pk)
     call ccpp_capture_read("out", "theta", theta_expected)
     call ccpp_capture_read("out", "qv", qv_expected)
     call ccpp_capture_read("out", "qc", qc_expected)
