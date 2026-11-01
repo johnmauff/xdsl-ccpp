@@ -26,7 +26,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_legacy_mode,
     set_verbosity,
 )
-from xdsl_ccpp.util.errors import report_input_errors
+from xdsl_ccpp.util.errors import report_input_errors, warn_once
 from xdsl_ccpp.util.options_db import coerce_list_option
 
 
@@ -233,14 +233,13 @@ class ccppMain:
             default=None,
             metavar="DIR",
             help="Only meaningful together with --capture-scheme: for every "
-                 "matched scheme call site, additionally write a standalone "
-                 "Fortran test-driver program "
-                 "(test_<table_name>.F90) into DIR that reads a captured "
-                 "fixture back, calls the real scheme subroutine, and "
-                 "compares its outputs against the captured 'after' "
-                 "snapshot -- for building data-driven, scheme-level "
-                 "regression tests. Source only; no CMake/ctest wiring is "
-                 "generated.",
+                 "captured scheme, write a standalone Fortran test-driver "
+                 "program (test_<scheme>.F90) into DIR that replays each "
+                 "captured call (reads its inputs, calls the scheme, compares "
+                 "its outputs), plus test_<scheme>.cmake and a CMakeLists.txt "
+                 "to build and run the drivers: cmake -S DIR -B build "
+                 "-DCCPP_CAPTURE_DIR=<dir with the .nc files>; cmake --build "
+                 "build; ctest --test-dir build.",
         )
         parser.add_argument(
             "--capture-tolerance",
@@ -1327,6 +1326,46 @@ class ccppMain:
             for path in written:
                 self.print_verbose_message(f"  -> Wrote HTML: {path}")
 
+    def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
+        """Write the CMake build for the capture test drivers
+        (tools/capture_cmake.py): a test_<scheme>.cmake for every captured
+        scheme whose driver the capture pass wrote, and the CMakeLists.txt.
+        A scheme whose .F90 cannot be found (next to its .meta, same stem)
+        gets no fragment, with a warning."""
+        from xdsl_ccpp.tools.capture_cmake import (
+            scheme_dependencies,
+            scheme_meta_files,
+            support_sources,
+            write_capture_cmake,
+        )
+
+        driver_dir = self.options_db["capture_test_driver_dir"]
+        module = self._parse_frontend(mlir_file)
+        meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
+        scheme_sources: dict = {}
+        for spec in self.options_db.get("capture_scheme") or []:
+            scheme = spec.partition(":")[0]
+            if scheme in scheme_sources:
+                continue
+            if not os.path.isfile(os.path.join(driver_dir, f"test_{scheme}.F90")):
+                continue  # the capture pass wrote no driver (logged there)
+            meta_path = meta_files.get(scheme)
+            f90_path = (
+                os.path.splitext(meta_path)[0] + ".F90" if meta_path else None
+            )
+            if f90_path is None or not os.path.isfile(f90_path):
+                warn_once(
+                    f"capture test driver for '{scheme}': no Fortran source found "
+                    f"next to its .meta file; test_{scheme}.cmake not written"
+                )
+                continue
+            scheme_sources[scheme] = [f90_path] + scheme_dependencies(module, scheme)
+        if not scheme_sources:
+            return
+        support = support_sources(os.path.join(out_dir, "ccpp_kinds.F90"))
+        for path in write_capture_cmake(driver_dir, scheme_sources, support):
+            self.print_verbose_message(f"  -> Wrote capture build: {path}")
+
     def run(self, options_db=None):
         """Run the full frontend -> optimizer -> split-output pipeline.
 
@@ -1428,6 +1467,9 @@ class ccppMain:
             datatable_path = self.options_db.get("emit_datatable")
             if datatable_path:
                 self._run_datatable(mlir_file, out_dir, datatable_path)
+
+            if self.options_db.get("capture_test_driver_dir"):
+                self._write_capture_cmake(mlir_file, out_dir)
 
             resolved_vars = None
             resolved_vars_path = self.options_db.get("emit_resolved_vars")

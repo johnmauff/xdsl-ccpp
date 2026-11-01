@@ -249,6 +249,17 @@ def _driver_param_category(arg) -> str:
     return intent
 
 
+def _has_top_level_symbol(module_op, name: str) -> bool:
+    """Whether *module_op* already declares symbol *name* at its top level:
+    one pass instance runs per --capture-scheme entry, and all of them
+    declare the same capture procedures and mpi-root flag."""
+    for op in module_op.body.block.ops:
+        sym = op.properties.get("sym_name")
+        if sym is not None and sym.data == name:
+            return True
+    return False
+
+
 def _attr_text(arg, name: str) -> str:
     """A metadata argument's attribute as text, "" when absent."""
     return str(arg.getAttr(name)) if arg.hasAttr(name) else ""
@@ -532,6 +543,8 @@ class SchemeIOCapturePass(ModulePass):
             if key in declared_decls:
                 continue
             declared_decls.add(key)
+            if _has_top_level_symbol(module_op, procedure):
+                continue  # declared by another --capture-scheme instance
             decl = func.FuncOp.external(procedure, [], [])
             decl.attributes["module"] = StringAttr("ccpp_capture_mod")
             Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
@@ -557,6 +570,8 @@ class SchemeIOCapturePass(ModulePass):
         if key in declared_decls:
             return
         declared_decls.add(key)
+        if _has_top_level_symbol(module_op, var_name):
+            return  # declared by another --capture-scheme instance
         glob = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(1, i8),
             var_name, "external",
