@@ -274,8 +274,9 @@ class ccppMain:
                  "to build and run the drivers. The captured run writes its "
                  ".nc files into DIR/LABEL (--capture-label), or DIR without "
                  "a label; CCPP_CAPTURE_DIR in the run's environment "
-                 "overrides it. ctest runs each driver once per data "
-                 "directory: cmake -S DIR -B build; cmake --build build; "
+                 "overrides it. ctest runs each driver against this "
+                 "generation's data directory (-DCCPP_CAPTURE_DIR=<dir> "
+                 "for another): cmake -S DIR -B build; cmake --build build; "
                  "ctest --test-dir build.",
         )
         parser.add_argument(
@@ -1413,7 +1414,9 @@ class ccppMain:
         if not scheme_sources:
             return
         support = support_sources(os.path.join(out_dir, "ccpp_kinds.F90"))
-        for path in write_capture_cmake(driver_dir, scheme_sources, support):
+        label = self.options_db.get("capture_label")
+        data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
+        for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):

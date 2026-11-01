@@ -3321,7 +3321,9 @@ class ftnPrintContext:
                 depth += 1
             elif ch == ")":
                 depth -= 1
-            elif ch == "," and depth <= 1:
+            elif ch == "," and depth <= 1 and line[i + 1 :].strip() != "&":
+                # Not the comma before the line's own trailing "&": that
+                # would leave a line holding only "&" (nvfortran rejects it).
                 split_pos = i
         if split_pos == -1:
             # No valid split point — emit as-is rather than produce invalid Fortran

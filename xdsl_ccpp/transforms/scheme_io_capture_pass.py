@@ -20,7 +20,7 @@ Each "before" block also records the capture's label (e.g. the CAM-SIMA
 case name, --capture-label) and the generator version
 (ccpp_capture_set_info), and the host's current_timestep_number when it
 has one (ccpp_capture_attribute). With --capture-test-driver-dir, it starts
-with ccpp_capture_set_dir(<that dir>/<label>), so the run writes its files
+with ccpp_capture_set_dir(<that dir>) (the runtime appends /<label>), so the run writes its files
 under the generated drivers, one subdirectory per label
 (CCPP_CAPTURE_DIR in the run's environment overrides it).
 
@@ -691,7 +691,7 @@ class SchemeIOCapturePass(ModulePass):
 
             [sync, ...]                          -- device-resident values
             if (<mpi_root_var>) then             -- when the host has one
-              call ccpp_capture_set_dir(data dir)  -- "before", with a driver dir
+              call ccpp_capture_set_dir(driver dir)  -- "before", with a driver dir
               call ccpp_capture_set_info(label, generator)  -- "before"
               call ccpp_capture_begin(table, timing)
               call ccpp_capture_attribute('current_timestep_number', <step>)
@@ -718,10 +718,12 @@ class SchemeIOCapturePass(ModulePass):
                     OmpTargetUpdateFromOp, {"array_refs": device_values},
                 ))
         writes = []
-        data_dir = self._data_dir()
-        if data_dir and timing == "before":
+        # The driver directory only: the runtime appends the label (from
+        # ccpp_capture_set_info), which keeps each literal short.
+        if self.test_driver_dir and timing == "before":
             writes.append(CallStatementOp(
-                _SET_DIR_PROCEDURE, arg_ops=[StringLiteralExprOp(data_dir)],
+                _SET_DIR_PROCEDURE,
+                arg_ops=[StringLiteralExprOp(os.path.abspath(self.test_driver_dir))],
             ))
         if timing == "before":
             writes.append(CallStatementOp("ccpp_capture_set_info", arg_ops=[

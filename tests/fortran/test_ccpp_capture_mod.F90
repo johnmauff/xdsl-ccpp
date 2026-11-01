@@ -125,8 +125,10 @@ contains
   end subroutine write_call_1
 
   ! Call 2 of test_table: a second file, numbered by the per-table counter,
-  ! written through ccpp_capture_set_dir ('.': <dir>/<table>_<n>.nc).
+  ! written through ccpp_capture_set_dir ('.': <dir>/<table>_<n>.nc; with a
+  ! label it would be <dir>/<label>/..., so the label is cleared first).
   subroutine write_call_2()
+    call ccpp_capture_set_info('', 'test_generator 1.0')
     call ccpp_capture_set_dir('.')
     call ccpp_capture_begin('test_table', 'before')
     call ccpp_capture('i0', 7)

@@ -228,7 +228,8 @@ def test_label_names_the_data_subdirectory(run_host_match, ccpp_context, tmp_pat
     fortran = out.getvalue()
 
     assert (tmp_path / "case.c01b").is_dir()
-    assert fortran.count(f"'{tmp_path / 'case.c01b'}')") == 2
+    # The caps name the driver dir; the runtime appends the label.
+    assert fortran.count(f"'{tmp_path}')") == 2
     assert fortran.count("call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp") == 2
     # The drivers stay in the driver directory itself.
     assert (tmp_path / "test_test_io_capture_scheme.F90").exists()
@@ -570,3 +571,16 @@ def test_wrap_paren_list_puts_an_overlong_item_on_its_own_line():
     item = "'" + "x" * 120 + "'"
     lines = wrap_paren_list("call f(", [item], ")", 99, "    ")
     assert lines == ["call f( &", "    " + item + ")"]
+
+
+def test_long_line_splitter_never_leaves_a_lone_ampersand():
+    """A comma followed only by the line's own trailing `&` is not a split
+    point: the continuation line would hold nothing but `&`."""
+    from xdsl_ccpp.backend.print_ftn import ftnPrintContext
+
+    out = StringIO()
+    ctx = ftnPrintContext(out)
+    ctx.print("              '" + "x" * 85 + "', &")
+    ctx.print("              'y')")
+    lines = out.getvalue().splitlines()
+    assert all(line.strip() != "&" for line in lines), lines

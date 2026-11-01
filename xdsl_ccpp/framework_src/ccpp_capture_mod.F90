@@ -15,8 +15,9 @@
 ! subroutine (e.g. kessler_run) and <n> counts that table's calls in this
 ! process (1, 2, ...). The directory is CCPP_CAPTURE_DIR when set in the
 ! environment, else the one given to ccpp_capture_set_dir (the generator's
-! --capture-test-driver-dir, so data and test drivers share a directory),
-! else the working directory.
+! --capture-test-driver-dir, so data and test drivers share a directory)
+! followed by /<label> when ccpp_capture_set_info gave a label, else the
+! working directory.
 ! Global attributes: ccpp_table, ccpp_call, ccpp_capture_format_version,
 ! ccpp_capture_date (when written, local time), ccpp_generator and
 ! ccpp_capture_label (from ccpp_capture_set_info: the generator version and
@@ -214,6 +215,9 @@ contains
     call get_environment_variable('CCPP_CAPTURE_DIR', dir, dir_len, status)
     if (status /= 0 .or. dir_len == 0) then
       dir = lc_default_dir
+      if (len_trim(dir) > 0 .and. len_trim(lc_label) > 0) then
+        dir = trim(dir) // '/' // trim(lc_label)
+      end if
       dir_len = len_trim(dir)
     end if
     write(num, '(I0)') n
@@ -374,8 +378,9 @@ contains
   ! Writing
   ! ---------------------------------------------------------------------
 
-  ! Directory for the capture files when CCPP_CAPTURE_DIR is unset. The
-  ! generated caps call this before each capture with the generator's
+  ! Directory for the capture files when CCPP_CAPTURE_DIR is unset, under
+  ! which they go to a subdirectory named by the label (set_info), if any.
+  ! The generated caps call this before each capture with the generator's
   ! --capture-test-driver-dir.
   subroutine ccpp_capture_set_dir(dir)
     character(len=*), intent(in) :: dir

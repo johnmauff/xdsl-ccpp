@@ -25,28 +25,29 @@ def test_fragment_builds_driver_and_scheme_sources_and_registers_the_test():
     assert '"/src/kessler.F90"' in text
     assert '"/src/dep.F90"' in text
     assert "target_link_libraries(test_kessler PRIVATE ccpp_capture_support)" in text
-    assert "ccpp_capture_add_tests(test_kessler kessler)" in text
+    assert ('add_test(NAME test_kessler COMMAND test_kessler '
+            'WORKING_DIRECTORY "${CCPP_CAPTURE_DIR}")') in text
     # Each driver keeps its .mod files apart (schemes may share dependencies).
     assert "${CMAKE_BINARY_DIR}/mod/test_kessler" in text
 
 
 def test_top_file_builds_support_library_and_includes_every_fragment():
-    text = render_capture_cmakelists(support_sources("/out/ccpp_kinds.F90"))
+    text = render_capture_cmakelists(support_sources("/out/ccpp_kinds.F90"), "/drivers/case.c01c")
     assert "add_library(ccpp_capture_support STATIC" in text
     for name in ("ccpp_kinds.F90", "ccpp_hashable.F90", "ccpp_hash_table.F90",
                  "ccpp_constituent_prop_mod.F90", "ccpp_scheme_utils.F90",
                  "ccpp_capture_mod.F90"):
         assert f'/{name}"' in text
     assert "find_program(NF_CONFIG nf-config REQUIRED)" in text
-    # One test per capture directory found; CCPP_CAPTURE_DIR forces one.
+    # The tests run against the generating capture's directory unless
+    # CCPP_CAPTURE_DIR overrides it (not cached, so a regeneration for
+    # another capture moves an existing build along with it).
     assert 'set(CCPP_CAPTURE_DIR "" CACHE PATH' in text
-    assert "function(ccpp_capture_add_tests target scheme)" in text
-    assert "set(_name ${target}.${_label})" in text
-    # The file-name filter keeps kessler_update's files out of kessler's tests.
-    assert ('"^${scheme}_(register|init|timestep_init|run|timestep_final|final)'
-            '_[0-9]+\\\\.nc$"') in text
+    assert ('if(NOT CCPP_CAPTURE_DIR)\n'
+            '  set(CCPP_CAPTURE_DIR "/drivers/case.c01c")\nendif()') in text
+    assert "GLOB _entries" not in text
     assert "FATAL_ERROR" not in text
-    assert "option(CCPP_CAPTURE_OPENACC" in text
+    assert "option(OPENACC" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
 
@@ -92,6 +93,7 @@ def test_ccpp_dsl_writes_a_fragment_per_captured_scheme(tmp_path):
     assert os.path.abspath(f"{K}/scheme/kessler.F90") in fragment
     top = (drivers / "CMakeLists.txt").read_text()
     assert str(tmp_path / "out" / "ccpp_kinds.F90") in top
+    assert f'set(CCPP_CAPTURE_DIR "{drivers}")' in top  # no label: the driver dir
     # Two capture-pass instances share one set of declarations in the cap.
     cap = (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
     assert cap.count("use ccpp_capture_mod, only: ccpp_capture_begin\n") == 1
@@ -135,8 +137,12 @@ def test_ccpp_dsl_label_names_the_data_subdirectory(tmp_path):
 
     assert (drivers / "case.c01b").is_dir()  # created for the run to write into
     cap = (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
-    assert f"'{drivers / 'case.c01b'}')" in cap
+    # The caps name the driver dir; the runtime appends the label.
+    assert f"'{drivers}')" in cap
     assert "call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp " in cap
+    # The build tests this capture only.
+    top = (drivers / "CMakeLists.txt").read_text()
+    assert f'set(CCPP_CAPTURE_DIR "{drivers / "case.c01b"}")' in top
 
 
 @pytest.mark.parametrize("spec", ["kessler:init", "kessler:all", ":run"])

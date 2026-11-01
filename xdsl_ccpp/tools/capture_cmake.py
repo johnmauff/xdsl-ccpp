@@ -15,13 +15,11 @@ Usage::
     cmake --build build
     ctest --test-dir build
 
-The fragments are per scheme so that several captured schemes, each written
-by its own capture-pass instance or generation, collect in one directory;
-the top file is the same for all of them. The captured run writes its
-files under the driver directory (the caps call ccpp_capture_set_dir with
-<driver dir>/<label>, e.g. the case name), and each driver becomes one test
-per directory holding its scheme's files: test_<scheme>.<label>, so several
-captures of a scheme (a CPU and a GPU run, say) share one build.
+The fragments are per scheme so that several captured schemes collect in
+one directory. Each driver is one test, run against the data directory of
+the generation that wrote the files (<driver dir>/<label>, where the caps'
+ccpp_capture_set_dir sends the run's files); -DCCPP_CAPTURE_DIR points it
+at another capture instead.
 """
 
 from __future__ import annotations
@@ -55,16 +53,15 @@ _TOP_TEMPLATE = """\
 #
 #   cmake -S <this dir> -B build
 #   cmake --build build
-#   ctest --test-dir build --output-on-failure      (-R <label> for one capture)
+#   ctest --test-dir build --output-on-failure
 #
-# Each driver runs once per directory holding its scheme's captures: this
-# directory and each subdirectory (one per capture label, e.g. a CAM-SIMA
-# case name), as test_<scheme>.<label>. A capture added later is picked up
-# by the next build. -DCCPP_CAPTURE_DIR=<dir> instead runs each driver
-# once, against <dir>.
+# Each driver is one test, run against the captures of the generation that
+# wrote this file:
+#   {data_dir}
+# -DCCPP_CAPTURE_DIR=<dir> runs them against another capture instead.
 #
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
-# PATH, or -DNF_CONFIG=...). -DCCPP_CAPTURE_OPENACC=ON builds with OpenACC
+# PATH, or -DNF_CONFIG=...). -DOPENACC=ON builds with OpenACC
 # (CCPP_CAPTURE_ACC_FLAGS, default -acc) for GPU replay of the same
 # captures: the drivers always carry their own enter/exit data directives
 # (comments in a CPU build). CCPP_CAPTURE_TOLERANCE in the environment overrides the
@@ -73,8 +70,11 @@ cmake_minimum_required(VERSION 3.19)
 project(ccpp_capture_tests LANGUAGES Fortran)
 
 set(CCPP_CAPTURE_DIR "" CACHE PATH
-    "Run every driver against this directory only (default: one test per capture directory found here)")
-option(CCPP_CAPTURE_OPENACC "Build the drivers with OpenACC" OFF)
+    "Directory of the captures to test (default: those of the generation that wrote this file)")
+if(NOT CCPP_CAPTURE_DIR)
+  set(CCPP_CAPTURE_DIR {data_dir_arg})
+endif()
+option(OPENACC "Build the drivers with OpenACC (GPU replay)" OFF)
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
 set(CCPP_CAPTURE_EXTRA_SOURCES "" CACHE STRING
     "Further Fortran sources the schemes use (;-separated absolute paths)")
@@ -91,7 +91,7 @@ separate_arguments(_nf_flibs UNIX_COMMAND "${{_nf_flibs}}")
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-ffree-line-length-none)
 endif()
-if(CCPP_CAPTURE_OPENACC)
+if(OPENACC)
   separate_arguments(_acc_flags UNIX_COMMAND "${{CCPP_CAPTURE_ACC_FLAGS}}")
   add_compile_options(${{_acc_flags}})
   add_link_options(${{_acc_flags}})
@@ -109,41 +109,6 @@ target_link_libraries(ccpp_capture_support PUBLIC ${{_nf_flibs}})
 
 enable_testing()
 
-# add_test for driver <target> in each directory holding <scheme>'s captures.
-function(ccpp_capture_add_tests target scheme)
-  if(CCPP_CAPTURE_DIR)
-    add_test(NAME ${{target}} COMMAND ${{target}} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
-    return()
-  endif()
-  set(_pattern "^${{scheme}}_(register|init|timestep_init|run|timestep_final|final)_[0-9]+\\\\.nc$")
-  set(_dirs "${{CMAKE_CURRENT_SOURCE_DIR}}")
-  file(GLOB _entries LIST_DIRECTORIES true CONFIGURE_DEPENDS "${{CMAKE_CURRENT_SOURCE_DIR}}/*")
-  foreach(_entry IN LISTS _entries)
-    if(IS_DIRECTORY "${{_entry}}")
-      list(APPEND _dirs "${{_entry}}")
-    endif()
-  endforeach()
-  set(_found FALSE)
-  foreach(_dir IN LISTS _dirs)
-    file(GLOB _files RELATIVE "${{_dir}}" CONFIGURE_DEPENDS "${{_dir}}/*.nc")
-    list(FILTER _files INCLUDE REGEX "${{_pattern}}")
-    if(NOT _files)
-      continue()
-    endif()
-    if(_dir STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-      set(_name ${{target}})
-    else()
-      get_filename_component(_label "${{_dir}}" NAME)
-      set(_name ${{target}}.${{_label}})
-    endif()
-    add_test(NAME ${{_name}} COMMAND ${{target}} WORKING_DIRECTORY "${{_dir}}")
-    set(_found TRUE)
-  endforeach()
-  if(NOT _found)
-    message(WARNING "${{target}}: no captured ${{scheme}} files here or in a subdirectory; no test")
-  endif()
-endfunction()
-
 file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${{CMAKE_CURRENT_SOURCE_DIR}}/test_*.cmake")
 foreach(_test IN LISTS _ccpp_capture_tests)
   include(${{_test}})
@@ -159,7 +124,7 @@ add_executable(test_{scheme}
 set_target_properties(test_{scheme} PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/test_{scheme})
 target_link_libraries(test_{scheme} PRIVATE ccpp_capture_support)
-ccpp_capture_add_tests(test_{scheme} {scheme})
+add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
 """
 
 
@@ -172,10 +137,15 @@ def _source_lines(paths) -> str:
     return "\n".join(f"  {_cmake_path(p)}" for p in paths)
 
 
-def render_capture_cmakelists(support_sources) -> str:
+def render_capture_cmakelists(support_sources, data_dir: str) -> str:
     """CMakeLists.txt text: support library from *support_sources* (in
-    compile order), NetCDF, options, include of every test fragment."""
-    return _TOP_TEMPLATE.format(support_sources=_source_lines(support_sources))
+    compile order), NetCDF, options, the default capture directory
+    *data_dir*, include of every test fragment."""
+    return _TOP_TEMPLATE.format(
+        support_sources=_source_lines(support_sources),
+        data_dir=os.path.abspath(data_dir),
+        data_dir_arg=_cmake_path(data_dir),
+    )
 
 
 def render_capture_fragment(scheme: str, sources) -> str:
@@ -239,9 +209,11 @@ def support_sources(kinds_path: str) -> list:
     return [kinds_path] + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES]
 
 
-def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources) -> list:
+def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
+                        data_dir: str) -> list:
     """Write test_<scheme>.cmake for every {scheme: [sources]} entry and the
-    CMakeLists.txt; return the paths written."""
+    CMakeLists.txt, whose tests run against *data_dir*; return the paths
+    written."""
     os.makedirs(driver_dir, exist_ok=True)
     written = []
     for scheme, sources in scheme_sources.items():
@@ -251,6 +223,6 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources) 
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:
-        f.write(render_capture_cmakelists(support_sources))
+        f.write(render_capture_cmakelists(support_sources, data_dir))
     written.append(path)
     return written
