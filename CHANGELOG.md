@@ -13859,7 +13859,7 @@ the generated build: 14/14 pass on CPU and on an A100 with `-DOPENACC=ON`
 (`kessler_diagnostics`, `sima_state_diagnostics`) need CAM-SIMA's
 history module: `scheme-io-capture-host-module-schemes`.
 
-## `acc-derive-memory-space`: GPU residency from the scheme's OpenACC (2026-11-02)
+## `acc-derive-memory-space`: GPU residency from the scheme's OpenACC (PR #187, 2026-11-02)
 
 Step 3 of `gpu-fphystest-kessler`: a scheme ported to the GPU needs no
 `.meta` change. Resolves `acc-derive-memory-space` and
@@ -13911,9 +13911,9 @@ composite package-cap GPU). Kessler GPU caps generated without any
 `memory_space` in the Kessler `.meta` are identical to the explicit ones
 (rule (a) puts `kessler_update_timestep_init`'s bare-loop arrays on the
 device). Kessler GPU FPHYStest s44a (nvhpc, A100, no `memory_space` in
-the Kessler `.meta`): PASS.
+the Kessler `.meta`): PASS. CI passed; merged as #187.
 
-## `omp-derive-memory-space`: GPU residency from the scheme's OpenMP, and an OpenMP Kessler example (2026-11-02)
+## `omp-derive-memory-space`: GPU residency from the scheme's OpenMP, and an OpenMP Kessler example (PR #188, 2026-11-02)
 
 `acc-derive-memory-space` for OpenMP target offload. Resolves
 `omp-derive-memory-space`.
@@ -13953,4 +13953,5 @@ previous commit: 30/30 identical. `kessler_omp` caps without any
 `memory_space` are identical to the explicit ones. On Derecho (nvhpc
 25.9): CPU parity passes; on an A100 the four kernels run (nsys; MANDATORY
 offload) and match the CPU run exactly, before and after removing the
-`memory_space` lines.
+`memory_space` lines. CI passed (PR #188; rebased onto `main` after #187
+was squash-merged).

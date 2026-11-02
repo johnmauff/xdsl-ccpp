@@ -1431,7 +1431,7 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
 `!$acc`, and the manual-only nvhpc job runs on a GPU-less runner with
 `ARCH=CPU` (`-noacc`). Two follow-ons:
 
-- **ID: `acc-meta-residency-check`. Resolved (2026-11-02)** -- CHANGELOG.md L13862.
+- **ID: `acc-meta-residency-check`. Resolved (2026-11-02, PR #187)** -- CHANGELOG.md L13862.
 - `gpu-ci` — **CI that actually runs generated OpenACC on a GPU.** GitHub's
   standard hosted runners have no GPU, so this needs a GPU-equipped runner:
   a paid GitHub GPU runner, or a self-hosted/scheduled job on NCAR
@@ -1688,7 +1688,7 @@ Supporting items (not tracked elsewhere):
 
 - **ID: `gpu-sync-intent-aware`. Resolved (2026-10-31)** -- CHANGELOG.md L13758.
 
-- **ID: `acc-derive-memory-space`. Resolved (2026-11-02)** -- CHANGELOG.md L13862.
+- **ID: `acc-derive-memory-space`. Resolved (2026-11-02, PR #187)** -- CHANGELOG.md L13862.
 
 - `example-gpu-build-flags` — **The OpenACC examples' GPU builds probably
   never ran on the GPU.** Found 2026-11-02 while testing
@@ -1708,7 +1708,7 @@ Supporting items (not tracked elsewhere):
   kernels run (`NV_ACC_NOTIFY`/nsys), then fix what breaks once they do
   (the known `kessler_hand.exe`/C++ drivers "PRESENT clause was not
   found" cases). Not related to CAM-SIMA, whose GPU builds use `-acc`.
-- **ID: `omp-derive-memory-space`. Resolved (2026-11-02)** -- CHANGELOG.md L13916.
+- **ID: `omp-derive-memory-space`. Resolved (2026-11-02, PR #188)** -- CHANGELOG.md L13916.
 - `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
   `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
   plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,
