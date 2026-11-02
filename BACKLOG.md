@@ -69,7 +69,7 @@ measured data, and will drift as items are reassessed.
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
-| `gpu-fphystest-kessler` | umbrella, ~23-41 days left: `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
+| `gpu-fphystest-kessler` | umbrella, ~20-37 days left: `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -81,12 +81,10 @@ measured data, and will drift as items are reassessed.
 | `acc-derive-memory-space` | 4-7 days (hand-written `.meta` pairing, `default(present)`, DDT components, precedence and warnings; entry-point body only; includes `acc-meta-residency-check`'s 2-4) | S-M |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
-| `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
-| `scheme-io-capture-netcdf` | 6-10 days | M |
-| `scheme-io-capture-ddt-args` | 4-8 days (component discovery, recursive capture/restore of allocatable and fixed-size numeric components; or a constituent-properties special case first, ~2-3 days) | S-M |
+| `scheme-io-capture-ddt-args` | 4-8 days (generic: component discovery, recursive capture/restore of allocatable and fixed-size numeric components; the constituent-properties case is done) | S-M |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code) | M |
-| `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
+| `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 1-2 days (scan the scheme source's `use` statements, skip the driver with a message, unit tests) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
@@ -1072,24 +1070,7 @@ proposal: CHANGELOG.md L11731. Follow-on work is tracked under its own
 IDs below, not bundled here — see the sizing table at the top of this
 file for the full list.
 
-**ID: `scheme-io-capture-netcdf`. v2 follow-on: NetCDF capture format.**
-v1's runtime library
-(`ccpp_capture_mod.F90`) deliberately uses plain Fortran stream I/O, one
-raw binary file per captured tag (no embedded variable name/shape
-metadata beyond a leading rank+shape header) — a deliberate v1 choice to
-keep the library small and avoid parallel-I/O coordination, confirmed
-real: a 1000-column/56-layer kessler capture produces 23 files, ~6.1MB,
-scaling linearly with `ncol*nz`. NetCDF would be a genuine improvement —
-self-describing (names/shapes travel with the data, not just encoded in
-the filename), one file per captured *call* instead of one per argument,
-inspectable with standard tools (`ncdump`/`xarray`) instead of a bespoke
-reader, built-in compression. Real cost: `examples/` has zero NetCDF
-dependency today anywhere in this repo, so this would be a new build
-dependency for a tool whose whole point was staying minimal/dev-only —
-though notably a much smaller lift if this capability is ever wired into
-real CAM-SIMA builds specifically, which already link NetCDF
-everywhere. Not v1 scope; revisit once v1's real usage (and the "where do
-captured fixtures live" question below) make the tradeoff concrete.
+**ID: `scheme-io-capture-netcdf`. Resolved (2026-11-01).** CHANGELOG.md L13800.
 
 **ID: `scheme-io-capture-gpu-residency`. Resolved (2026-10-18, PR #146).** CHANGELOG.md L12524.
 
@@ -1098,7 +1079,10 @@ captured fixtures live" question below) make the tradeoff concrete.
 `cuLaunchKernel`/memcpy activity, not a host fallback). CHANGELOG.md L12524.
 
 **ID: `scheme-io-capture-ctest-automation`. v2 follow-on: full CMake/ctest
-automation.** Already noted in this
+automation.** Mostly done 2026-11-01 (CHANGELOG.md L13800): the generator
+writes a CMake build and ctest tests for the drivers it writes. Left: the
+in-repo registration below (an `examples/kessler` capture-and-replay test).
+Already noted in this
 session's own planning as explicitly out of v1 scope, recorded here so
 it isn't lost to a plan file outside this repo: configure-time
 test-driver-filename prediction (mirroring `--list-outputs`/
@@ -1110,20 +1094,7 @@ dynamically-registered CMake test today — every `add_test()` is
 currently static — so this is genuinely new ground, not a quick
 extension of something already there.
 
-**ID: `scheme-io-capture-fixture-storage`. v2 follow-on: where do
-captured fixtures live.** Still an open
-question, not yet decided. Captured `.ccppcap` files are real binary
-data tied to one specific run; confirmed real size: a 1000-column/
-56-layer kessler capture is 23 files, ~6.1MB, scaling linearly with
-`ncol*nz` — a real CAM-scale column count would be substantially larger.
-Options not yet weighed against each other: commit fixtures to git
-alongside the generated driver (simple, but binary blobs that grow with
-scheme complexity); regenerate fresh at build/test time by running the
-capture-enabled executable (no binary data in git, but fixtures aren't
-stable/reviewable across scheme changes without rerunning); or leave
-fixture generation to a local, gitignored, explicitly-opt-in step.
-Interacts with the NetCDF item above (one consolidated file per call
-instead of one per argument would change the size/count math).
+**ID: `scheme-io-capture-fixture-storage`. Resolved (2026-11-01).** CHANGELOG.md L13800.
 
 **ID: `scheme-io-capture-multi-timestep`. Resolved (2026-10-18, PR #145).** CHANGELOG.md L12473.
 
@@ -1187,7 +1158,9 @@ capture to one task) with a simpler mechanism than the task-id-in-
 filename approach originally envisioned. CHANGELOG.md L12426.
 
 **ID: `scheme-io-capture-ddt-args`. Capture derived-type arguments.**
-Added 2026-10-28. The capture pass's type scope is {integer, logical,
+Added 2026-10-28. The constituent-properties case is done (2026-11-01,
+CHANGELOG.md L13800: `_DDT_CAPTURES` in the pass, captured as subgroup
+`in/<arg>` and rebuilt in the driver); the generic case below is open. The capture pass's type scope is {integer, logical,
 real(kind_phys)} x rank 0-3 (`scheme_io_capture_pass.py`, module
 docstring); a derived-type argument is skipped, and the generated driver
 declares and passes it uninitialized, so a scheme that reads one replays
@@ -1232,8 +1205,8 @@ residency and constituent views) vs at `ccpp_physics_run` (covers the
 host cap's own directives, but its inputs are host-model module
 variables); suite state that crosses phases (capture it at group entry,
 or replay timestep_init -> run -> timestep_final). Needs
-`scheme-io-capture-ddt-args` for groups with derived-type arguments and
-a decision on `scheme-io-capture-fixture-storage`. A flattened composite
+`scheme-io-capture-ddt-args` for groups with derived-type arguments other
+than the constituent properties. A flattened composite
 has no subroutine of its own; package caps (2f) would allow
 package-scoped replay later.
 
@@ -1631,10 +1604,9 @@ is derived from the Fortran source's OpenACC clauses
   so every later step is checked in minutes on a GPU node, with the
   CAM-SIMA regression only at milestones.
   1. `gpu-sync-intent-aware` — done 2026-10-31 (CHANGELOG.md L13758).
-  2. Capture gaps: `scheme-io-capture-ddt-args` (at least the
-     constituent-properties case, for `geopotential_temp`) and a
-     decision on `scheme-io-capture-fixture-storage` (local, gitignored
-     fixtures regenerated from a CAM-SIMA capture run would do).
+  2. Capture gaps — done 2026-11-01 (CHANGELOG.md L13800): constituent
+     properties captured, local captures from a CAM-SIMA run; 14 of the
+     16 schemes replay from one capture on CPU and GPU.
   3. `scheme-io-capture-group-replay` — replay
      `kessler_test_physics_before_coupler` on the GPU against a CPU
      capture: the check for the generator's cross-scheme data movement.

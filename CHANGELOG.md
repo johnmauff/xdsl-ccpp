@@ -13796,3 +13796,65 @@ nvhpc GPU Kessler FPHYStest: s40a (stage 1), s42a pkgcap pair (stage 2),
 s43a pkgcap pair (stage 3), all PASS including the snapshot check. The
 CPU caps' (inert) `!$acc update` lines change too; see
 `cpu-cap-acc-updates`.
+
+## `scheme-io-capture-robust`: NetCDF captures, generated CMake tests, constituent properties, scheme lists (2026-11-01)
+
+Step 2 of `gpu-fphystest-kessler`: a capture of a CAM-SIMA run that every
+captured scheme replays from, on CPU and on GPU, with one CMake build.
+Resolves `scheme-io-capture-netcdf`, `scheme-io-capture-fixture-storage`
+and the constituent-properties case of `scheme-io-capture-ddt-args`.
+
+- Format (`ccpp_capture_mod.F90`, rewritten on netcdf-fortran): one
+  NetCDF-4 file per scheme call, `<table>_<n>.nc`, groups `in` (before
+  the call) and `out` (after); each variable carries `ccpp_type`,
+  `standard_name` and `units`, dimensions named from the metadata.
+  Global attributes: table, call number, format version, write date,
+  generator version (`ccpp_generator`), label (`ccpp_capture_label`, the
+  CAM-SIMA case name) and the host's `current_timestep_number`.
+  Characters (rank 0-1) added to the types. Readers:
+  `ccpp_capture_open_call`, `ccpp_capture_read`, `ccpp_capture_extents`.
+  A derived-type argument is subgroup `in/<arg>`
+  (`ccpp_capture_begin_ddt`/`ccpp_capture_end_ddt`). FINDLOC replaced by
+  a loop (nvfortran: "FINDLOC: unimplemented for data type").
+- Where captures go: with `--capture-test-driver-dir DIR`, the caps call
+  `ccpp_capture_set_dir(DIR)` and the runtime writes to `DIR/<label>`
+  (`--capture-label`; CAM-SIMA passes the case name); `CCPP_CAPTURE_DIR`
+  in the environment overrides. Captures are local and short-lived, not
+  committed (`scheme-io-capture-fixture-storage`).
+- Drivers: replay every captured call of every captured phase, in
+  lifecycle order; arrays sized from the file; `use` the scheme's own
+  module (CAM-SIMA's `state_converters` holds 10 schemes); always carry
+  OpenACC enter/exit data, so a CPU capture replays on GPU too.
+- Build (`tools/capture_cmake.py`): `test_<scheme>.cmake` per scheme
+  (driver, scheme source, metadata `dependencies`) and a `CMakeLists.txt`
+  (support library, netcdf-fortran from `nf-config`, `-DOPENACC=ON` for
+  GPU replay); the tests run against the generating case's data
+  (`-DCCPP_CAPTURE_DIR` for another). Supersedes most of
+  `scheme-io-capture-ctest-automation`.
+- Constituent properties (`ccpp_capture_constituents_mod.F90`):
+  `ccpp_constituent_prop_ptr_t` arguments written as `in/<arg>` (names,
+  units, vertical dimension, mixing-ratio type, index, flags, default,
+  minimum, molar mass) and rebuilt in the driver (`instantiate`, `%set`,
+  `set_const_index`, `set_thermo_active`). The pass's `_DDT_CAPTURES`
+  table is where further derived types go.
+- `--capture-scheme`: `SCHEME[:PHASE[,PHASE...]]` or a file listing
+  entries, one per line; a scheme not in `--scheme-files` or listed twice
+  is an input error. A phase list leaves out phases a standalone driver
+  cannot replay (`qneg:initialize,run`: its other phases reduce over MPI).
+- Fixed on the way: `character(len=*)` arguments were skipped (they reach
+  the call through a cast; `_uncast`); print_ftn's long-line splitter
+  could leave a line holding only `&` (nvfortran syntax error).
+- CAM-SIMA (`cam_autogen.py`): passes `--capture-label` (case name) and a
+  scheme-list file; the capture configuration (entry or list contents,
+  driver directory, case name) is part of the cached generator string, so
+  changing it regenerates.
+
+Verification: pytest 1365 passed; `cap_oracle diff` against `main`: all
+caps identical, the datatables list the two capture modules. CAM-SIMA
+nvhpc and gnu Kessler FPHYStest captures: `kessler` (c01b, c01c),
+`geopotential_temp` with its constituent properties (c01i, gnu), and 14 of
+`kessler_test`'s 16 schemes from one list (c01m, nvhpc CPU), replayed with
+the generated build: 14/14 pass on CPU and on an A100 with `-DOPENACC=ON`
+(`kessler` and `kessler_update` on the device). The two left out
+(`kessler_diagnostics`, `sima_state_diagnostics`) need CAM-SIMA's
+history module: `scheme-io-capture-host-module-schemes`.
