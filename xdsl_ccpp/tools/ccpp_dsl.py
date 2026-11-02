@@ -26,8 +26,89 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_legacy_mode,
     set_verbosity,
 )
-from xdsl_ccpp.util.errors import report_input_errors
+from xdsl_ccpp.util.errors import CcppInputError, report_input_errors, warn_once
 from xdsl_ccpp.util.options_db import coerce_list_option
+
+# Phase names --capture-scheme accepts after ':' (cap_shared's lifecycle
+# phases); no phase captures every phase.
+_CAPTURE_PHASES = (
+    "register", "initialize", "timestep_initial", "run", "timestep_final", "finalize",
+)
+
+
+def _capture_spec(spec: str) -> "tuple[str, str]":
+    """(scheme, phases) of one --capture-scheme SCHEME[:PHASE[,PHASE...]]
+    entry; phases is the comma-separated phase list (e.g. "initialize,run":
+    the phases a standalone driver can replay), "" (every phase) when none
+    is given."""
+    scheme, _, phase_text = (part.strip() for part in spec.partition(":"))
+    if not scheme:
+        raise CcppInputError(f"--capture-scheme '{spec}': no scheme name")
+    phases: list = []
+    if phase_text:
+        for phase in (p.strip() for p in phase_text.split(",")):
+            if phase not in _CAPTURE_PHASES:
+                raise CcppInputError(
+                    f"--capture-scheme '{spec}': unknown phase '{phase}' "
+                    f"(one of: {', '.join(_CAPTURE_PHASES)}; omit them for every phase)"
+                )
+            if phase not in phases:
+                phases.append(phase)
+    return scheme, ",".join(phases)
+
+
+def _capture_entries(values, scheme_files) -> "list[str]":
+    """The SCHEME[:PHASE] entries of the --capture-scheme values: each value
+    is either such an entry or the path of a file listing one per line
+    (blank lines and '#' comments ignored). Every scheme must be one of
+    the schemes in scheme_files (when there are any), and may appear only
+    once; errors name the file and line."""
+    from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
+
+    known = set(scheme_meta_files(scheme_files)) if scheme_files else None
+    entries: list = []
+    seen: dict = {}
+
+    def add(entry: str, where: str) -> None:
+        try:
+            scheme, _ = _capture_spec(entry)
+        except CcppInputError as err:
+            raise CcppInputError(f"{where}: {err}") from None
+        if known is not None and scheme not in known:
+            raise CcppInputError(
+                f"{where}: '{entry}' is neither a file nor a scheme of --scheme-files"
+            )
+        if scheme in seen:
+            raise CcppInputError(
+                f"{where}: scheme '{scheme}' is already captured ({seen[scheme]})"
+            )
+        seen[scheme] = where
+        entries.append(entry.strip())
+
+    for value in values:
+        value = value.strip()
+        if os.path.isfile(value):
+            with open(value) as f:
+                for line_no, raw in enumerate(f, 1):
+                    line = raw.split("#", 1)[0].strip()
+                    if line:
+                        add(line, f"{value}:{line_no}")
+        else:
+            add(value, f"--capture-scheme '{value}'")
+    return entries
+
+
+def _capture_label(label: str) -> str:
+    """A --capture-label value: one directory name (it names the data
+    subdirectory under --capture-test-driver-dir)."""
+    label = label.strip()
+    # Also no quotes or backslashes: it is quoted in the pass pipeline.
+    if not label or label in (".", "..") or any(c in label for c in '/\\"\''):
+        raise CcppInputError(
+            f"--capture-label '{label}': must be a single directory name "
+            "(e.g. the case name), without '/', '\\' or quotes"
+        )
+    return label
 
 
 def _validate_fortran_source(meta_path: str, f90_path: str, preproc_defs) -> str:
@@ -216,31 +297,49 @@ class ccppMain:
             "--capture-scheme",
             action="append",
             default=[],
-            metavar="SCHEME[:PHASE]",
+            metavar="SCHEME[:PHASE[,PHASE...]]|FILE",
             help="Opt-in: instrument every call to SCHEME (optionally restricted "
-                 "to one lifecycle PHASE, e.g. 'kessler:run'; omit ':PHASE' to "
-                 "capture every phase) with calls into the ccpp_capture_mod "
+                 "to lifecycle PHASEs: register, initialize, timestep_initial, "
+                 "run, timestep_final or finalize, e.g. 'kessler:run' or "
+                 "'qneg:initialize,run'; omit ':PHASE' to capture every phase) "
+                 "with calls into the ccpp_capture_mod "
                  "runtime library, dumping each input/output argument to disk. "
                  "For building data-driven, scheme-level regression tests from "
                  "realistic captured atmospheric states -- not a debugging aid "
                  "and not compared against CAM's own history-file output. May "
-                 "be repeated for multiple scheme/phase targets. Deliberately "
-                 "skips DDT-typed, errmsg/errflg, and optional arguments (v1 "
-                 "scope -- see scheme_io_capture_pass.py).",
+                 "be repeated for multiple scheme/phase targets, or name a FILE "
+                 "listing one SCHEME[:PHASE] per line (blank lines and '#' "
+                 "comments ignored). Each scheme must be in --scheme-files and "
+                 "listed once. Skips errmsg/errflg, optional arguments and "
+                 "derived types other than the constituent properties (see "
+                 "scheme_io_capture_pass.py).",
         )
         parser.add_argument(
             "--capture-test-driver-dir",
             default=None,
             metavar="DIR",
             help="Only meaningful together with --capture-scheme: for every "
-                 "matched scheme call site, additionally write a standalone "
-                 "Fortran test-driver program "
-                 "(test_<table_name>.F90) into DIR that reads a captured "
-                 "fixture back, calls the real scheme subroutine, and "
-                 "compares its outputs against the captured 'after' "
-                 "snapshot -- for building data-driven, scheme-level "
-                 "regression tests. Source only; no CMake/ctest wiring is "
-                 "generated.",
+                 "captured scheme, write a standalone Fortran test-driver "
+                 "program (test_<scheme>.F90) into DIR that replays each "
+                 "captured call (reads its inputs, calls the scheme, compares "
+                 "its outputs), plus test_<scheme>.cmake and a CMakeLists.txt "
+                 "to build and run the drivers. The captured run writes its "
+                 ".nc files into DIR/LABEL (--capture-label), or DIR without "
+                 "a label; CCPP_CAPTURE_DIR in the run's environment "
+                 "overrides it. ctest runs each driver against this "
+                 "generation's data directory (-DCCPP_CAPTURE_DIR=<dir> "
+                 "for another): cmake -S DIR -B build; cmake --build build; "
+                 "ctest --test-dir build.",
+        )
+        parser.add_argument(
+            "--capture-label",
+            default=None,
+            metavar="LABEL",
+            help="Only meaningful together with --capture-scheme: a label "
+                 "for this capture (e.g. the CAM-SIMA case name), written "
+                 "into every capture file (ccpp_capture_label) and, with "
+                 "--capture-test-driver-dir, the name of the data "
+                 "subdirectory DIR/LABEL. One directory name, no '/'.",
         )
         parser.add_argument(
             "--capture-tolerance",
@@ -457,6 +556,9 @@ class ccppMain:
         options_db["preproc_defs"] = [
             p for p in coerce_list_option(options_db.get("preproc_defs")) if p
         ]
+        options_db["capture_scheme"] = _capture_entries(
+            options_db.get("capture_scheme") or [], options_db["scheme_files"],
+        )
         options_db["jobs"] = int(options_db.get("jobs") or 1)
         if options_db["jobs"] < 1:
             raise ValueError("--jobs must be at least 1")
@@ -953,10 +1055,11 @@ class ccppMain:
             # more than once. Must run at the same point
             # generate-gpu-debug-prints does, for the same reason (real
             # KeywordCallOps for every scheme call only exist by here).
-            scheme_name, _, phase = spec.partition(":")
+            scheme_name, phase = _capture_spec(spec)
             capture_opts = [f"scheme={scheme_name}"]
             if phase:
-                capture_opts.append(f"phase={phase}")
+                # Quoted: a phase list has commas.
+                capture_opts.append(f'phase="{phase}"')
             if directive:
                 # Needed so the pass knows whether/how to sync a
                 # device-resident argument to the host immediately before
@@ -973,6 +1076,9 @@ class ccppMain:
                 # backslash/double-quote need it for a filesystem path).
                 escaped = test_driver_dir.replace("\\", "\\\\").replace('"', '\\"')
                 capture_opts.append(f'test_driver_dir="{escaped}"')
+            label = self.options_db.get("capture_label")
+            if label:
+                capture_opts.append(f'label="{_capture_label(label)}"')
             tolerance = self.options_db.get("capture_tolerance")
             if tolerance is not None:
                 # Quoted, not a bare numeric token: the pass-pipeline
@@ -1327,6 +1433,48 @@ class ccppMain:
             for path in written:
                 self.print_verbose_message(f"  -> Wrote HTML: {path}")
 
+    def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
+        """Write the CMake build for the capture test drivers
+        (tools/capture_cmake.py): a test_<scheme>.cmake for every captured
+        scheme whose driver the capture pass wrote, and the CMakeLists.txt.
+        A scheme whose .F90 cannot be found (next to its .meta, same stem)
+        gets no fragment, with a warning."""
+        from xdsl_ccpp.tools.capture_cmake import (
+            scheme_dependencies,
+            scheme_meta_files,
+            support_sources,
+            write_capture_cmake,
+        )
+
+        driver_dir = self.options_db["capture_test_driver_dir"]
+        module = self._parse_frontend(mlir_file)
+        meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
+        scheme_sources: dict = {}
+        for spec in self.options_db.get("capture_scheme") or []:
+            scheme = _capture_spec(spec)[0]
+            if scheme in scheme_sources:
+                continue
+            if not os.path.isfile(os.path.join(driver_dir, f"test_{scheme}.F90")):
+                continue  # the capture pass wrote no driver (logged there)
+            meta_path = meta_files.get(scheme)
+            f90_path = (
+                os.path.splitext(meta_path)[0] + ".F90" if meta_path else None
+            )
+            if f90_path is None or not os.path.isfile(f90_path):
+                warn_once(
+                    f"capture test driver for '{scheme}': no Fortran source found "
+                    f"next to its .meta file; test_{scheme}.cmake not written"
+                )
+                continue
+            scheme_sources[scheme] = [f90_path] + scheme_dependencies(module, scheme)
+        if not scheme_sources:
+            return
+        support = support_sources(os.path.join(out_dir, "ccpp_kinds.F90"))
+        label = self.options_db.get("capture_label")
+        data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
+        for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir):
+            self.print_verbose_message(f"  -> Wrote capture build: {path}")
+
     def run(self, options_db=None):
         """Run the full frontend -> optimizer -> split-output pipeline.
 
@@ -1428,6 +1576,9 @@ class ccppMain:
             datatable_path = self.options_db.get("emit_datatable")
             if datatable_path:
                 self._run_datatable(mlir_file, out_dir, datatable_path)
+
+            if self.options_db.get("capture_test_driver_dir"):
+                self._write_capture_cmake(mlir_file, out_dir)
 
             resolved_vars = None
             resolved_vars_path = self.options_db.get("emit_resolved_vars")
