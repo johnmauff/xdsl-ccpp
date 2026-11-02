@@ -1,15 +1,16 @@
-"""Unit tests for the `!$acc`/`!$omp` device-residency scan
-(`_extract_device_resident_vars` in `fparser2_to_meta.py`).
+"""Unit tests for the OpenACC residency classifier (`_classify_acc_residency`
+in `fparser2_to_meta.py`, acc-derive-memory-space) and its use in
+`_extract_subroutines`.
 
-dup-meta-shadow-elim (BACKLOG.md), Phase 2: real, active GPU directives
-(`present`/`deviceptr`/`copyin`/`copyout`/`copy`) already name exactly
-which dummy arguments need `memory_space = device` -- confirmed against
-real usage in this repo's own `examples/kessler`, `examples/advection`,
-`examples/advection_flat_host`. These tests cover the directive-scanning
-grammar directly (continuation-line joining, the `!!$acc` disabled-
-directive trap, the `default(present)` false-match trap) and integration
-into `_extract_subroutines`'s returned arg dicts, including a real-file
-regression test locking in today's verified-correct result.
+An entry point's own `!$acc` directives classify each dummy argument as
+"device" (present/deviceptr, update, host_data use_device, arrays inside a
+default(present) construct) or "either" (copy-family clauses, arrays inside
+a compute construct with no clause for them). Derived-type arguments and
+components are never classified: the scheme moves its own derived-type
+data. These tests cover the directive grammar (continuations, the
+`!!$acc` disabled-directive trap, `default(present)` not being a
+`present(...)` clause, subscripts, modifiers), construct bodies, and
+integration into `_extract_subroutines`, including real-file regressions.
 """
 
 import pytest
@@ -17,93 +18,187 @@ import pytest
 pytest.importorskip("fparser", reason="fparser not installed")
 
 from xdsl_ccpp.transforms.fparser2_to_meta import (
-    _extract_device_resident_vars,
+    ACC_DEVICE,
+    ACC_EITHER,
     _extract_subroutines,
 )
 
 
-# ── _extract_device_resident_vars: grammar ──────────────────────────────────
+def _classify(body: str, decls: str = "", args: str = "temp, qv, ps, n, gas"):
+    """Classify the dummies of m_run(<args>) whose body is *body*: a dict
+    name -> (category, how), plus the derived-type names."""
+    src = f"""
+module m
+contains
+  subroutine m_run({args})
+    integer, intent(in) :: n
+    real, intent(inout) :: temp(:,:), qv(:,:)
+    real, intent(in) :: ps(:)
+    type(gas_t), intent(inout) :: gas
+{decls}
+    integer :: i, k
+    real :: work(10)
+{body}
+  end subroutine
+end module
+"""
+    residency = {}
+    _extract_subroutines(src, "test.F90", None, residency)
+    r = residency["m_run"]
+    return {k: (v.category, v.how) for k, v in r.args.items()}, set(r.derived_types)
 
-def test_single_present_clause():
-    lines = ["    !$acc parallel loop present(temp)"]
-    assert _extract_device_resident_vars(lines, (1, 1)) == {"temp"}
+
+# ── grammar ──────────────────────────────────────────────────────────────────
+
+def test_present_and_deviceptr_are_device():
+    got, _ = _classify("    !$acc data present(temp) deviceptr(qv)\n    !$acc end data")
+    assert got == {"temp": (ACC_DEVICE, "present"), "qv": (ACC_DEVICE, "deviceptr")}
 
 
-def test_multiple_vars_in_one_clause():
-    lines = ["    !$acc parallel loop present(temp, temp_prev, ttend_t)"]
-    assert _extract_device_resident_vars(lines, (1, 1)) == {
-        "temp", "temp_prev", "ttend_t"
+def test_copy_family_is_either():
+    for keyword in ("copy", "copyin", "copyout", "create", "pcopyin", "present_or_copy"):
+        got, _ = _classify(f"    !$acc data {keyword}(temp)\n    !$acc end data")
+        assert got == {"temp": (ACC_EITHER, keyword)}, keyword
+
+
+def test_device_outranks_either():
+    got, _ = _classify(
+        "    !$acc data copyin(temp)\n    !$acc end data\n"
+        "    !$acc data present(temp)\n    !$acc end data"
+    )
+    assert got == {"temp": (ACC_DEVICE, "present")}
+
+
+def test_update_and_host_data_are_device():
+    got, _ = _classify(
+        "    !$acc update self(temp) device(qv)\n"
+        "    !$acc host_data use_device(ps)\n    !$acc end host_data"
+    )
+    assert got == {
+        "temp": (ACC_DEVICE, "self"), "qv": (ACC_DEVICE, "device"),
+        "ps": (ACC_DEVICE, "use_device"),
     }
 
 
-def test_each_residency_keyword_recognized():
-    for keyword in ("present", "deviceptr", "copyin", "copyout", "copy"):
-        lines = [f"    !$acc parallel loop {keyword}(qv)"]
-        assert _extract_device_resident_vars(lines, (1, 1)) == {"qv"}, keyword
-
-
-def test_non_residency_clauses_ignored():
-    # private/reduction/default/create are about a variable's own lifecycle
-    # or GPU control flow, not dummy-argument memory_space -- deliberately
-    # out of scope.
-    lines = [
-        "    !$acc parallel loop gang vector private(dtmin) "
-        "reduction(min:dtmin) default(present)"
-    ]
-    assert _extract_device_resident_vars(lines, (1, 1)) == set()
-
-
-def test_default_present_not_mistaken_for_present_clause():
-    # 'present' here is default's VALUE, not a clause keyword -- it's
-    # followed by ')', not '('.
-    lines = ["    !$acc parallel loop gang vector default(present)"]
-    assert _extract_device_resident_vars(lines, (1, 1)) == set()
+def test_subscripts_and_modifiers_stripped():
+    got, _ = _classify("    !$acc data copyin(readonly: temp(1:n, :), qv(1, (k)))\n    !$acc end data")
+    assert got == {"temp": (ACC_EITHER, "copyin"), "qv": (ACC_EITHER, "copyin")}
 
 
 def test_continuation_line_joined():
-    lines = [
-        "    !$acc parallel loop gang vector &",
-        "    !$acc present(cpair,rair,pk) default(present)",
-    ]
-    assert _extract_device_resident_vars(lines, (1, 2)) == {"cpair", "rair", "pk"}
+    got, _ = _classify(
+        "    !$acc data copyin(qv) &\n    !$acc present(temp)\n    !$acc end data"
+    )
+    assert got == {"qv": (ACC_EITHER, "copyin"), "temp": (ACC_DEVICE, "present")}
 
 
-def test_omp_sentinel_also_recognized():
-    lines = ["    !$omp target present(qv)"]
-    assert _extract_device_resident_vars(lines, (1, 1)) == {"qv"}
+def test_default_present_is_not_a_present_clause():
+    # 'present' is default's value; with no compute body, nothing is classified.
+    got, _ = _classify("    !$acc data default(present)\n    !$acc end data")
+    assert got == {}
 
 
-def test_disabled_directive_not_recognized():
-    # Real compiler sentinel is exactly '!$acc' -- a second '!' means this
-    # is a human comment about a directive, not a real one. Confirmed real
-    # case: examples/kessler/scheme/kessler_update.F90 has exactly this
-    # shape (a commented-out fuller directive next to an active, shorter
-    # one with no present() at all).
-    lines = [
-        "    !!$acc parallel loop collapse(2) present(temp, temp_prev, ttend_t)",
-        "    !$acc parallel loop collapse(2)",
-    ]
-    assert _extract_device_resident_vars(lines, (1, 2)) == set()
+def test_disabled_directive_ignored():
+    got, _ = _classify("    !!$acc data present(temp)\n    !!$acc end data")
+    assert got == {}
 
 
-def test_span_restricts_which_lines_are_scanned():
-    lines = [
-        "    !$acc parallel loop present(outside)",
-        "    !$acc parallel loop present(inside)",
-        "    !$acc parallel loop present(also_outside)",
-    ]
-    assert _extract_device_resident_vars(lines, (2, 2)) == {"inside"}
+def test_omp_not_read():
+    got, _ = _classify("    !$omp target data map(to: temp)\n    !$omp end target data")
+    assert got == {}
 
 
-def test_none_span_returns_empty_set():
-    lines = ["    !$acc parallel loop present(qv)"]
-    assert _extract_device_resident_vars(lines, None) == set()
+def test_locals_and_private_ignored():
+    got, _ = _classify(
+        "    !$acc parallel loop present(work) private(i) reduction(+:k)\n"
+        "    do i = 1, n\n      k = k + i\n    end do"
+    )
+    assert got == {}
 
 
 def test_unterminated_clause_raises():
-    lines = ["    !$acc parallel loop present(temp"]
-    with pytest.raises(ValueError, match=r"no closing '\)'"):
-        _extract_device_resident_vars(lines, (1, 1), filename="test.F90")
+    with pytest.raises(ValueError, match=r"test.F90:\d+: .* has no closing"):
+        _classify("    !$acc data present(temp\n    !$acc end data")
+
+
+# ── compute construct bodies ─────────────────────────────────────────────────
+
+def test_loop_body_arrays_are_either_without_clause():
+    # kessler_update_timestep_init's shape: a bare parallel loop.
+    got, _ = _classify(
+        "    !$acc parallel loop collapse(2)\n"
+        "    do k = 1, n\n      do i = 1, n\n"
+        "        temp(i,k) = qv(i,k) * ps(i)\n"
+        "      end do\n    end do\n"
+    )
+    assert got == {
+        "temp": (ACC_EITHER, "implicit"), "qv": (ACC_EITHER, "implicit"),
+        "ps": (ACC_EITHER, "implicit"),
+    }
+
+
+def test_default_present_body_arrays_are_device():
+    # kessler_run's relhum: assigned in the loop, named in no clause.
+    got, _ = _classify(
+        "    !$acc parallel loop present(qv) default(present)\n"
+        "    do i = 1, n\n      temp(i,1) = qv(i,1)\n    end do\n"
+    )
+    assert got == {
+        "qv": (ACC_DEVICE, "present"), "temp": (ACC_DEVICE, "default(present)"),
+    }
+
+
+def test_only_the_loop_after_the_directive_is_its_body():
+    got, _ = _classify(
+        "    !$acc parallel loop\n    do i = 1, n\n      qv(i,1) = 0.\n    end do\n"
+        "    do i = 1, n\n      temp(i,1) = ps(i)\n    end do\n"
+    )
+    assert got == {"qv": (ACC_EITHER, "implicit")}
+
+
+def test_parallel_region_body_ends_at_end_directive():
+    got, _ = _classify(
+        "    !$acc parallel default(present)\n    !$acc loop\n"
+        "    do i = 1, n\n      qv(i,1) = 0.\n    end do\n    !$acc end parallel\n"
+        "    temp(1,1) = ps(1)\n"
+    )
+    assert got == {"qv": (ACC_DEVICE, "default(present)")}
+
+
+def test_scalars_in_body_not_classified():
+    got, _ = _classify(
+        "    !$acc parallel loop\n    do i = 1, n\n      qv(i,1) = 0.\n    end do\n"
+    )
+    assert "n" not in got
+
+
+def test_comments_and_strings_in_body_ignored():
+    got, _ = _classify(
+        "    !$acc parallel loop\n    do i = 1, n\n"
+        "      qv(i,1) = 0. ! temp(i,1)\n    end do\n"
+    )
+    assert got == {"qv": (ACC_EITHER, "implicit")}
+
+
+# ── derived types ─────────────────────────────────────────────────────────────
+
+def test_derived_types_never_classified():
+    got, derived = _classify(
+        "    !$acc data copyin(gas, gas%conc, gas%conc%vmr) present(temp)\n"
+        "    !$acc end data\n"
+        "    !$acc parallel loop\n    do i = 1, n\n      qv(i,1) = gas%conc(i)\n    end do\n"
+    )
+    assert got == {"temp": (ACC_DEVICE, "present"), "qv": (ACC_EITHER, "implicit")}
+    assert derived == {"gas"}
+
+
+def test_component_name_matching_a_dummy_not_classified():
+    # gas%temp names gas's component, not the dummy temp.
+    got, derived = _classify(
+        "    !$acc parallel loop\n    do i = 1, n\n      qv(i,1) = gas%temp(i)\n    end do\n"
+    )
+    assert got == {"qv": (ACC_EITHER, "implicit")}
+    assert derived == {"gas"}
 
 
 # ── integration: _extract_subroutines merges memory_space ──────────────────
@@ -196,3 +291,18 @@ def test_real_kessler_update_file():
     assert flagged.get("kessler_update_timestep_final") == {
         "cpair", "temp", "zm", "phis", "st_energy"
     }
+    # A bare `!$acc parallel loop` (no clause): its arrays are "either",
+    # which generated .meta still maps to device (stage 1).
+    assert flagged.get("kessler_update_timestep_init") == {"temp", "temp_prev", "ttend_t"}
+
+
+def test_real_kessler_file_default_present():
+    # relhum is named in no clause of kessler_run's default(present) loop.
+    residency = {}
+    with open("examples/kessler/scheme/kessler.F90") as f:
+        _extract_subroutines(f.read(), "kessler.F90", None, residency)
+    r = residency["kessler_run"]
+    assert {n for n, u in r.args.items() if u.category == ACC_DEVICE} == {
+        "cpair", "rair", "rho", "z", "pk", "theta", "qv", "qc", "qr", "precl", "relhum"
+    }
+    assert r.args["relhum"].how == "default(present)"

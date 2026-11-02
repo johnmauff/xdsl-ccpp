@@ -10,9 +10,7 @@ module kessler
    save
 
    public :: kessler_init   ! init routine
-   public :: kessler_runv1  ! main routine (original loop structure)
-   public :: kessler_runv2  ! main routine (modified loop structure)
-   public :: kessler_run    ! CCPP-standard entry point (calls kessler_runv2)
+   public :: kessler_run  ! CPP-standar entry point routine (modified loop structure)
 
    ! Private module data (constants set at initialization)
    real(kind_phys) :: lv    ! latent heat of vaporization, J/kg
@@ -93,7 +91,7 @@ CONTAINS
 
    !> \section arg_table_kessler_run  Argument Table
    !! \htmlinclude kessler_run.html
-   subroutine kessler_runv1(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
+   subroutine kessler_run_orig(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
         pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
 
       !------------------------------------------------
@@ -385,9 +383,9 @@ CONTAINS
 
       !print *,'iteration Cnt: ',iterCnt
 
-   end subroutine kessler_runv1
+   end subroutine kessler_run_orig
 
-   subroutine kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
+   subroutine kessler_run(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
         pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
 
       !------------------------------------------------
@@ -618,7 +616,7 @@ CONTAINS
 
       !print *,'iteration Cnt: ',iterCnt
 
-   end subroutine kessler_runv2
+   end subroutine kessler_run
 
    !=======================================================================
    logical function all_equal(n, data,val) 
@@ -644,21 +642,21 @@ CONTAINS
 
     end function all_equal
 
-   subroutine kessler_run(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
-        pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
-      integer,          intent(in)    :: ncol, nz
-      real(kind_phys),  intent(in)    :: dt
-      integer,          intent(in)    :: lyr_surf, lyr_toa
-      real(kind_phys),  intent(in)    :: cpair(ncol,nz), rair(ncol,nz)
-      real(kind_phys),  intent(in)    :: rho(ncol,nz), z(ncol,nz), pk(ncol,nz)
-      real(kind_phys),  intent(inout) :: theta(ncol,nz), qv(ncol,nz)
-      real(kind_phys),  intent(inout) :: qc(ncol,nz), qr(ncol,nz)
-      real(kind_phys),  intent(out)   :: precl(ncol), relhum(ncol,nz)
-      character(len=64),intent(out)   :: scheme_name
-      character(len=*), intent(out)   :: errmsg
-      integer,          intent(out)   :: errflg
-      call kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
-           pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
-   end subroutine kessler_run
+!   subroutine kessler_run(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
+!        pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
+!      integer,          intent(in)    :: ncol, nz
+!      real(kind_phys),  intent(in)    :: dt
+!      integer,          intent(in)    :: lyr_surf, lyr_toa
+!      real(kind_phys),  intent(in)    :: cpair(ncol,nz), rair(ncol,nz)
+!      real(kind_phys),  intent(in)    :: rho(ncol,nz), z(ncol,nz), pk(ncol,nz)
+!      real(kind_phys),  intent(inout) :: theta(ncol,nz), qv(ncol,nz)
+!      real(kind_phys),  intent(inout) :: qc(ncol,nz), qr(ncol,nz)
+!      real(kind_phys),  intent(out)   :: precl(ncol), relhum(ncol,nz)
+!      character(len=64),intent(out)   :: scheme_name
+!      character(len=*), intent(out)   :: errmsg
+!      integer,          intent(out)   :: errflg
+!      call kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, &
+!           pk, theta, qv, qc, qr, precl, relhum, scheme_name, errmsg, errflg)
+!   end subroutine kessler_run
 
 end module kessler

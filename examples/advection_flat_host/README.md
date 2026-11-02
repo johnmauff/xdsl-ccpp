@@ -22,19 +22,19 @@ conflated that gap with the one this example is actually meant to exercise.
 
 - `temp`: `memory_space = device` on both `cld_liq_run` and `cld_ice_run`, host side left
   undeclared. Both schemes agree — the compatible-union / cross-function hoisting path.
-- `qv`: host side (`flat_host_mod.meta`) declares `memory_space = device`. `cld_liq_run`
-  also declares `memory_space = device` (→ wants `present`). `cld_ice_run` leaves it
-  undeclared (→ wants `update`). Two schemes in the *same group* genuinely disagree about
-  the same host variable's residency.
+- `qv`: host side (`flat_host_mod.meta`) declares `memory_space = device`, and both
+  `cld_liq_run` and `cld_ice_run` declare `memory_space = device` (→ `present`). The cap
+  makes the host variable resident itself (`present()` alone allocates nothing), so `qv`
+  stays on the device through both schemes.
 
-Generating this suite through `generate-gpu-ccpp-cap`/`generate-gpu-data` (`--directive acc`)
-now compiles this correctly: `cld_liq_run`'s call is individually wrapped in
-`!$acc data present(qv) ... !$acc end data`, and `cld_ice_run`'s call gets its own
-`!$acc update self(qv)` before / `!$acc update device(qv)` after — each scheme gets exactly
-the clause it declared, with `qv` excluded entirely from the whole-suite/cross-phase hoisting
-path (`GPUCcppCapPass`) and routed instead per individual scheme call, at the suite_cap level
-(`GPUDataPass`). `temp` (both schemes agree, host side left undeclared) is unaffected — still
-handled exactly as before, on the unchanged whole-suite hoisted `copy(...)` path.
+Until 2026-11-02 `cld_ice_run`'s `qv` lacked `memory_space = device` here (a copy slip;
+`examples/advection`'s `cld_ice.meta` always had it), so the two schemes disagreed and the
+cap wrapped `cld_ice_run` in `!$acc update self(qv)` / `!$acc update device(qv)`. Since
+`cld_ice_run`'s kernel uses `qv` with `present(qv)`, that trailing `update device` overwrote
+its device result with the stale host copy. The Fortran-vs-`.meta` check
+(`acc-derive-memory-space`) now flags such a contradiction. The routing for schemes that
+genuinely disagree (one uses a variable on the device, another on the host) is covered by the
+synthetic conflict fixtures in `tests/unit/test_gpu_directives.py`.
 A plain-CPU generate/build/test (no `--directive`) is unaffected either way, since
 `memory_space` is inert without a `--directive acc`/`omp` pass invocation.
 

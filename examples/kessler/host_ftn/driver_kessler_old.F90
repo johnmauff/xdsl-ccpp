@@ -115,17 +115,17 @@ program test_kessler_driver
   !------------------------------------------------------
   ! Run microphysics + update  (matches CCPP physics run scope)
   !------------------------------------------------------
-  if (version .eq. 1) then
-     call kessler_runv1(ncol, nz, dt, lyr_surf, lyr_toa, &
+!  if (version .eq. 1) then
+!     call kessler_runv1(ncol, nz, dt, lyr_surf, lyr_toa, &
+!                          cpair, rair, rho, z, exner, &
+!                          theta, qv, qc, qr, &
+!                          precl, relhum, scheme_name, errmsg, errflg)
+!  elseif (version .eq. 2) then
+     call kessler_run(ncol, nz, dt, lyr_surf, lyr_toa, &
                           cpair, rair, rho, z, exner, &
                           theta, qv, qc, qr, &
                           precl, relhum, scheme_name, errmsg, errflg)
-  elseif (version .eq. 2) then
-     call kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, &
-                          cpair, rair, rho, z, exner, &
-                          theta, qv, qc, qr, &
-                          precl, relhum, scheme_name, errmsg, errflg)
-  endif
+!  endif
 
 #ifdef USE_GPU
   !$omp target update from(theta(1:ncol,1:nz), qv(1:ncol,1:nz), &

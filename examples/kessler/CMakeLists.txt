@@ -262,7 +262,7 @@ endif()
 # On a real GPU (ARCH=GPU), kessler_hand.exe/kessler_cxx.exe/
 # kessler_cxx_host.exe are known NOT to work yet -- confirmed directly:
 # all three crash with "FATAL ERROR: data in PRESENT clause was not found"
-# at kessler.F90's own kessler_runv2, because nothing in their call paths
+# at kessler.F90's own kessler_run, because nothing in their call paths
 # ever registers data with the OpenACC runtime that kessler.F90's
 # hand-written "!$acc present(...)" checks require. kessler_hand.exe
 # manages GPU data via OpenMP target functions (omp_target_alloc/

@@ -21,6 +21,7 @@ from xdsl_ccpp.frontend.meta_expr import (
     parse_local_name,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_PRIMITIVE_TYPES,
     deprecation_source,
     parse_kind_spec_value,
     report_deprecated_uses,
@@ -436,6 +437,28 @@ class MetaParseState(Enum):
     NONE = 4        # Not yet inside any block
 
 
+def _check_no_derived_type_on_device(fn_arg, table, filename) -> None:
+    """xdsl-ccpp never moves derived-type data (gpu-ddt-deep-copy-residency,
+    not planned): a scheme moves its own, in its entry point. The cap would
+    copy only the top-level object (a shallow copy, components missing on
+    the device), so `memory_space = device` on a scheme's derived-type
+    argument is an input error."""
+    if str(table.getAttr("type")) != "scheme":
+        return
+    attrs = fn_arg.getAttrs()
+    if str(attrs.get("memory_space", "")).strip().lower() != "device":
+        return
+    arg_type = str(fn_arg.getAttr("type")).strip().lower()
+    if arg_type in CCPP_PRIMITIVE_TYPES:
+        return
+    raise CcppInputError(
+        f"{filename}: '{table.getAttr('name')}' argument '{fn_arg.name}' is a "
+        f"derived type ({arg_type}) with memory_space = device; xdsl-ccpp does "
+        "not move derived-type data -- remove memory_space and move the data "
+        "in the scheme (e.g. an !$acc data region with the components it needs)"
+    )
+
+
 def _check_meta_expr(parse, text, filename, line_no) -> None:
     """Reject a malformed local name or ``active`` expression here, with
     its file and line, rather than when a transform resolves it."""
@@ -729,6 +752,9 @@ class ccppXML:
                             f"{sorted(unknown)}",
                             file=sys.stderr,
                         )
+                    _check_no_derived_type_on_device(
+                        fn_arg, table, meta_file_path or source_module
+                    )
                     args.append(
                         ArgumentOp(fn_arg.name, fn_arg.getAttr("type"), fn_arg.getAttrs())
                     )

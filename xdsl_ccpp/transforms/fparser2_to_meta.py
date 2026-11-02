@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 from xdsl.dialects import builtin
 from xdsl.dialects.builtin import StringAttr
@@ -190,12 +191,12 @@ def _join_comment_continuations(
     vector &`` / ``!$acc present(...) ...``).
 
     Shared by ``_extract_ccpp_tags`` (sentinel ``!$ccpp``) and
-    ``_extract_device_resident_vars`` (sentinels ``!$acc``/``!$omp``) --
+    ``_classify_acc_residency`` (sentinel ``!$acc``) --
     the chain-detection mechanics (trailing ``&``, repeated sentinel) are
     identical regardless of which sentinel is in play. What each chained
     line *means*, though, differs by caller, so this returns each
     sentinel-stripped line **unjoined** -- the caller decides:
-    ``_extract_device_resident_vars`` wants one logical directive's whole
+    ``_classify_acc_residency`` wants one logical directive's whole
     clause-list as a single blob (``" ".join(...)``), since a real
     ``!$acc`` directive's own clauses genuinely span the continuation as
     one unit. ``_extract_ccpp_tags`` wants each chained line kept
@@ -345,70 +346,296 @@ def _extract_ccpp_tags(
     return tags
 
 
-# dup-meta-shadow-elim (BACKLOG.md), Phase 2: clauses that assert a named
-# variable's device residency -- confirmed against real usage in this
-# repo's own examples/ (kessler.F90, cld_liq.F90, cld_ice.F90). Deliberately
-# narrow: `create`/`delete`/`private`/`reduction`/etc. are about a
-# variable's own lifecycle or GPU control flow, not whether a *dummy
-# argument* is device-resident, so they're left out on purpose.
-_DEVICE_RESIDENCY_CLAUSES = ("present", "deviceptr", "copyin", "copyout", "copy")
-_ACC_OMP_SENTINELS = ("!$acc", "!$omp")
+# acc-derive-memory-space (BACKLOG.md): what a scheme entry point's own
+# OpenACC says about each of its dummy arguments.
+#
+# "device": the scheme requires the argument on the device -- named in a
+# present/deviceptr clause, in an `update self/host/device` or `host_data
+# use_device`, or an array referenced inside a compute construct with
+# default(present).
+# "either": present-or-copy -- named in a copy-family clause, or an array
+# referenced inside a compute construct with no clause for it (OpenACC's
+# implicit present-or-copy). The scheme works with host data (it copies the
+# data itself) and with data already on the device (it then uses that copy).
+#
+# Derived-type arguments, and components named in clauses
+# (`copyin(sources%sources%lay_source)`), are never classified: the scheme
+# moves its own derived-type data (gpu-ddt-deep-copy-residency, not planned).
+# OpenACC only; `!$omp` is not read.
+ACC_DEVICE = "device"
+ACC_EITHER = "either"
+
+_ACC_DEVICE_CLAUSES = frozenset({"present", "deviceptr"})
+_ACC_EITHER_CLAUSES = frozenset({
+    "copy", "copyin", "copyout", "create", "no_create",
+    "pcopy", "pcopyin", "pcopyout", "pcreate",
+    "present_or_copy", "present_or_copyin", "present_or_copyout",
+    "present_or_create",
+})
+# Clauses of `update` and `host_data` whose variables must be present.
+_ACC_UPDATE_CLAUSES = frozenset({"self", "host", "device"})
+_ACC_HOST_DATA_CLAUSES = frozenset({"use_device"})
+_ACC_COMPUTE_KINDS = ("parallel", "kernels", "serial")
 
 
-def _extract_device_resident_vars(
-    source_lines: list[str], span: tuple[int, int] | None, filename: str = "<source>"
-) -> set[str]:
-    """Scan *source_lines* (1-indexed, inclusive *span*) for `!$acc`/`!$omp`
-    directive lines and return the (lowercased) set of variable names named
-    inside a device-residency clause (`present`/`deviceptr`/`copyin`/
-    `copyout`/`copy`).
+@dataclass
+class AccArgUse:
+    """How one dummy argument is used by the entry point's OpenACC."""
 
-    Hand-written, line-oriented parser, matching this codebase's own
-    established convention (see `_extract_ccpp_tags` and
-    `ccpp_xml.py`'s `parse_meta_file`) rather than a regex. Continuation
-    joining and the `!!$acc`-is-not-a-directive handling are shared with
-    `_extract_ccpp_tags` via `_join_comment_continuations` -- see that
-    function's own docstring for both, confirmed directly against this
-    repo's own examples, not assumed.
+    category: str  # ACC_DEVICE or ACC_EITHER
+    line_no: int   # source line of the directive that decided it
+    how: str       # e.g. "present", "copyin", "default(present)", "implicit"
 
-    A clause keyword must be immediately followed by `(` and not preceded
-    by an identifier character, so `default(present)` (a *different*
-    clause, `default`, whose value happens to be the word "present") is
-    never mistaken for a `present(...)` clause -- "present" there is
-    followed by `)`, not `(`.
+
+@dataclass
+class AccResidency:
+    """What one entry point's own OpenACC directives say about its dummy
+    arguments (see ACC_DEVICE / ACC_EITHER above)."""
+
+    has_acc: bool = False
+    args: dict[str, AccArgUse] = field(default_factory=dict)
+    # Derived-type dummy arguments its directives name or use, with a line.
+    derived_types: dict[str, int] = field(default_factory=dict)
+    # Subroutines it calls (lowercased), to spot an entry point with no
+    # OpenACC of its own whose callee in the same file has some.
+    calls: set[str] = field(default_factory=set)
+
+    def note(self, name: str, category: str, line_no: int, how: str) -> None:
+        """Record *name*'s use; "device" outranks "either", and the first
+        use of the winning category is kept."""
+        current = self.args.get(name)
+        if current is None or (current.category == ACC_EITHER and category == ACC_DEVICE):
+            self.args[name] = AccArgUse(category, line_no, how)
+
+
+def _split_directive(
+    text: str, where: str = "<source>"
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Split one joined, lowercased `!$acc` directive body into its leading
+    words (the directive name, e.g. ["parallel", "loop", "gang"]) and its
+    clauses with arguments, [(clause, argument text), ...]. A word directly
+    followed by `(` is a clause with an argument (balanced parentheses);
+    a bare word is part of the directive name or an argument-less clause.
+    An unclosed `(` is a CcppInputError naming *where* (file:line)."""
+    words: list[str] = []
+    clauses: list[tuple[str, str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isalpha() or c == "_":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            word = text[i:j]
+            k = j
+            while k < n and text[k] == " ":
+                k += 1
+            if k < n and text[k] == "(":
+                depth, m = 0, k
+                while m < n:
+                    if text[m] == "(":
+                        depth += 1
+                    elif text[m] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    m += 1
+                if m >= n:
+                    raise CcppInputError(
+                        f"{where}: '!$acc' clause '{word}(' has no closing ')': {text!r}"
+                    )
+                clauses.append((word, text[k + 1:m]))
+                i = m + 1
+                continue
+            words.append(word)
+            i = j
+            continue
+        i += 1
+    return words, clauses
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split *text* at the commas not inside parentheses."""
+    parts, depth, start = [], 0, 0
+    for i, c in enumerate(text):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _clause_variables(arg_text: str) -> list[tuple[str, bool]]:
+    """The variables a data clause names: [(base name, is a component
+    reference), ...]. Drops a modifier (`readonly:`), subscripts and
+    component paths: `x(1:n)` -> ("x", False), `a%b%c` -> ("a", True)."""
+    result = []
+    for item in _split_top_level(arg_text):
+        if ":" in item.split("(", 1)[0]:
+            item = item.split(":", 1)[1].strip()
+        j = 0
+        while j < len(item) and (item[j].isalnum() or item[j] == "_"):
+            j += 1
+        base = item[:j]
+        if base:
+            rest = item[j:].lstrip()
+            if rest.startswith("("):  # skip a subscript before any %
+                depth = 0
+                for m, c in enumerate(rest):
+                    depth += c == "("
+                    depth -= c == ")"
+                    if depth == 0:
+                        rest = rest[m + 1:].lstrip()
+                        break
+            result.append((base, rest.startswith("%")))
+    return result
+
+
+def _referenced_names(source_lines: list[str], first: int, last: int) -> set[str]:
+    """Identifiers referenced in Fortran source lines *first*..*last*
+    (1-indexed, inclusive), ignoring comments (and so directives), string
+    literals and component names (an identifier right after `%`)."""
+    names: set[str] = set()
+    for line in source_lines[first - 1:last]:
+        text = line.lower()
+        i, n = 0, len(text)
+        after_percent = False
+        while i < n:
+            c = text[i]
+            if c == "!":
+                break
+            if c in "'\"":
+                end = text.find(c, i + 1)
+                i = n if end == -1 else end + 1
+                after_percent = False
+                continue
+            if c.isalpha() or c == "_":
+                j = i
+                while j < n and (text[j].isalnum() or text[j] == "_"):
+                    j += 1
+                if not after_percent:
+                    names.add(text[i:j])
+                after_percent = False
+                i = j
+                continue
+            if c == "%":
+                after_percent = True
+            elif c != " ":
+                after_percent = False
+            i += 1
+    return names
+
+
+def _classify_acc_residency(
+    sub, source_lines: list[str], span: tuple[int, int] | None,
+    decl_map: dict[str, dict], filename: str = "<source>",
+) -> AccResidency:
+    """Classify the dummy arguments of one entry point (*sub*, a
+    Subroutine_Subprogram; *decl_map* its dummy declarations) by its own
+    `!$acc` directives -- see ACC_DEVICE / ACC_EITHER. Only the routine's
+    own body is read, never its callees.
+
+    A compute construct's body is the DO construct after a combined
+    `parallel loop`/`kernels loop`/`serial loop` directive, else the lines
+    up to its `end parallel`/`end kernels`/`end serial`; arrays referenced
+    there are classified ("device" under default(present), else
+    "either"). Scalars referenced there are firstprivate, not classified.
     """
-    var_names: set[str] = set()
-    for _line_no, remainders in _join_comment_continuations(source_lines, span, _ACC_OMP_SENTINELS):
-        text = " ".join(remainders).lower()
-        for keyword in _DEVICE_RESIDENCY_CLAUSES:
-            needle = keyword + "("
-            pos = text.find(needle)
-            while pos != -1:
-                is_whole_word = pos == 0 or not (text[pos - 1].isalnum() or text[pos - 1] == "_")
-                if is_whole_word:
-                    open_paren = pos + len(keyword)
-                    close_paren = text.find(")", open_paren)
-                    if close_paren == -1:
-                        raise CcppInputError(
-                            f"{filename}: '{keyword}(' clause has no closing "
-                            f"')': {text!r}"
-                        )
-                    inner = text[open_paren + 1:close_paren]
-                    for name in inner.split(","):
-                        name = name.strip()
-                        if name:
-                            var_names.add(name)
-                pos = text.find(needle, pos + 1)
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
 
-    return var_names
+    result = AccResidency()
+    result.calls = {
+        str(call.children[0]).lower() for call in walk(sub, f03.Call_Stmt)
+    }
+    if span is None:
+        return result
+    directives = [
+        (line_no, " ".join(remainders).lower())
+        for line_no, remainders in _join_comment_continuations(source_lines, span, ("!$acc",))
+    ]
+    if not directives:
+        return result
+    result.has_acc = True
+
+    def is_derived(name: str) -> bool:
+        return decl_map[name]["type"] not in _TYPE_MAP
+
+    do_spans = sorted(
+        s for s in (
+            _construct_span(d)
+            for d in walk(sub, (f03.Block_Nonlabel_Do_Construct, f03.Block_Label_Do_Construct))
+        ) if s is not None
+    )
+
+    for index, (line_no, text) in enumerate(directives):
+        words, clauses = _split_directive(text, f"{filename}:{line_no}")
+        if not words or words[0] in ("end", "routine", "wait", "atomic", "cache"):
+            continue
+        kind = words[0]
+        for clause, arg_text in clauses:
+            if clause in _ACC_DEVICE_CLAUSES:
+                category = ACC_DEVICE
+            elif clause in _ACC_EITHER_CLAUSES:
+                category = ACC_EITHER
+            elif kind == "update" and clause in _ACC_UPDATE_CLAUSES:
+                category = ACC_DEVICE
+            elif kind == "host_data" and clause in _ACC_HOST_DATA_CLAUSES:
+                category = ACC_DEVICE
+            else:
+                continue
+            for name, is_component in _clause_variables(arg_text):
+                if name not in decl_map:
+                    continue  # a local or module variable
+                if is_component or is_derived(name):
+                    result.derived_types.setdefault(name, line_no)
+                else:
+                    result.note(name, category, line_no, clause)
+
+        if kind not in _ACC_COMPUTE_KINDS:
+            continue
+        body = None
+        if len(words) > 1 and words[1] == "loop":
+            body = next((s for s in do_spans if s[0] > line_no), None)
+        else:
+            end = next(
+                (ln for ln, t in directives[index + 1:]
+                 if _split_directive(t, f"{filename}:{ln}")[0][:2] == ["end", kind]),
+                None,
+            )
+            if end is not None:
+                body = (line_no + 1, end - 1)
+        if body is None:
+            continue
+        default_present = any(c == "default" and a.strip() == "present" for c, a in clauses)
+        for name in _referenced_names(source_lines, body[0], body[1]):
+            if name not in decl_map:
+                continue
+            if is_derived(name):
+                result.derived_types.setdefault(name, line_no)
+            elif decl_map[name]["rank"] > 0:
+                if default_present:
+                    result.note(name, ACC_DEVICE, line_no, "default(present)")
+                else:
+                    result.note(name, ACC_EITHER, line_no, "implicit")
+    return result
 
 
 def _extract_subroutines(
     f90_source: str,
     filename: str = "<source>",
     preproc_defs: dict | None = None,
+    acc_residency: dict | None = None,
 ) -> list[tuple[str, str, list[dict]]]:
     """Parse *f90_source* and return a list of (module_name, proc_name, args).
+
+    *acc_residency*, if given, is filled with proc_name -> AccResidency (what
+    each subroutine's own OpenACC says about its dummy arguments,
+    acc-derive-memory-space) from the same parse.
 
     Each element of *args* is a dict with keys:
     ``name``, ``type``, ``rank``, ``intent`` (or None), ``optional`` (bool),
@@ -467,32 +694,33 @@ def _extract_subroutines(
                     f"for {unknown_tagged}, which is not one of its own dummy "
                     f"arguments ({sorted(dummy_names)})"
                 )
-            # Device-residency clauses legitimately also name local/scratch
-            # variables with no corresponding dummy argument at all (e.g.
-            # kessler.F90's `present(r,rhalf,...)` on its own work arrays) --
-            # unlike an unmatched !ccpp tag, that's not an error, it's simply
-            # not looked up below.
-            device_resident = _extract_device_resident_vars(source_lines, span, filename)
-
             if dummy_arg_list is None:
                 results.append((module_name, proc_name, []))
                 continue
 
             decl_map = _build_decl_map(sub, dummy_names)
+            # Directives legitimately also name locals (e.g. kessler.F90's
+            # `present(r,rhalf,...)` on its own work arrays); the classifier
+            # only records dummy arguments.
+            residency = _classify_acc_residency(sub, source_lines, span, decl_map, filename)
+            if acc_residency is not None:
+                acc_residency[proc_name] = residency
 
             # Return args in dummy-argument order, enriched with any !ccpp
             # tag content found for that argument's name (standard_name/
             # units/long_name -- the fields fparser2 can never see in plain
             # declaration syntax, regardless of tagging) and, when not
-            # already given explicitly by a tag, memory_space derived from a
-            # real device-residency clause.
+            # already given explicitly by a tag, memory_space = device for
+            # every argument the routine's OpenACC classifies, "device" or
+            # "either" alike (acc-derive-memory-space stage 1 keeps the
+            # earlier clause scanner's behaviour for generated .meta).
             args = []
             for a in dummy_arg_list.items:
                 name = str(a).lower()
                 if name not in decl_map:
                     continue
                 extra = dict(tags.get(name, {}))
-                if "memory_space" not in extra and name in device_resident:
+                if "memory_space" not in extra and name in residency.args:
                     extra["memory_space"] = "device"
                 args.append({"name": name, **decl_map[name], **extra})
 
@@ -586,6 +814,7 @@ def build_meta_module_from_source(
     f90_source: str,
     filename: str = "<source>",
     preproc_defs: dict | None = None,
+    acc_residency: dict | None = None,
 ) -> builtin.ModuleOp:
     """Parse *f90_source* and return a ``builtin.ModuleOp`` containing
     ``ccpp.table_properties`` / ``ccpp.arg_table`` / ``ccpp.arg`` ops.
@@ -610,7 +839,7 @@ def build_meta_module_from_source(
 
     Raises ``ImportError`` if fparser is not installed.
     """
-    subroutines = _extract_subroutines(f90_source, filename, preproc_defs)
+    subroutines = _extract_subroutines(f90_source, filename, preproc_defs, acc_residency)
 
     # Group by module name → one TablePropertiesOp per module
     by_module: dict[str, list[tuple[str, list[dict]]]] = defaultdict(list)
@@ -671,13 +900,14 @@ def build_meta_module_from_source(
 
 
 def build_meta_module_from_file(
-    f90_path: str, preproc_defs: dict | None = None
+    f90_path: str, preproc_defs: dict | None = None, acc_residency: dict | None = None
 ) -> builtin.ModuleOp:
     """Read *f90_path* and return CCPP metadata IR extracted via fparser2.
 
     ``preproc_defs`` (none if empty) resolves ``#ifdef``/``#if`` conditional
     compilation before parsing -- see ``build_meta_module_from_source``.
+    ``acc_residency`` as for ``_extract_subroutines``.
     """
     with open(f90_path) as f:
         source = f.read()
-    return build_meta_module_from_source(source, f90_path, preproc_defs)
+    return build_meta_module_from_source(source, f90_path, preproc_defs, acc_residency)
