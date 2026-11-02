@@ -61,6 +61,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
 | `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
+| `constituent-residency-from-source` | 3-5 days (classifier: `enter`/`exit data` and phase-level `update` in a scheme's lifecycle routines mean "manages residency"; precedence over the automatic rule; a residency scheme and its metadata; Kessler GPU test) | S |
 | `gpu-ddt-deep-copy-residency` | not planned (2026-11-02): schemes move their own derived-type data | -- |
 | `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below plus `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
 | `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below plus `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
@@ -68,6 +69,7 @@ measured data, and will drift as items are reassessed.
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
+| `gpu-diagnostics-conditional-sync` | 2-4 days (classifier: `update ... if_present` is "either"; per-field `update self(...) if(is_history_field_active(...)) if_present` in `sima_state_diagnostics` and `kessler_diagnostics`; tests; Kessler GPU FPHYStest with sparse history output) | S |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
@@ -1489,6 +1491,34 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   per-call `copy` of a view of it then degenerates to `present` with no
   sync; no current suite has that mix. Worth doing once GPU physics
   coverage is large enough for the transfers to matter.
+- `constituent-residency-from-source` — **Let a scheme's own directives
+  manage the constituents' device copy.** Added 2026-11-02, alongside
+  `constituent-device-residency` (whose first version decides residency
+  automatically: the constituent array goes on the device unless a CPU
+  scheme writes it; CPU readers get an `update self`). Alternative kept
+  in source code instead of in the generator or CAM-SIMA configuration: a
+  small residency scheme in the suite whose phases hold the data
+  management -- init `!$acc enter data create(q)`, timestep_init `update
+  device(q)`, timestep_final `update self(q)`, final `exit data
+  delete(q)` -- on its constituent-array argument (an `enter data` on a
+  dummy maps the actual memory, the framework's array). Generator work:
+  - the classifier treats an `enter`/`exit data` (and phase-level
+    `update`) in a lifecycle routine as "this scheme manages the
+    variable's device copy from this phase on", a classification beyond
+    today's per-call device/either;
+  - precedence: such a variable gets no generator `enter`/`exit data`
+    (they would fight); the generator still emits `update self` before
+    CPU readers inside groups, which the scheme cannot know about;
+  - the scheme's `.meta` declares the constituent array in every phase
+    (no `memory_space`).
+  Weakness: the sync timing is host knowledge. The scheme's `update
+  device` runs at physics timestep_init; if the host changes the
+  constituents on the CPU after that and before the run group (coupler,
+  after-coupler work, depending on configuration), the device copy is
+  stale with no error. The generator's host-cap syncs around the group
+  are placed by construction; a residency scheme is only as correct as
+  its placement in the suite. Both can coexist: an explicit residency
+  scheme overrides the automatic rule for its variables.
 - `gpu-ddt-deep-copy-residency` — **Device residency for derived-type
   arguments with allocatable components. Not planned (2026-11-02).**
   Decision: xdsl-ccpp never moves derived-type data; the scheme moves
@@ -1718,8 +1748,18 @@ Supporting items (not tracked elsewhere):
   tolerance on the GPU. Exercises PUMAS's own data regions only.
   Set up 2026-10-28 (CAM-SIMA, uncommitted): standalone testmod with
   `min_difference = 5e-10` (the nvhpc GPU flags match GPU to CPU results), test `SMS_Ln2` nvhpc (not `SMS_D`: PUMAS
-  gets `-acc` only when `DEBUG=FALSE` in `Depends.nvhpc`); awaiting its
-  first run in the next regression sweep.
+  gets `-acc` only when `DEBUG=FALSE` in `Depends.nvhpc`). First run
+  (s47b, 2026-11-02): builds, aborts at run time with "data in PRESENT
+  clause was not found on device: name=qic(:vlen)" (every task). Cause:
+  the CPU scheme `pumas_post_main` calls PUMAS's
+  `size_dist_param_basic(mg_ice_props, icimrst(:,k), ...)`
+  (`pumas_post_main.F90:76`) with a host-only local array, and
+  `size_dist_param_basic_vect` (`micro_pumas_utils.F90`, compiled with
+  `-acc` as part of PUMAS) runs `!$acc parallel ... default(present)`.
+  Not related to the Kessler step 4 ports. Fix options: give that call
+  its own data region in `pumas_post_main` (or port the scheme,
+  `gpu-port-pumas-interface-schemes`), or an `if(...)`/host path in the
+  PUMAS utility (ESCOMP/PUMAS).
 - `pumas-module-props-device` — **ESCOMP/PUMAS: make `mg_*_props`
   device-resident once.** Add the six `MGHydrometeorProps` module
   variables to the existing `!$acc declare create(...)`
@@ -1740,6 +1780,36 @@ Supporting items (not tracked elsewhere):
   `!$acc` kernels to the `.F90` only (residency is derived by
   `acc-derive-memory-space`; the `.meta` is unchanged) and keeps the CPU
   path (directives are comments without `-acc`).
+  First: `pumas_post_main` makes the PUMAS GPU testmod abort today (see
+  `gpu-pumas-testmod`): it calls PUMAS's `size_dist_param_basic` (a
+  `default(present)` kernel) with host-only local arrays. Port it with an
+  `!$acc data copyin(icimrst) copy(niic, rei)` region around that loop
+  and add `pumas_post_main.o` to `GPU_SCHEME_OBJS` in `Depends.nvhpc`.
+- `gpu-diagnostics-conditional-sync` — **Diagnostics schemes copy device
+  data to the host only for fields being output.** Added 2026-11-02.
+  `sima_state_diagnostics_run` and `kessler_diagnostics_run` run every
+  step but compute nothing: each argument goes to CAM's
+  `history_out_field`, which accumulates it only if the field is on a
+  history file. The cap cannot know which are, so in the Kessler GPU suite
+  it syncs every device-resident argument before them every step
+  (`update self(temp, z, phis, dse)`, `update self(precl)`; the only two
+  syncs left in the run group after step 4). Move the sync into the
+  schemes: per field, `!$acc update self(x) if(is_history_field_active(
+  '<NAME>')) if_present` before its `history_out_field` call
+  (`is_history_field_active` exists in `src/history/cam_history.F90`).
+  `if_present` keeps the schemes working where the field is host data
+  (CPU suites, host-only fields). Generator side: the classifier
+  (`_classify_acc_residency`) must treat an `update` with `if_present` as
+  "either", not "device" -- else fields only the diagnostics read (`u`,
+  `v`, `omega`, ...) would become device data just to be copied back;
+  with "either", rule (a) makes the device-resident ones (`temp`, `z`,
+  `phis`, `dse`, `precl`) device, so the cap drops their syncs, and leaves
+  the rest on the host. No `.meta` change. Gain: no copies for fields not
+  output that step (production runs with sparse history); in FPHYStest
+  most fields are probably output, so little changes there. The
+  constituent loop in `sima_state_diagnostics_run` (`const_array` slices)
+  needs the same treatment once the constituent array is device-resident
+  (`constituent-device-residency`).
 - `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
   ports of the utility schemes every suite uses**:
   `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
