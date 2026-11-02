@@ -12,7 +12,12 @@ from xdsl_ccpp.tools.capture_cmake import (
     scheme_meta_files,
     support_sources,
 )
-from xdsl_ccpp.tools.ccpp_dsl import _capture_label, _capture_spec, ccppMain
+from xdsl_ccpp.tools.ccpp_dsl import (
+    _capture_entries,
+    _capture_label,
+    _capture_spec,
+    ccppMain,
+)
 from xdsl_ccpp.util.errors import CcppInputError
 
 K = "examples/kessler"
@@ -36,7 +41,7 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "add_library(ccpp_capture_support STATIC" in text
     for name in ("ccpp_kinds.F90", "ccpp_hashable.F90", "ccpp_hash_table.F90",
                  "ccpp_constituent_prop_mod.F90", "ccpp_scheme_utils.F90",
-                 "ccpp_capture_mod.F90"):
+                 "ccpp_capture_mod.F90", "ccpp_capture_constituents_mod.F90"):
         assert f'/{name}"' in text
     assert "find_program(NF_CONFIG nf-config REQUIRED)" in text
     # The tests run against the generating capture's directory unless
@@ -104,6 +109,8 @@ def test_ccpp_dsl_writes_a_fragment_per_captured_scheme(tmp_path):
     ("kessler:run", ("kessler", "run")),
     ("kessler:initialize", ("kessler", "initialize")),
     (" kessler : timestep_final ", ("kessler", "timestep_final")),
+    ("qneg:initialize,run", ("qneg", "initialize,run")),
+    ("qneg: initialize , run,initialize", ("qneg", "initialize,run")),
 ])
 def test_capture_spec_phase(spec, expected):
     assert _capture_spec(spec) == expected
@@ -150,3 +157,100 @@ def test_capture_spec_rejects_unknown_phase_or_missing_scheme(spec):
     # A table suffix such as `init` used to capture nothing, silently.
     with pytest.raises(CcppInputError):
         _capture_spec(spec)
+
+
+_KESSLER_METAS = [f"{K}/scheme/kessler.meta", f"{K}/scheme/kessler_update.meta"]
+
+
+def test_capture_entries_reads_a_scheme_list_file(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text(
+        "# schemes to capture\n"
+        "kessler\n"
+        "\n"
+        "  kessler_update:run   # one phase\n"
+    )
+    assert _capture_entries([str(listing)], _KESSLER_METAS) == ["kessler", "kessler_update:run"]
+
+
+def test_capture_entries_mixes_names_and_files(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler_update\n")
+    assert _capture_entries(["kessler:run", str(listing)], _KESSLER_METAS) == [
+        "kessler:run", "kessler_update",
+    ]
+
+
+def test_capture_entries_unknown_scheme_names_the_file_and_line(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler\nno_such_scheme\n")
+    with pytest.raises(CcppInputError, match=rf"{listing}:2: 'no_such_scheme' is neither"):
+        _capture_entries([str(listing)], _KESSLER_METAS)
+
+
+def test_capture_entries_unknown_name_or_missing_file():
+    with pytest.raises(CcppInputError, match="neither a file nor a scheme"):
+        _capture_entries(["schemes.txt"], _KESSLER_METAS)
+
+
+def test_capture_entries_bad_phase_names_the_line(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler:running\n")
+    with pytest.raises(CcppInputError, match=rf"{listing}:1: .*unknown phase 'running'"):
+        _capture_entries([str(listing)], _KESSLER_METAS)
+
+
+def test_capture_entries_rejects_a_scheme_listed_twice(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler\n")
+    with pytest.raises(CcppInputError, match="'kessler' is already captured"):
+        _capture_entries([str(listing), "kessler:run"], _KESSLER_METAS)
+
+
+def test_ccpp_dsl_captures_every_scheme_of_a_list_file(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler\nkessler_update:run\n")
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    drivers = tmp_path / "drivers"
+    options_db.update({
+        "host_files": [f"{K}/host_ftn/kessler_host_mod.meta", f"{K}/host_ftn/kessler_host_sub.meta"],
+        "scheme_files": _KESSLER_METAS,
+        "suites": [f"{K}/scheme/kessler_suite.xml"],
+        "capture_scheme": [str(listing)],
+        "capture_test_driver_dir": str(drivers),
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+
+    assert sorted(os.listdir(drivers)) == [
+        "CMakeLists.txt", "test_kessler.F90", "test_kessler.cmake",
+        "test_kessler_update.F90", "test_kessler_update.cmake",
+    ]
+
+
+def test_capture_spec_rejects_an_unknown_phase_in_a_list():
+    with pytest.raises(CcppInputError, match="unknown phase 'final'"):
+        _capture_spec("qneg:initialize,final")
+
+
+def test_ccpp_dsl_captures_only_the_listed_phases(tmp_path):
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    drivers = tmp_path / "drivers"
+    options_db.update({
+        "host_files": [f"{K}/host_ftn/kessler_host_mod.meta", f"{K}/host_ftn/kessler_host_sub.meta"],
+        "scheme_files": _KESSLER_METAS,
+        "suites": [f"{K}/scheme/kessler_suite.xml"],
+        "capture_scheme": ["kessler:run,finalize"],
+        "capture_test_driver_dir": str(drivers),
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+    cap = (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
+    # kessler has init and run phases: init is not in the list.
+    assert "call ccpp_capture_begin('kessler_run', 'before')" in cap
+    assert "ccpp_capture_begin('kessler_init'" not in cap
+    driver = (drivers / "test_kessler.F90").read_text()
+    assert "! -- kessler_run --" in driver
+    assert "! -- kessler_init --" not in driver

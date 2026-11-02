@@ -33,6 +33,11 @@
 ! stored as bytes (0/1), characters as char arrays with a leading
 ! <variable>_len dimension (a zero-length string is left unwritten: fill).
 !
+! A derived-type argument is a subgroup of `in` named after it
+! (ccpp_capture_begin_ddt/ccpp_capture_end_ddt), holding one variable
+! per component; ccpp_capture_constituents_mod writes the constituent
+! properties that way.
+!
 ! Writing: ccpp_capture_begin(table, 'before') creates the call's file and
 ! makes `in` current; ccpp_capture(name, value, ...) writes one variable;
 ! ccpp_capture_end() closes the file. ccpp_capture_begin(table, 'after')
@@ -61,10 +66,13 @@ module ccpp_capture_mod
   public :: ccpp_capture_attribute
   public :: ccpp_capture_begin
   public :: ccpp_capture_end
+  public :: ccpp_capture_begin_ddt
+  public :: ccpp_capture_end_ddt
   public :: ccpp_capture
   public :: ccpp_capture_open_call
   public :: ccpp_capture_close
   public :: ccpp_capture_read
+  public :: ccpp_capture_extents
   public :: ccpp_capture_compare
   public :: ccpp_capture_tolerance_override
 
@@ -133,9 +141,11 @@ module ccpp_capture_mod
   integer,            save :: lc_counts(ccpp_capture_max_tables) = 0
   integer,            save :: lc_ntables = 0
 
-  ! The open file (-1: none) and the group being written or read.
+  ! The open file (-1: none) and the group being written or read; the
+  ! group to return to after a subgroup (ccpp_capture_end_ddt).
   integer, save :: lc_ncid = -1
   integer, save :: lc_grpid = -1
+  integer, save :: lc_parent_grpid = -1
   character(len=1024), save :: lc_path = ''
 
   ! Capture directory when CCPP_CAPTURE_DIR is unset ('' = working dir).
@@ -335,6 +345,28 @@ contains
   ! against shp (Fortran order), skipping the first `skip` file dimensions
   ! (a character variable's length). Reports a problem unless the caller
   ! passed `found` (then a missing variable is a quiet .false.).
+  ! The group at `path` ('in', 'in/cprops', ...) of the open file.
+  logical function lc_find_group(path, grpid)
+    character(len=*), intent(in) :: path
+    integer, intent(out) :: grpid
+    integer :: start, slash, parent
+
+    lc_find_group = .false.
+    grpid = lc_ncid
+    start = 1
+    do
+      slash = index(path(start:), '/')
+      parent = grpid
+      if (slash == 0) then
+        if (nf90_inq_ncid(parent, path(start:), grpid) /= NF90_NOERR) return
+        exit
+      end if
+      if (nf90_inq_ncid(parent, path(start:start + slash - 2), grpid) /= NF90_NOERR) return
+      start = start + slash
+    end do
+    lc_find_group = .true.
+  end function lc_find_group
+
   logical function lc_find_var(group, name, shp, skip, grpid, varid, found)
     character(len=*), intent(in) :: group, name
     integer, intent(in) :: shp(:)
@@ -350,7 +382,7 @@ contains
       if (.not. present(found)) write(0,*) 'ccpp_capture_mod: no capture file open reading ', trim(name)
       return
     end if
-    if (nf90_inq_ncid(lc_ncid, group, grpid) /= NF90_NOERR .or. &
+    if (.not. lc_find_group(group, grpid) .or. &
         nf90_inq_varid(grpid, name, varid) /= NF90_NOERR) then
       if (.not. present(found)) then
         write(0,*) 'ccpp_capture_mod: no variable ', trim(group), '/', trim(name), ' in ', trim(lc_path)
@@ -467,7 +499,27 @@ contains
     end if
     lc_ncid = -1
     lc_grpid = -1
+    lc_parent_grpid = -1
   end subroutine ccpp_capture_end
+
+  ! Makes a new subgroup `name` of the current group current, for the
+  ! components of a derived-type argument (in/<name>); one level deep.
+  ! ccpp_capture_end_ddt() returns to the enclosing group.
+  subroutine ccpp_capture_begin_ddt(name)
+    character(len=*), intent(in) :: name
+    integer :: grpid
+
+    if (lc_ncid < 0 .or. lc_grpid < 0) return
+    if (lc_check(nf90_def_grp(lc_grpid, name, grpid), 'define group', name)) then
+      lc_parent_grpid = lc_grpid
+      lc_grpid = grpid
+    end if
+  end subroutine ccpp_capture_begin_ddt
+
+  subroutine ccpp_capture_end_ddt()
+    if (lc_parent_grpid >= 0) lc_grpid = lc_parent_grpid
+    lc_parent_grpid = -1
+  end subroutine ccpp_capture_end_ddt
 
 
   subroutine ccpp_capture_int_0d(name, value, standard_name, units, dim_names)
@@ -682,6 +734,34 @@ contains
   subroutine ccpp_capture_close()
     call ccpp_capture_end()
   end subroutine ccpp_capture_close
+
+  ! The extents of variable `name` in `group` of the open call, in Fortran
+  ! order: size(extents) is the variable's rank (a character variable's
+  ! leading length dimension is not counted). found = .false. when it is
+  ! missing or has another rank. Lets a driver allocate an array to the
+  ! captured shape when no argument carries its size.
+  subroutine ccpp_capture_extents(group, name, extents, found)
+    character(len=*), intent(in) :: group, name
+    integer, intent(out) :: extents(:)
+    logical, intent(out) :: found
+    integer :: grpid, varid, ndims, skip, i
+    integer :: dimids(NF90_MAX_VAR_DIMS)
+
+    extents = 0
+    found = .false.
+    if (lc_ncid < 0) return
+    if (.not. lc_find_group(group, grpid)) return
+    if (nf90_inq_varid(grpid, name, varid) /= NF90_NOERR) return
+    if (.not. lc_check(nf90_inquire_variable(grpid, varid, ndims=ndims, dimids=dimids), &
+                       'inquire', name)) return
+    skip = ndims - size(extents)
+    if (skip < 0 .or. skip > 1) return
+    do i = 1, size(extents)
+      if (.not. lc_check(nf90_inquire_dimension(lc_ncid, dimids(skip + i), len=extents(i)), &
+                         'inquire dimension', name)) return
+    end do
+    found = .true.
+  end subroutine ccpp_capture_extents
 
   ! ccpp_capture_read(group, name, value[, found]): reads variable `name`
   ! of group `in` or `out` of the open call into `value`, whose shape must

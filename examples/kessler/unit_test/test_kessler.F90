@@ -7,7 +7,7 @@ program test_kessler
   use ccpp_kinds, only: kind_phys
   use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &
                               ccpp_capture_read, ccpp_capture_compare, &
-                              ccpp_capture_tolerance_override
+                              ccpp_capture_extents, ccpp_capture_tolerance_override
   use kessler, only: kessler_init
   use kessler, only: kessler_run
 
@@ -20,6 +20,8 @@ program test_kessler
   logical :: ok
   real(kind=kind_phys) :: diag_max_abs_diff, diag_mean_abs_diff
   integer :: diag_first_mismatch_index
+  integer :: extents1(1), extents2(2), extents3(3)
+  logical :: extents_found
   real(kind=kind_phys) :: lv_in
   real(kind=kind_phys) :: pref_in
   real(kind=kind_phys) :: rhoqr_in
@@ -87,39 +89,56 @@ program test_kessler
     call ccpp_capture_read("in", "lyr_surf", lyr_surf)
     call ccpp_capture_read("in", "lyr_toa", lyr_toa)
     if (allocated(cpair)) deallocate(cpair)
-    allocate(cpair(ncol, nz))
+    call ccpp_capture_extents("in", "cpair", extents2, extents_found)
+    allocate(cpair(extents2(1), extents2(2)))
     if (allocated(rair)) deallocate(rair)
-    allocate(rair(ncol, nz))
+    call ccpp_capture_extents("in", "rair", extents2, extents_found)
+    allocate(rair(extents2(1), extents2(2)))
     if (allocated(rho)) deallocate(rho)
-    allocate(rho(ncol, nz))
+    call ccpp_capture_extents("in", "rho", extents2, extents_found)
+    allocate(rho(extents2(1), extents2(2)))
     if (allocated(z)) deallocate(z)
-    allocate(z(ncol, nz))
+    call ccpp_capture_extents("in", "z", extents2, extents_found)
+    allocate(z(extents2(1), extents2(2)))
     if (allocated(pk)) deallocate(pk)
-    allocate(pk(ncol, nz))
+    call ccpp_capture_extents("in", "pk", extents2, extents_found)
+    allocate(pk(extents2(1), extents2(2)))
     if (allocated(theta)) deallocate(theta)
-    allocate(theta(ncol, nz))
+    call ccpp_capture_extents("in", "theta", extents2, extents_found)
+    allocate(theta(extents2(1), extents2(2)))
     if (allocated(theta_expected)) deallocate(theta_expected)
-    allocate(theta_expected(ncol, nz))
+    call ccpp_capture_extents("out", "theta", extents2, extents_found)
+    allocate(theta_expected(extents2(1), extents2(2)))
     if (allocated(qv)) deallocate(qv)
-    allocate(qv(ncol, nz))
+    call ccpp_capture_extents("in", "qv", extents2, extents_found)
+    allocate(qv(extents2(1), extents2(2)))
     if (allocated(qv_expected)) deallocate(qv_expected)
-    allocate(qv_expected(ncol, nz))
+    call ccpp_capture_extents("out", "qv", extents2, extents_found)
+    allocate(qv_expected(extents2(1), extents2(2)))
     if (allocated(qc)) deallocate(qc)
-    allocate(qc(ncol, nz))
+    call ccpp_capture_extents("in", "qc", extents2, extents_found)
+    allocate(qc(extents2(1), extents2(2)))
     if (allocated(qc_expected)) deallocate(qc_expected)
-    allocate(qc_expected(ncol, nz))
+    call ccpp_capture_extents("out", "qc", extents2, extents_found)
+    allocate(qc_expected(extents2(1), extents2(2)))
     if (allocated(qr)) deallocate(qr)
-    allocate(qr(ncol, nz))
+    call ccpp_capture_extents("in", "qr", extents2, extents_found)
+    allocate(qr(extents2(1), extents2(2)))
     if (allocated(qr_expected)) deallocate(qr_expected)
-    allocate(qr_expected(ncol, nz))
+    call ccpp_capture_extents("out", "qr", extents2, extents_found)
+    allocate(qr_expected(extents2(1), extents2(2)))
     if (allocated(precl)) deallocate(precl)
-    allocate(precl(ncol))
+    call ccpp_capture_extents("out", "precl", extents1, extents_found)
+    allocate(precl(extents1(1)))
     if (allocated(precl_expected)) deallocate(precl_expected)
-    allocate(precl_expected(ncol))
+    call ccpp_capture_extents("out", "precl", extents1, extents_found)
+    allocate(precl_expected(extents1(1)))
     if (allocated(relhum)) deallocate(relhum)
-    allocate(relhum(ncol, nz))
+    call ccpp_capture_extents("out", "relhum", extents2, extents_found)
+    allocate(relhum(extents2(1), extents2(2)))
     if (allocated(relhum_expected)) deallocate(relhum_expected)
-    allocate(relhum_expected(ncol, nz))
+    call ccpp_capture_extents("out", "relhum", extents2, extents_found)
+    allocate(relhum_expected(extents2(1), extents2(2)))
     call ccpp_capture_read("in", "cpair", cpair)
     call ccpp_capture_read("in", "rair", rair)
     call ccpp_capture_read("in", "rho", rho)

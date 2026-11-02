@@ -37,17 +37,65 @@ _CAPTURE_PHASES = (
 
 
 def _capture_spec(spec: str) -> "tuple[str, str]":
-    """(scheme, phase) of one --capture-scheme SCHEME[:PHASE] entry; phase
-    is "" (every phase) when none is given."""
-    scheme, _, phase = (part.strip() for part in spec.partition(":"))
+    """(scheme, phases) of one --capture-scheme SCHEME[:PHASE[,PHASE...]]
+    entry; phases is the comma-separated phase list (e.g. "initialize,run":
+    the phases a standalone driver can replay), "" (every phase) when none
+    is given."""
+    scheme, _, phase_text = (part.strip() for part in spec.partition(":"))
     if not scheme:
         raise CcppInputError(f"--capture-scheme '{spec}': no scheme name")
-    if phase and phase not in _CAPTURE_PHASES:
-        raise CcppInputError(
-            f"--capture-scheme '{spec}': unknown phase '{phase}' "
-            f"(one of: {', '.join(_CAPTURE_PHASES)}; omit it for every phase)"
-        )
-    return scheme, phase
+    phases: list = []
+    if phase_text:
+        for phase in (p.strip() for p in phase_text.split(",")):
+            if phase not in _CAPTURE_PHASES:
+                raise CcppInputError(
+                    f"--capture-scheme '{spec}': unknown phase '{phase}' "
+                    f"(one of: {', '.join(_CAPTURE_PHASES)}; omit them for every phase)"
+                )
+            if phase not in phases:
+                phases.append(phase)
+    return scheme, ",".join(phases)
+
+
+def _capture_entries(values, scheme_files) -> "list[str]":
+    """The SCHEME[:PHASE] entries of the --capture-scheme values: each value
+    is either such an entry or the path of a file listing one per line
+    (blank lines and '#' comments ignored). Every scheme must be one of
+    the schemes in scheme_files (when there are any), and may appear only
+    once; errors name the file and line."""
+    from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
+
+    known = set(scheme_meta_files(scheme_files)) if scheme_files else None
+    entries: list = []
+    seen: dict = {}
+
+    def add(entry: str, where: str) -> None:
+        try:
+            scheme, _ = _capture_spec(entry)
+        except CcppInputError as err:
+            raise CcppInputError(f"{where}: {err}") from None
+        if known is not None and scheme not in known:
+            raise CcppInputError(
+                f"{where}: '{entry}' is neither a file nor a scheme of --scheme-files"
+            )
+        if scheme in seen:
+            raise CcppInputError(
+                f"{where}: scheme '{scheme}' is already captured ({seen[scheme]})"
+            )
+        seen[scheme] = where
+        entries.append(entry.strip())
+
+    for value in values:
+        value = value.strip()
+        if os.path.isfile(value):
+            with open(value) as f:
+                for line_no, raw in enumerate(f, 1):
+                    line = raw.split("#", 1)[0].strip()
+                    if line:
+                        add(line, f"{value}:{line_no}")
+        else:
+            add(value, f"--capture-scheme '{value}'")
+    return entries
 
 
 def _capture_label(label: str) -> str:
@@ -249,18 +297,22 @@ class ccppMain:
             "--capture-scheme",
             action="append",
             default=[],
-            metavar="SCHEME[:PHASE]",
+            metavar="SCHEME[:PHASE[,PHASE...]]|FILE",
             help="Opt-in: instrument every call to SCHEME (optionally restricted "
-                 "to one lifecycle PHASE: register, initialize, timestep_initial, "
-                 "run, timestep_final or finalize, e.g. 'kessler:run'; omit "
-                 "':PHASE' to capture every phase) with calls into the ccpp_capture_mod "
+                 "to lifecycle PHASEs: register, initialize, timestep_initial, "
+                 "run, timestep_final or finalize, e.g. 'kessler:run' or "
+                 "'qneg:initialize,run'; omit ':PHASE' to capture every phase) "
+                 "with calls into the ccpp_capture_mod "
                  "runtime library, dumping each input/output argument to disk. "
                  "For building data-driven, scheme-level regression tests from "
                  "realistic captured atmospheric states -- not a debugging aid "
                  "and not compared against CAM's own history-file output. May "
-                 "be repeated for multiple scheme/phase targets. Deliberately "
-                 "skips DDT-typed, errmsg/errflg, and optional arguments (v1 "
-                 "scope -- see scheme_io_capture_pass.py).",
+                 "be repeated for multiple scheme/phase targets, or name a FILE "
+                 "listing one SCHEME[:PHASE] per line (blank lines and '#' "
+                 "comments ignored). Each scheme must be in --scheme-files and "
+                 "listed once. Skips errmsg/errflg, optional arguments and "
+                 "derived types other than the constituent properties (see "
+                 "scheme_io_capture_pass.py).",
         )
         parser.add_argument(
             "--capture-test-driver-dir",
@@ -504,6 +556,9 @@ class ccppMain:
         options_db["preproc_defs"] = [
             p for p in coerce_list_option(options_db.get("preproc_defs")) if p
         ]
+        options_db["capture_scheme"] = _capture_entries(
+            options_db.get("capture_scheme") or [], options_db["scheme_files"],
+        )
         options_db["jobs"] = int(options_db.get("jobs") or 1)
         if options_db["jobs"] < 1:
             raise ValueError("--jobs must be at least 1")
@@ -1003,7 +1058,8 @@ class ccppMain:
             scheme_name, phase = _capture_spec(spec)
             capture_opts = [f"scheme={scheme_name}"]
             if phase:
-                capture_opts.append(f"phase={phase}")
+                # Quoted: a phase list has commas.
+                capture_opts.append(f'phase="{phase}"')
             if directive:
                 # Needed so the pass knows whether/how to sync a
                 # device-resident argument to the host immediately before

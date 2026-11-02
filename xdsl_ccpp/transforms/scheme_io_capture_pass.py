@@ -7,8 +7,8 @@ section. Not a debugging aid and not compared against CAM's own
 history-file output: the real goal is data-driven, scheme-level
 regression tests built from realistic, captured atmospheric states,
 independent of a full CAM build/run. Captures every (supported) input/
-output argument of a chosen scheme (optionally restricted to one
-lifecycle phase) to one NetCDF file per call (scheme-io-capture-netcdf:
+output argument of a chosen scheme (optionally restricted to some
+lifecycle phases, `phase` = "initialize,run") to one NetCDF file per call (scheme-io-capture-netcdf:
 <table>_<n>.nc, see ccpp_capture_mod.F90), by inserting calls into the
 ccpp_capture_mod runtime Fortran library immediately before and after
 the scheme's own call:
@@ -33,9 +33,12 @@ out/inout argument, not just sliced device-resident ones).
 
 Scope: {integer, logical, real(kind_phys)} x {rank 0..3}, plus character
 scalars and rank-1 arrays -- in practice the cross product that appears
-in CCPP metadata. Everything else (DDT/derived types, any other real
-kind) is silently skipped, not a hard error -- a scheme mixing supported
-and unsupported arguments should still get the supported ones captured.
+in CCPP metadata. Derived types listed in _DDT_CAPTURES (the constituent
+properties, ccpp_constituent_prop_ptr_t) are captured by their own
+procedure as a subgroup and rebuilt, not compared, in a driver.
+Everything else (other derived types, any other real kind) is silently
+skipped, not a hard error -- a scheme mixing supported and unsupported
+arguments should still get the supported ones captured.
 Also skipped: errmsg/errflg (not physically meaningful to dump) and
 `optional` arguments (deferred -- confirmed zero real occurrences in the
 target corpus, see the design doc for the full reasoning).
@@ -132,7 +135,7 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import builtin, func, llvm
-from xdsl.dialects.builtin import StringAttr, i1, i8, i32
+from xdsl.dialects.builtin import StringAttr, UnrealizedConversionCastOp, i1, i8, i32
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -208,6 +211,47 @@ _LIFECYCLE_PHASE_ORDER = {
 # simply by never matching a type here.
 _TYPE_CODE = {"integer", "logical"}
 _MAX_SUPPORTED_RANK = 3
+
+
+@dataclass(frozen=True)
+class _DdtCapture:
+    """How one derived type is captured (scheme-io-capture-ddt-args):
+    `write` (module `module`) writes an argument of the type as subgroup
+    in/<name> of the capture file, `read` rebuilds it in a generated
+    driver; `type_module` declares the type. Only intent(in) arguments of
+    rank `rank`: a derived type is rebuilt, never compared."""
+
+    rank: int
+    write: str
+    read: str
+    module: str
+    type_module: str
+
+
+# Derived types the capture handles, by type name. Others are skipped.
+_DDT_CAPTURES = {
+    "ccpp_constituent_prop_ptr_t": _DdtCapture(
+        rank=1,
+        write="ccpp_capture_constituents",
+        read="ccpp_capture_read_constituents",
+        module="ccpp_capture_constituents_mod",
+        type_module="ccpp_constituent_prop_mod",
+    ),
+}
+
+
+def _ddt_capture(arg) -> "_DdtCapture | None":
+    """The _DDT_CAPTURES entry for a capturable derived-type argument:
+    its type is in the table, its rank matches and it is intent(in)."""
+    arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
+    handler = _DDT_CAPTURES.get(arg_type)
+    if handler is None:
+        return None
+    rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+    intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
+    if rank != handler.rank or intent != "in":
+        return None
+    return handler
 # Character values: scalars and rank-1 arrays (scheme-io-capture-netcdf).
 _MAX_CHARACTER_RANK = 1
 
@@ -282,7 +326,7 @@ def _driver_param_category(arg) -> str:
     arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
     kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-    if not _is_capture_supported(arg_type, kind, rank):
+    if not _is_capture_supported(arg_type, kind, rank) and _ddt_capture(arg) is None:
         return "unverified"
     return intent
 
@@ -348,6 +392,29 @@ def _resolve_array_dims(arg, std_name_to_param: dict) -> "list[str] | None":
     return resolved
 
 
+def _uncast(value):
+    """The value a chain of one-input type casts converts (a fixed-length
+    character variable passed to a character(len=*) dummy), or value."""
+    while isa(value.owner, UnrealizedConversionCastOp) and len(value.owner.inputs) == 1:
+        value = value.owner.inputs[0]
+    return value
+
+
+def _callee_module(call_op, table_name: str, default: str) -> str:
+    """The Fortran module of the scheme subroutine `table_name`, from its
+    declaration in call_op's enclosing module (the cap's `use <module>,
+    only: <table>`). Several schemes can share one module (CAM-SIMA's
+    state_converters), so the scheme name is only the fallback."""
+    module_op = _enclosing_module(call_op)
+    if module_op is not None:
+        for op in module_op.body.block.ops:
+            sym = op.properties.get("sym_name")
+            module = op.attributes.get("module")
+            if sym is not None and sym.data == table_name and module is not None:
+                return module.data
+    return default
+
+
 def _enclosing_module(op) -> "builtin.ModuleOp | None":
     """Walk up from `op` to the nearest enclosing builtin.ModuleOp (the
     `_cap`-suffixed suite-cap module a capture call actually lives in) --
@@ -403,18 +470,26 @@ def _build_test_driver_params(
         kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
         rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
 
+        # A captured array is sized from the capture file; only an array
+        # the driver passes through uncaptured needs its size from other
+        # arguments.
         dims = None
-        if category != "error_arg" and rank > 0:
+        if category == "unverified" and rank > 0:
             dims = _resolve_array_dims(arg, std_name_to_param)
             if dims is None:
                 return None
+        handler = _ddt_capture(arg)
 
         if category in ("in", "out", "inout"):
             any_captured = True
 
-        params.append(
-            TestDriverParam(pname, category, arg_type, kind, rank, dims, pname in device_names)
-        )
+        params.append(TestDriverParam(
+            pname, category, arg_type, kind, rank, dims,
+            pname in device_names and handler is None,
+            ddt_read=handler.read if handler else None,
+            ddt_read_module=handler.module if handler else None,
+            type_module=handler.type_module if handler else None,
+        ))
 
     if not any_captured:
         return None
@@ -429,7 +504,7 @@ class SchemeIOCapturePass(ModulePass):
     real KeywordCallOps for every scheme call only exist by then.
 
     One pass instance captures exactly one scheme (optionally restricted
-    to one lifecycle phase) -- ccpp_dsl.py appends a separate pass
+    to the comma-separated lifecycle phases in `phase`) -- ccpp_dsl.py appends a separate pass
     instance per --capture-scheme entry when more than one is given,
     rather than packing a list into a single instance's params.
     """
@@ -498,7 +573,7 @@ class SchemeIOCapturePass(ModulePass):
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
             if scheme_name != self.scheme:
                 continue
-            if self.phase and phase != self.phase:
+            if self.phase and phase not in self.phase.split(","):
                 continue
             if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
                 continue
@@ -529,13 +604,20 @@ class SchemeIOCapturePass(ModulePass):
                 arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
                 kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-                if not _is_capture_supported(arg_type, kind, rank):
+                handler = _ddt_capture(arg)
+                if not _is_capture_supported(arg_type, kind, rank) and handler is None:
                     continue
+                # A character(len=*) argument arrives through a cast of the
+                # fixed-length variable; capture that variable.
+                value = _uncast(value)
                 # Only values with a definite Fortran name can be captured.
                 if _expr_text(value) is None:
                     continue
+                if handler is not None:
+                    self._ensure_decl(call_op, handler.write, handler.module, declared_decls)
 
-                entry = (value, param_name, arg, param_name in device_names)
+                # A derived type lives on the host: no device sync.
+                entry = (value, param_name, arg, param_name in device_names and handler is None)
                 if intent in ("in", "inout"):
                     before.append(entry)
                 if intent in ("out", "inout"):
@@ -565,7 +647,8 @@ class SchemeIOCapturePass(ModulePass):
                         file=sys.stderr,
                     )
                 else:
-                    captured_tables[table_name] = (phase, params)
+                    module = _callee_module(call_op, table_name, scheme_name)
+                    captured_tables[table_name] = (phase, params, module)
 
         if self.test_driver_dir and captured_tables:
             self._maybe_emit_test_driver(self.scheme, captured_tables)
@@ -604,15 +687,23 @@ class SchemeIOCapturePass(ModulePass):
         if with_attribute:
             procedures = procedures + (_ATTRIBUTE_PROCEDURE,)
         for procedure in procedures:
-            key = (id(module_op), procedure)
-            if key in declared_decls:
-                continue
-            declared_decls.add(key)
-            if _has_top_level_symbol(module_op, procedure):
-                continue  # declared by another --capture-scheme instance
-            decl = func.FuncOp.external(procedure, [], [])
-            decl.attributes["module"] = StringAttr("ccpp_capture_mod")
-            Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
+            self._ensure_decl(call_op, procedure, "ccpp_capture_mod", declared_decls)
+
+    def _ensure_decl(self, call_op, procedure: str, module: str, declared_decls: set) -> None:
+        """Declare `procedure` of `module` once at the top level of
+        call_op's enclosing module (see _ensure_capture_decl)."""
+        module_op = _enclosing_module(call_op)
+        if module_op is None:
+            return
+        key = (id(module_op), procedure)
+        if key in declared_decls:
+            return
+        declared_decls.add(key)
+        if _has_top_level_symbol(module_op, procedure):
+            return  # declared by another --capture-scheme instance
+        decl = func.FuncOp.external(procedure, [], [])
+        decl.attributes["module"] = StringAttr(module)
+        Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
 
     def _ensure_host_var_decl(self, call_op, var_name: str, module: str, declared_decls: set) -> None:
         """Insert a declaration for a real host VARIABLE (not a callable),
@@ -646,7 +737,8 @@ class SchemeIOCapturePass(ModulePass):
 
     def _maybe_emit_test_driver(self, scheme_name, captured_tables: dict) -> None:
         """Write test_<scheme_name>.F90 into self.test_driver_dir, covering
-        every phase in `captured_tables` ({table_name: (phase, params)})
+        every phase in `captured_tables` ({table_name: (phase, params,
+        module)}, module being the scheme subroutine's Fortran module)
         as ONE driver, in CCPP lifecycle order -- not one isolated driver
         per phase. This matters for correctness, not just convenience:
         confirmed directly against a real kessler build that a run-only
@@ -668,7 +760,9 @@ class SchemeIOCapturePass(ModulePass):
             captured_tables.items(),
             key=lambda item: _LIFECYCLE_PHASE_ORDER.get(item[1][0], len(_LIFECYCLE_PHASE_ORDER)),
         )
-        phase_tables = [(table_name, params) for table_name, (_phase, params) in ordered]
+        phase_tables = [
+            (table_name, params, module) for table_name, (_phase, params, module) in ordered
+        ]
         tolerance = (
             format_fortran_real_literal(float(self.tolerance))
             if self.tolerance is not None
@@ -740,6 +834,12 @@ class SchemeIOCapturePass(ModulePass):
                 VarRefExprOp(step_var, result_type=i32),
             ]))
         for value, param_name, arg, _ in entries:
+            handler = _ddt_capture(arg)
+            if handler is not None:
+                writes.append(CallStatementOp(handler.write, arg_ops=[
+                    StringLiteralExprOp(param_name), ValueExprOp(value),
+                ]))
+                continue
             writes.append(CallStatementOp("ccpp_capture", arg_ops=[
                 StringLiteralExprOp(param_name),
                 ValueExprOp(value),

@@ -87,6 +87,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-ddt-args` | 4-8 days (component discovery, recursive capture/restore of allocatable and fixed-size numeric components; or a constituent-properties special case first, ~2-3 days) | S-M |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code) | M |
 | `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
+| `scheme-io-capture-host-module-schemes` | 1-2 days (scan the scheme source's `use` statements, skip the driver with a message, unit tests) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -1149,6 +1150,23 @@ genuinely distinct call sites within the same suite would have the
 second site's capture/driver silently overwrite the first's. Not hit by
 kessler (single call site per phase), but worth a real check before
 applying this to a busier suite.
+
+**ID: `scheme-io-capture-host-module-schemes`. Skip drivers for schemes
+that need the host model.** A generated test driver builds the scheme with
+only `ccpp_kinds`, the framework modules and the scheme's metadata
+`dependencies`. A scheme that uses host-model modules cannot build that
+way, yet a driver and CMake fragment are still written, and the first
+such scheme stops the whole `cmake --build`. Found 2026-11-01 capturing
+the 16 schemes of CAM-SIMA's `kessler_test` suite (case c01k):
+`kessler_diagnostics` and `sima_state_diagnostics` use `cam_history` and
+`cam_history_support` (history output) and fail to compile; `qneg` uses
+`mpi` (its `cam_history` uses are under `#if 0`) and builds. Wanted: when
+writing a driver, scan the scheme's Fortran source for `use` of modules
+the driver build cannot provide (not the scheme's own module, its
+dependencies, `ccpp_kinds` or the framework modules; preprocessor-disabled
+code excluded) and skip that scheme's driver and fragment with a message
+naming the module. The capture itself stays. Decide whether `mpi` counts:
+`qneg_run` replays fine and only its summary phases call MPI.
 
 **ID: `scheme-io-capture-optional-args`. v2 follow-on: `optional`-argument
 support.** Deliberately out of v1 scope from the original design proposal

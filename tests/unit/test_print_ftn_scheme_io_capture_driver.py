@@ -29,7 +29,7 @@ def test_single_phase_replays_in_a_loop_not_just_call_one():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE,
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE,
     )
 
     # A real loop over the call's capture files (<table>_<n>.nc), not a
@@ -74,7 +74,7 @@ def test_array_allocation_is_reallocated_each_iteration():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE,
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE,
     )
     assert "if (allocated(theta)) deallocate(theta)" in source
     assert "allocate(theta(ncol, nz))" in source
@@ -93,7 +93,7 @@ def test_errflg_check_reports_call_count():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_init", params)], _TOLERANCE,
+        "kessler", [("kessler_init", params, "kessler")], _TOLERANCE,
     )
     assert "write(*,*) 'FAIL: kessler_init returned errflg=', errflg, ' (call ', call_count, ')', ' errmsg=', trim(errmsg)" in source
 
@@ -113,7 +113,7 @@ def test_multi_phase_still_shares_one_call_count_declaration():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_init", init_params), ("kessler_run", run_params)], _TOLERANCE,
+        "kessler", [("kessler_init", init_params, "kessler"), ("kessler_run", run_params, "kessler")], _TOLERANCE,
     )
     assert source.count("integer :: call_count") == 1
     assert source.count("logical :: found") == 1
@@ -131,7 +131,7 @@ def test_scalar_compare_prints_actual_and_expected_on_fail_not_an_index():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE,
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE,
     )
     # The scalar's own compare call never passes the array-style
     # diagnostic arguments -- those scratch variables are declared once
@@ -155,7 +155,7 @@ def test_array_compare_diagnostics_declared_once_at_driver_level():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE,
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE,
     )
     # Declared once, shared across every compare in the driver (real AND
     # non-real types both use first_mismatch_index; only real types also
@@ -200,7 +200,7 @@ def test_tolerance_parameter_is_used_verbatim_in_generated_driver():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], "5.0e-06_kind_phys",
+        "kessler", [("kessler_run", params, "kessler")], "5.0e-06_kind_phys",
     )
     assert "real(kind=kind_phys) :: tolerance" in source
     assert "parameter :: tolerance" not in source
@@ -224,7 +224,7 @@ def test_inout_device_array_gets_enter_copyin_and_exit_copyout():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="acc",
     )
     assert "!$acc enter data copyin(theta)" in source
     assert "!$acc exit data copyout(theta)" in source
@@ -253,7 +253,7 @@ def test_in_only_device_array_gets_enter_copyin_and_exit_delete():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="acc",
     )
     assert "!$acc enter data copyin(cpair)" in source
     assert "!$acc exit data delete(cpair)" in source
@@ -270,7 +270,7 @@ def test_out_only_device_array_gets_enter_create_and_exit_copyout():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="acc",
     )
     assert "!$acc enter data create(precl)" in source
     assert "!$acc exit data copyout(precl)" in source
@@ -286,7 +286,7 @@ def test_multiple_device_arrays_grouped_into_one_directive_each():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="acc",
     )
     # One grouped directive, not one per array.
     assert source.count("!$acc enter data") == 1
@@ -303,7 +303,7 @@ def test_omp_directive_uses_map_clauses_not_acc_syntax():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="omp",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="omp",
     )
     assert "!$omp target enter data map(to:theta)" in source
     assert "!$omp target exit data map(from:theta)" in source
@@ -322,7 +322,7 @@ def test_no_directive_means_no_device_directive_text_at_all():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE,
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE,
     )
     assert "!$acc" not in source
     assert "!$omp" not in source
@@ -339,6 +339,67 @@ def test_host_only_array_untouched_even_with_directive_set():
         TestDriverParam("errflg", "error_arg", "integer", None, 0),
     ]
     source = render_scheme_io_capture_test_driver(
-        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+        "kessler", [("kessler_run", params, "kessler")], _TOLERANCE, directive="acc",
     )
     assert "!$acc" not in source
+
+
+def test_captured_array_without_dims_is_sized_from_the_capture_file():
+    """A captured array whose size no argument carries (geopotential_temp's
+    vertical_interface_dimension) is allocated to the captured shape:
+    inputs from `in`, results from `out`."""
+    params = [
+        TestDriverParam("piln", "in", "real", "kind_phys", 2),
+        TestDriverParam("zi", "out", "real", "kind_phys", 2),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "geopotential_temp", [("geopotential_temp_run", params, "geopotential_temp")], _TOLERANCE,
+    )
+    assert "integer :: extents1(1), extents2(2), extents3(3)" in source
+    assert 'call ccpp_capture_extents("in", "piln", extents2, extents_found)' in source
+    assert "allocate(piln(extents2(1), extents2(2)))" in source
+    # An out-only array and its expected copy take the `out` shape.
+    assert 'call ccpp_capture_extents("out", "zi", extents2, extents_found)' in source
+    assert "allocate(zi_expected(extents2(1), extents2(2)))" in source
+    # Sized after the file is open, before the array is read.
+    assert (source.index("call ccpp_capture_open_call")
+            < source.index("allocate(piln(")
+            < source.index('call ccpp_capture_read("in", "piln", piln)'))
+
+
+def test_derived_type_argument_is_rebuilt_not_compared():
+    params = [
+        TestDriverParam("cprops", "in", "ccpp_constituent_prop_ptr_t", None, 1,
+                        ddt_read="ccpp_capture_read_constituents",
+                        ddt_read_module="ccpp_capture_constituents_mod",
+                        type_module="ccpp_constituent_prop_mod"),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "geopotential_temp", [("geopotential_temp_run", params, "geopotential_temp")], _TOLERANCE,
+    )
+    assert "  use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t\n" in source
+    assert "  use ccpp_capture_constituents_mod, only: ccpp_capture_read_constituents\n" in source
+    assert "type(ccpp_constituent_prop_ptr_t), allocatable :: cprops(:)" in source
+    assert 'call ccpp_capture_read_constituents("in", "cprops", cprops)' in source
+    assert "allocate(cprops" not in source  # the read allocates it
+    assert "cprops_expected" not in source
+
+
+def test_driver_uses_the_module_that_holds_the_scheme():
+    """Several schemes can share one module (CAM-SIMA's state_converters):
+    the driver uses the module the cap uses, not the scheme name."""
+    params = [
+        TestDriverParam("rho", "out", "real", "kind_phys", 2),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "calc_dry_air_ideal_gas_density",
+        [("calc_dry_air_ideal_gas_density_run", params, "state_converters")], _TOLERANCE,
+    )
+    assert "  use state_converters, only: calc_dry_air_ideal_gas_density_run\n" in source
+    assert "use calc_dry_air_ideal_gas_density," not in source

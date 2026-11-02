@@ -34,7 +34,7 @@ _TOP_FILE = "CMakeLists.txt"
 
 # xdsl_ccpp's own Fortran (framework_src/) the drivers link, in dependency
 # order: the constituent properties need the hash table, the scheme
-# utilities need the constituent properties.
+# utilities and the constituents' capture need the constituent properties.
 _FRAMEWORK_SRC_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "framework_src"
 )
@@ -44,6 +44,7 @@ _SUPPORT_FILES = (
     "ccpp_constituent_prop_mod.F90",
     "ccpp_scheme_utils.F90",
     "ccpp_capture_mod.F90",
+    "ccpp_capture_constituents_mod.F90",
 )
 
 _TOP_TEMPLATE = """\

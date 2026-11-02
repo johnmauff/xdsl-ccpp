@@ -584,3 +584,150 @@ def test_long_line_splitter_never_leaves_a_lone_ampersand():
     ctx.print("              'y')")
     lines = out.getvalue().splitlines()
     assert all(line.strip() != "&" for line in lines), lines
+
+
+# A scheme taking the constituent properties (as geopotential_temp does):
+# the framework provides ccpp_constituent_properties.
+_CPROPS_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = test_io_capture_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = test_io_capture_scheme_run
+  type = scheme
+[ in_var ]
+  standard_name = test_capture_in_var
+  units = K
+  type = real | kind = kind_phys
+  dimensions = ()
+  intent = in
+[ cprops ]
+  standard_name = ccpp_constituent_properties
+  units = none
+  type = ccpp_constituent_prop_ptr_t
+  dimensions = (number_of_ccpp_constituents)
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+
+# Here the host declares them (CAM-SIMA's framework provides them).
+_CPROPS_HOST_META = _HOST_META + """\
+[ ncnst ]
+  standard_name = number_of_ccpp_constituents
+  units = count
+  type = integer
+  dimensions = ()
+[ cprops ]
+  standard_name = ccpp_constituent_properties
+  units = none
+  type = ccpp_constituent_prop_ptr_t
+  dimensions = (number_of_ccpp_constituents)
+"""
+
+
+def _cprops_output(run_host_match, ccpp_context, test_driver_dir=None):
+    module = run_host_match(
+        scheme_metas=[_CPROPS_SCHEME_META], host_metas=[_CPROPS_HOST_META], suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", test_driver_dir=test_driver_dir,
+    ).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+def test_constituent_properties_captured_as_a_subgroup(run_host_match, ccpp_context):
+    """A ccpp_constituent_prop_ptr_t argument goes to its own capture
+    procedure (ccpp_capture_constituents_mod), in the "before" block only."""
+    fortran = _cprops_output(run_host_match, ccpp_context)
+    before = _block(fortran, _BEGIN_BEFORE)
+    assert "call ccpp_capture_constituents('cprops', " in before
+    assert "ccpp_capture_constituents" not in _block(fortran, _BEGIN_AFTER)
+    assert "use ccpp_capture_constituents_mod, only: ccpp_capture_constituents\n" in fortran
+    # Not through the generic writer.
+    assert "call ccpp_capture('cprops'" not in fortran
+
+
+def test_constituent_properties_rebuilt_in_the_driver(run_host_match, ccpp_context, tmp_path):
+    _cprops_output(run_host_match, ccpp_context, test_driver_dir=str(tmp_path))
+    driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
+    assert "use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t\n" in driver
+    assert "use ccpp_capture_constituents_mod, only: ccpp_capture_read_constituents\n" in driver
+    assert "type(ccpp_constituent_prop_ptr_t), allocatable :: cprops(:)" in driver
+    assert 'call ccpp_capture_read_constituents("in", "cprops", cprops)' in driver
+    assert "cprops=cprops" in driver
+    assert "cprops_expected" not in driver  # rebuilt, never compared
+
+
+@pytest.mark.parametrize("intent, rank", [("out", 1), ("inout", 1), ("in", 0)])
+def test_constituent_properties_only_rank_one_intent_in(intent, rank):
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _ddt_capture
+
+    class _Arg:
+        attrs = {"type": "ccpp_constituent_prop_ptr_t", "dimensions": rank, "intent": intent}
+
+        def hasAttr(self, name):
+            return name in self.attrs
+
+        def getAttr(self, name):
+            return self.attrs[name]
+
+    assert _ddt_capture(_Arg()) is None
+
+
+def test_driver_uses_the_schemes_own_module(run_host_match, ccpp_context, tmp_path):
+    """A scheme in a module of another name (CAM-SIMA's state_converters
+    holds several): the driver uses the module the cap uses."""
+    meta = _SCHEME_META.replace(
+        "  name = test_io_capture_scheme\n  type = scheme\n",
+        "  name = test_io_capture_scheme\n  type = scheme\n  module_name = shared_converters\n",
+        1,
+    )
+    module = run_host_match(scheme_metas=[meta], host_metas=[_HOST_META], suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    assert "use shared_converters, only: test_io_capture_scheme_run" in out.getvalue()
+    driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
+    assert "  use shared_converters, only: test_io_capture_scheme_run\n" in driver
+    assert "use test_io_capture_scheme," not in driver
+
+
+def test_assumed_length_character_argument_captured(run_host_match, ccpp_context):
+    """A character(len=*) argument (qneg's print_qneg_warn and subnam)
+    reaches the call through a cast; the variable behind it is captured."""
+    meta = _SCHEME_META.replace(
+        "  kind = len=64\n  dimensions = ()\n  intent = in",
+        "  kind = len=*\n  dimensions = ()\n  intent = in", 1,
+    )
+    assert meta != _SCHEME_META
+    module = run_host_match(scheme_metas=[meta], host_metas=[_HOST_META], suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme").apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    assert "'skip_str', skip_str" in _block(out.getvalue(), _BEGIN_BEFORE)
+
+
+def test_phase_list_captures_each_listed_entry_point(run_host_match, ccpp_context):
+    """phase="initialize,run": both entry points (qneg:initialize,run leaves
+    out the phases a driver cannot replay)."""
+    fortran = _fortran_output(run_host_match, ccpp_context,
+                              scheme="test_io_capture_scheme", phase="initialize,run")
+    assert "call ccpp_capture_begin('test_io_capture_scheme_init', 'before')" in fortran
+    assert "call ccpp_capture_begin('test_io_capture_scheme_run', 'before')" in fortran
+    fortran = _fortran_output(run_host_match, ccpp_context,
+                              scheme="test_io_capture_scheme", phase="run,finalize")
+    assert "ccpp_capture_begin('test_io_capture_scheme_init'" not in fortran

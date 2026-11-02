@@ -365,14 +365,17 @@ def build_datatable_from_module(
         # small and self-contained (depends only on ccpp_kinds), so
         # unconditional inclusion is simpler than threading "is capture
         # active" into this function just to decide whether to add one
-        # file.
-        _capture_mod_path = os.path.join(_FRAMEWORK_SRC_DIR, "ccpp_capture_mod.F90")
-        if not os.path.isfile(_capture_mod_path):
-            raise FileNotFoundError(
-                "xdsl_ccpp installation is incomplete: required framework "
-                f"Fortran source file not found: {_capture_mod_path!r}"
-            )
-        utility_file_texts.append(os.path.abspath(_capture_mod_path))
+        # file. ccpp_capture_constituents_mod.F90 (the constituent
+        # properties' capture) follows it: it uses ccpp_capture_mod and the
+        # framework's ccpp_constituent_prop_mod listed above.
+        for _capture_name in ("ccpp_capture_mod.F90", "ccpp_capture_constituents_mod.F90"):
+            _capture_mod_path = os.path.join(_FRAMEWORK_SRC_DIR, _capture_name)
+            if not os.path.isfile(_capture_mod_path):
+                raise FileNotFoundError(
+                    "xdsl_ccpp installation is incomplete: required framework "
+                    f"Fortran source file not found: {_capture_mod_path!r}"
+                )
+            utility_file_texts.append(os.path.abspath(_capture_mod_path))
     else:
         for framework_file in _resolve_framework_f90_files():
             utility_file_texts.append(framework_file)
