@@ -77,7 +77,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
-| `omp-derive-memory-space` | 2-3 days (OpenMP clause table, combined `target` constructs, choice by `--directive`, tests) plus an OpenMP-offloaded example scheme to test against | S |
 | `example-gpu-build-flags` | 1-2 days (`-acc` for the OpenACC examples, offload flags at link time, `OMP_TARGET_OFFLOAD=MANDATORY`/kernel check in the GPU tests; then fix whatever starts running on the GPU) | XS-S |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
@@ -1709,34 +1708,7 @@ Supporting items (not tracked elsewhere):
   kernels run (`NV_ACC_NOTIFY`/nsys), then fix what breaks once they do
   (the known `kessler_hand.exe`/C++ drivers "PRESENT clause was not
   found" cases). Not related to CAM-SIMA, whose GPU builds use `-acc`.
-- `omp-derive-memory-space` — **`acc-derive-memory-space` for OpenMP
-  target offload.** Added 2026-11-02. The classifier
-  (`_classify_acc_residency`, `fparser2_to_meta.py`) reads only `!$acc`;
-  with `--directive omp` an OpenMP-offloaded scheme gets no derived
-  residency, so its `.meta` `memory_space` stays hand-written. The rest is
-  directive-neutral already (the caps' directives follow `--directive`; rule
-  (a), the `.meta` comparison, the unclear-residency warning and the
-  derived-type error work on the classification). Add an OpenMP clause
-  table: device = `map(present, ...)`, `is_device_ptr`, `has_device_addr`,
-  `use_device_ptr/addr`, `target update to/from`, and arrays in a
-  `defaultmap(present)` region; either = `map(to/from/tofrom/alloc: ...)`
-  (no transfer when already present) and arrays in a `target` region with
-  no `map` (implicitly `tofrom`). Handle combined constructs (`target
-  teams distribute parallel do`) and `end target`; pick the table from
-  `--directive`. No CAM-SIMA scheme uses OpenMP offload today, so first
-  write an OpenMP-offloaded example scheme (e.g. an OpenMP variant of
-  `examples/kessler`'s scheme) to test against a real file.
-  Compiler check (2026-11-02, nvfortran 25.9 `-mp=gpu`, A100): the OpenMP
-  5.1 forms that require presence are not supported -- `map(present,
-  ...)` is a syntax error, `defaultmap(present)` is rejected ("presents
-  cannot be used with defaultmap clause"); implicit mapping (`target
-  teams loop`) and `map(to:)` of data already on the device use the
-  device copy (present-or-copy). So a kernel-style OpenMP port can only
-  express "either". Decision (2026-11-02): with `--directive omp`,
-  "either" counts as device (rule (a) stays for `--directive acc`), so
-  OpenMP ports need no `.meta` edits and an OpenMP suite becomes
-  resident; an explicit `memory_space = host` in `.meta` opts an argument
-  out. No OpenMP suite exists, so no existing cap changes.
+- **ID: `omp-derive-memory-space`. Resolved (2026-11-02)** -- CHANGELOG.md L13916.
 - `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
   `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
   plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,

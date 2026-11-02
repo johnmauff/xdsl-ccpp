@@ -1,6 +1,7 @@
 """acc-derive-memory-space, stage 2: set scheme arguments' memory_space from
-their entry points' own OpenACC (fparser2_to_meta._classify_acc_residency),
-for a generation with --directive acc.
+their entry points' own OpenACC or OpenMP target directives
+(fparser2_to_meta._classify_acc_residency), for a generation with
+--directive acc or omp.
 
 Applied by ccpp_dsl to the frontend module before ccpp_opt, so every pass
 sees the derived value exactly as if the .meta had declared it. Only
@@ -20,6 +21,12 @@ arguments whose .meta is silent are touched: an explicit memory_space
   after the call and overwrite the scheme's device result with the stale
   host copy. Making it always device would change caps (RRTMGP's
   wrappers copy plain arrays no other scheme keeps on the device).
+  With --directive omp (omp-derive-memory-space, decided 2026-11-02)
+  "either" is device outright: compilers such as nvfortran 25.9 support
+  neither OpenMP form that requires presence, so a kernel-style OpenMP
+  port is all "either" and rule (a) would leave a suite with no residency.
+  Safe, since a map that finds the data present uses the device copy; an
+  explicit memory_space = host in .meta opts an argument out.
 
 Derived-type arguments are never classified (the scheme moves its own
 derived-type data). This module reads and sets CCPP metadata only.
@@ -53,12 +60,14 @@ def _std_name(arg: ArgumentOp) -> str | None:
 
 
 def apply_derived_memory_space(
-    module: builtin.ModuleOp, classification: dict[str, dict[str, str]]
+    module: builtin.ModuleOp, classification: dict[str, dict[str, str]],
+    either_is_device: bool = False,
 ) -> list[str]:
     """Set memory_space = device on the scheme arguments of *module* that
     *classification* (entry point -> {argument: "device" | "either"}, all
-    lowercase) and rule (a) put on the device, where the .meta is silent.
-    Returns one line per argument set, for --verbose 2."""
+    lowercase) puts on the device, where the .meta is silent: "device"
+    always, "either" by rule (a), or always when *either_is_device*
+    (--directive omp). Returns one line per argument set, for --verbose 2."""
     scheme_args: list[tuple[str, ArgumentOp, str]] = []
     device_names: set[str] = set()
     for table in _arg_tables(module):
@@ -79,13 +88,14 @@ def apply_derived_memory_space(
 
     report: list[str] = []
     for table_name, arg, category in scheme_args:
-        if category == EITHER and _std_name(arg) not in device_names:
+        if category == EITHER and not either_is_device and _std_name(arg) not in device_names:
             continue
         arg.properties["memory_space"] = StringAttr(DEVICE)
-        why = (
-            "its OpenACC requires it on the device"
-            if category == DEVICE
-            else "the scheme copies it itself, and it is device data elsewhere"
-        )
+        if category == DEVICE:
+            why = "its directives require it on the device"
+        elif either_is_device:
+            why = "the scheme maps it to the device itself; --directive omp"
+        else:
+            why = "the scheme copies it itself, and it is device data elsewhere"
         report.append(f"{table_name}: '{arg.arg_name.data}' memory_space = device ({why})")
     return report

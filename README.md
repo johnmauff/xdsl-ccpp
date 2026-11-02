@@ -298,27 +298,35 @@ call kessler_suite_physics(...)
 
 #### `memory_space` from the scheme's OpenACC
 
-With `--directive acc`, a scheme argument whose `.meta` has no `memory_space`
-gets one from the OpenACC directives in the scheme's entry point (the
+With `--directive acc` or `--directive omp`, a scheme argument whose
+`.meta` has no `memory_space` gets one from the OpenACC (`!$acc`) or
+OpenMP target (`!$omp`) directives in the scheme's entry point (the
 subroutine its `.meta` table describes, in the `.F90` next to the `.meta`).
 A scheme ported to the GPU then needs no `.meta` change:
 
 - **device:** the argument is named in `present` or `deviceptr`, in
   `update self/host/device` or `host_data use_device`, or is an array used
-  inside a compute construct with `default(present)`.
+  inside a compute construct with `default(present)`. OpenMP: a `map` with
+  the `present` modifier, `is_device_ptr`, `has_device_addr`,
+  `use_device_ptr/addr`, `target update to/from`, or an array in a target
+  region with `defaultmap(present)`.
 - **either:** the argument is named in `copy`, `copyin`, `copyout` or
-  `create`, or is an array used inside a compute construct with no clause
-  for it. The scheme copies such data itself, so it is device data only
-  where another scheme argument or host variable with the same standard
-  name already has `memory_space = device`; otherwise it stays on the host.
+  `create` (OpenMP: any other `map`), or is an array used inside a compute
+  construct (target region) with no clause for it. The scheme copies such
+  data itself. With `--directive acc` it is device data only where another
+  scheme argument or host variable with the same standard name already has
+  `memory_space = device`; otherwise it stays on the host. With
+  `--directive omp` it is device data: compilers such as nvfortran 25.9
+  support neither OpenMP form that requires presence, so an OpenMP port is
+  all "either" (`examples/kessler_omp`). An explicit `memory_space = host`
+  opts an argument out.
 
 An explicit `memory_space` in `.meta` always wins. Only the entry point's
 own body is read, not the routines it calls: put the data directives in
 the entry point. `--verbose 2` lists every derived value. The
 Fortran-vs-`.meta` check warns where an explicit `.meta` value contradicts
 the source, and where an entry point has no OpenACC of its own but calls a
-routine in the same file that does. `!$omp` directives are not read yet
-(`omp-derive-memory-space` in `BACKLOG.md`).
+routine in the same file that does.
 
 xdsl-ccpp never moves derived-type data: `memory_space = device` on a
 scheme's derived-type argument is an error. A scheme that passes derived

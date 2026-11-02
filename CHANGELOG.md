@@ -13912,3 +13912,45 @@ composite package-cap GPU). Kessler GPU caps generated without any
 (rule (a) puts `kessler_update_timestep_init`'s bare-loop arrays on the
 device). Kessler GPU FPHYStest s44a (nvhpc, A100, no `memory_space` in
 the Kessler `.meta`): PASS.
+
+## `omp-derive-memory-space`: GPU residency from the scheme's OpenMP, and an OpenMP Kessler example (2026-11-02)
+
+`acc-derive-memory-space` for OpenMP target offload. Resolves
+`omp-derive-memory-space`.
+
+- Compiler check (nvfortran 25.9 `-mp=gpu`, A100): the OpenMP 5.1 forms
+  that require presence are not supported (`map(present, ...)`: syntax
+  error; `defaultmap(present)`: "presents cannot be used with defaultmap
+  clause"). Implicit mapping and `map(to:)` of present data use the
+  device copy. So a kernel-style OpenMP port can only say "either".
+- `examples/kessler_omp`: examples/kessler's schemes ported to OpenMP
+  target offload (`target teams distribute parallel do`, explicit
+  `private` list for the column loop's scalars, implicit maps), its
+  suite, host and CCPP driver, caps from `--directive omp`, and `.meta`
+  with no `memory_space`. The first example whose caps carry OpenMP
+  directives. Tests: CPU bit-for-bit against `kessler_ccpp.exe`; on the
+  GPU a run and a CPU-vs-GPU comparison, both with
+  `OMP_TARGET_OFFLOAD=MANDATORY`. Linked with `-mp=gpu`: compiled-only,
+  every target region silently ran on the host. `check_parity.py` takes
+  any number of drivers; CI's kessler filter is anchored.
+- Classifier (`_classify_acc_residency(..., language)`): `!$omp` read
+  with its own clause table -- device: `map` with `present`,
+  `is_device_ptr`, `has_device_addr`, `use_device_ptr/addr`, `target
+  update to/from`, arrays in a `defaultmap(present)` region; either:
+  other maps (`release`/`delete` ignored) and arrays a target region uses
+  with no map. Combined loop constructs take the next DO construct as
+  body, `target` regions end at `end target`; host `parallel do` is
+  ignored. `--directive` picks the language (OpenACC otherwise);
+  generated `.meta` takes the union.
+- Rule: with `--directive omp` "either" is device outright (decided
+  2026-11-02); an explicit `memory_space = host` opts out. Rule (a) stays
+  for `--directive acc`. The `.meta` check names the language.
+- Found on the way: the OpenACC examples' GPU builds compile with
+  `-mp=gpu` and never `-acc` (BACKLOG `example-gpu-build-flags`).
+
+Verification: pytest 1410 passed; `cap_oracle diff` against this branch's
+previous commit: 30/30 identical. `kessler_omp` caps without any
+`memory_space` are identical to the explicit ones. On Derecho (nvhpc
+25.9): CPU parity passes; on an A100 the four kernels run (nsys; MANDATORY
+offload) and match the CPU run exactly, before and after removing the
+`memory_space` lines.

@@ -82,14 +82,12 @@
   units = J kg-1 K-1
   type = real | kind = kind_phys
   dimensions = (horizontal_dimension, vertical_layer_dimension)
-  memory_space = device
   intent = in
 [ rair ]
   standard_name = composition_dependent_gas_constant_of_dry_air
   units = J kg-1 K-1
   type = real | kind = kind_phys
   dimensions = (horizontal_dimension, vertical_layer_dimension)
-  memory_space = device
   intent = in
 [ rho ]
   standard_name = dry_air_density
@@ -97,7 +95,6 @@
   units = kg m-3
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = in
 [ z ]
   standard_name = geopotential_height_wrt_surface
@@ -105,7 +102,6 @@
   units = m
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = in
 [ pk ]
   standard_name = dimensionless_exner_function
@@ -113,7 +109,6 @@
   units = 1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = in
 [ theta ]
   standard_name = air_potential_temperature
@@ -121,7 +116,6 @@
   units = K
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = inout
 [ qv ]
   standard_name = water_vapor_mixing_ratio_wrt_dry_air
@@ -129,7 +123,6 @@
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = inout
 [ qc ]
   standard_name = cloud_liquid_water_mixing_ratio_wrt_dry_air
@@ -137,7 +130,6 @@
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = inout
 [ qr ]
   standard_name = rain_mixing_ratio_wrt_dry_air
@@ -145,7 +137,6 @@
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = inout
 [ precl ]
   standard_name = total_precipitation_rate_at_surface
@@ -153,7 +144,6 @@
   units = m s-1
   dimensions = (horizontal_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = out
 [ relhum ]
   standard_name = relative_humidity
@@ -161,7 +151,6 @@
   units = percent
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = device
   intent = out
 [ scheme_name ]
   standard_name = scheme_name

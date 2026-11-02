@@ -187,3 +187,22 @@ def test_derived_type_on_device_is_an_error(tmp_path):
 
 def test_derived_type_on_host_is_fine(tmp_path):
     assert _build(tmp_path, "")
+
+
+def test_omp_wording():
+    src = (
+        "module m\ncontains\n  subroutine m_run(n, a)\n"
+        "    integer, intent(in) :: n\n    real, intent(inout) :: a(:)\n"
+        "    integer :: i\n    !$omp target teams distribute parallel do\n"
+        "    do i = 1, n\n      a(i) = 0.\n    end do\n"
+        "  end subroutine\nend module\n"
+    )
+    residency = {}
+    build_meta_module_from_source(src, "m.F90", None, residency, "omp")
+    (level, _, message), = [
+        (f.level, f.table_name, f.message) for f in
+        compare_memory_space(_meta_module({"m_run": {"a": None}}), residency, "m.F90", "omp")
+    ]
+    assert level == "note"
+    assert "'a' is copied by the scheme itself (implicit, m.F90:7)" in message
+    assert "derived with --directive omp" in message

@@ -9,6 +9,11 @@
 # (host_ftn/driver_kessler_ccpp.F90) are examples/kessler's own, so on the
 # CPU this example's output must match kessler_ccpp.exe bit-for-bit.
 #
+# scheme/*.meta declare no memory_space: with --directive omp the
+# generator derives it from the schemes' OpenMP (every array a target
+# loop maps is device data), giving the same caps as examples/kessler's
+# explicit memory_space lines.
+#
 # The first example whose generated caps carry OpenMP target directives:
 # with ARCH=GPU (nvfortran -mp=gpu, via examples/kessler's
 # kessler_apply_arch_flags) it is the end-to-end test of --directive omp.

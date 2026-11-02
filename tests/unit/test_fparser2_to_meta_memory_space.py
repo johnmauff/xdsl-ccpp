@@ -24,9 +24,11 @@ from xdsl_ccpp.transforms.fparser2_to_meta import (
 )
 
 
-def _classify(body: str, decls: str = "", args: str = "temp, qv, ps, n, gas"):
-    """Classify the dummies of m_run(<args>) whose body is *body*: a dict
-    name -> (category, how), plus the derived-type names."""
+def _classify(body: str, decls: str = "", args: str = "temp, qv, ps, n, gas",
+              language: str = "acc"):
+    """Classify the dummies of m_run(<args>) whose body is *body* by its
+    *language* directives: a dict name -> (category, how), plus the
+    derived-type names."""
     src = f"""
 module m
 contains
@@ -43,7 +45,7 @@ contains
 end module
 """
     residency = {}
-    _extract_subroutines(src, "test.F90", None, residency)
+    _extract_subroutines(src, "test.F90", None, residency, language)
     r = residency["m_run"]
     return {k: (v.category, v.how) for k, v in r.args.items()}, set(r.derived_types)
 
@@ -103,9 +105,116 @@ def test_disabled_directive_ignored():
     assert got == {}
 
 
-def test_omp_not_read():
+def test_omp_not_read_as_acc():
     got, _ = _classify("    !$omp target data map(to: temp)\n    !$omp end target data")
     assert got == {}
+
+
+def test_acc_not_read_as_omp():
+    got, _ = _classify("    !$acc data present(temp)\n    !$acc end data", language="omp")
+    assert got == {}
+
+
+# ── OpenMP target offload (omp-derive-memory-space) ──────────────────────────
+
+def _omp(body: str):
+    return _classify(body, language="omp")
+
+
+def test_omp_map_types_are_either():
+    got, _ = _omp(
+        "    !$omp target data map(to: temp) map(from: qv(1:n, :)) map(ps)\n"
+        "    !$omp end target data"
+    )
+    assert got == {
+        "temp": (ACC_EITHER, "map(to)"), "qv": (ACC_EITHER, "map(from)"),
+        "ps": (ACC_EITHER, "map(tofrom)"),
+    }
+
+
+def test_omp_present_modifier_is_device():
+    got, _ = _omp("    !$omp target data map(present, alloc: temp, qv)\n    !$omp end target data")
+    assert got == {"temp": (ACC_DEVICE, "map(present)"), "qv": (ACC_DEVICE, "map(present)")}
+
+
+def test_omp_release_and_delete_ignored():
+    got, _ = _omp("    !$omp target exit data map(release: temp) map(delete: qv)")
+    assert got == {}
+
+
+def test_omp_update_and_device_pointer_clauses_are_device():
+    got, _ = _omp(
+        "    !$omp target update to(temp) from(present: qv)\n"
+        "    !$omp target data use_device_addr(ps)\n    !$omp end target data"
+    )
+    assert got == {
+        "temp": (ACC_DEVICE, "update to"), "qv": (ACC_DEVICE, "update from"),
+        "ps": (ACC_DEVICE, "use_device_addr"),
+    }
+
+
+def test_omp_target_loop_body_arrays_are_either():
+    # examples/kessler_omp's shape: no map, implicitly tofrom.
+    got, _ = _omp(
+        "    !$omp target teams distribute parallel do collapse(2)\n"
+        "    do k = 1, n\n      do i = 1, n\n"
+        "        temp(i,k) = qv(i,k) * ps(i)\n"
+        "      end do\n    end do\n"
+    )
+    assert got == {
+        "temp": (ACC_EITHER, "implicit"), "qv": (ACC_EITHER, "implicit"),
+        "ps": (ACC_EITHER, "implicit"),
+    }
+
+
+def test_omp_defaultmap_present_body_arrays_are_device():
+    got, _ = _omp(
+        "    !$omp target teams loop defaultmap(present)\n"
+        "    do i = 1, n\n      temp(i,1) = qv(i,1)\n    end do\n"
+    )
+    assert got == {
+        "temp": (ACC_DEVICE, "defaultmap(present)"), "qv": (ACC_DEVICE, "defaultmap(present)"),
+    }
+
+
+def test_omp_target_region_body_ends_at_end_target():
+    got, _ = _omp(
+        "    !$omp target\n    !$omp teams distribute parallel do\n"
+        "    do i = 1, n\n      qv(i,1) = 0.\n    end do\n    !$omp end target\n"
+        "    temp(1,1) = ps(1)\n"
+    )
+    assert got == {"qv": (ACC_EITHER, "implicit")}
+
+
+def test_omp_host_parallel_do_not_classified():
+    got, _ = _omp(
+        "    !$omp parallel do\n    do i = 1, n\n      qv(i,1) = 0.\n    end do\n"
+    )
+    assert got == {}
+
+
+def test_omp_derived_types_never_classified():
+    got, derived = _omp(
+        "    !$omp target data map(to: gas, gas%conc) map(present, alloc: temp)\n"
+        "    !$omp end target data\n"
+    )
+    assert got == {"temp": (ACC_DEVICE, "map(present)")}
+    assert derived == {"gas"}
+
+
+def test_real_kessler_omp_file():
+    # examples/kessler_omp: every argument its .meta declares device is an
+    # implicitly mapped array of a target loop ("either").
+    residency = {}
+    with open("examples/kessler_omp/scheme/kessler_update.F90") as f:
+        _extract_subroutines(f.read(), "kessler_update.F90", None, residency, "omp")
+    got = {p: {n: u.category for n, u in r.args.items()} for p, r in residency.items() if r.args}
+    assert got == {
+        "kessler_update_timestep_init": dict.fromkeys(("temp", "temp_prev", "ttend_t"), ACC_EITHER),
+        "kessler_update_run": dict.fromkeys(("theta", "exner", "temp_prev", "ttend_t"), ACC_EITHER),
+        "kessler_update_timestep_final": dict.fromkeys(
+            ("cpair", "temp", "zm", "phis", "st_energy"), ACC_EITHER),
+    }
 
 
 def test_locals_and_private_ignored():
