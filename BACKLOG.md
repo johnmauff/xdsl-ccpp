@@ -62,14 +62,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
 | `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
-| `gpu-ddt-deep-copy-residency` | 6-12 days (component discovery from DDT metadata, enter/exit/update sequences for acc and omp, partial-update routing, a new GPU example; allocatable components only); phase 2 (nested, polymorphic, for RRTMGP) +5-10 days | M (L with phase 2) |
-| `gpu-fphystest-pumas` | umbrella, ~30-50 days in total: the sum of its steps below plus `acc-derive-memory-space`, `constituent-device-residency` and `gpu-ddt-deep-copy-residency` phase 1; plus ESCOMP/PUMAS review time | XL |
-| `gpu-fphystest-rrtmgp` | umbrella, ~50-80 days in total: its steps below plus `acc-derive-memory-space`, `constituent-device-residency` and `gpu-ddt-deep-copy-residency` phases 1-2 (items shared with `gpu-fphystest-pumas` count once if both are done) | XL-XXL |
+| `gpu-ddt-deep-copy-residency` | not planned (2026-11-02): schemes move their own derived-type data | -- |
+| `gpu-fphystest-pumas` | umbrella, ~25-40 days in total: the sum of its steps below plus `acc-derive-memory-space` and `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
+| `gpu-fphystest-rrtmgp` | umbrella, ~40-60 days in total: its steps below plus `acc-derive-memory-space` and `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
 | `gpu-pumas-testmod` | 1-2 days | XS |
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
-| `gpu-fphystest-kessler` | umbrella, ~20-37 days left: `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
+| `gpu-fphystest-kessler` | umbrella, ~20-35 days left: `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -78,12 +78,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
-| `acc-derive-memory-space` | 4-7 days (hand-written `.meta` pairing, `default(present)`, DDT components, precedence and warnings; entry-point body only; includes `acc-meta-residency-check`'s 2-4) | S-M |
+| `acc-derive-memory-space` | 4-7 days (hand-written `.meta` pairing, `default(present)`, the either rule in the residency analysis, precedence and warnings, the derived-type `memory_space` error; entry-point body only; includes `acc-meta-residency-check`'s 2-4) | S-M |
+| `omp-derive-memory-space` | 2-3 days (OpenMP clause table, combined `target` constructs, choice by `--directive`, tests) plus an OpenMP-offloaded example scheme to test against | S |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
 | `scheme-io-capture-ddt-args` | 4-8 days (generic: component discovery, recursive capture/restore of allocatable and fixed-size numeric components; the constituent-properties case is done) | S-M |
-| `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code) | M |
+| `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
+| `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 1-2 days (scan the scheme source's `use` statements, skip the driver with a message, unit tests) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
@@ -1209,6 +1211,42 @@ or replay timestep_init -> run -> timestep_final). Needs
 than the constituent properties. A flattened composite
 has no subroutine of its own; package caps (2f) would allow
 package-scoped replay later.
+Not in the Kessler GPU plan (2026-11-02, see `gpu-fphystest-kessler`):
+the CAM-SIMA regression plus dropsonde covers cross-scheme data movement
+without a driver that needs MPI and `cam_history` stand-ins. A
+package-cap replay (a package's segments in order, its private state
+carried between them, no host modules) is the possible middle ground if
+package caps become the default.
+
+**ID: `dropsonde-cuda-gdb-device-read`. Let dropsonde read GPU copies
+through cuda-gdb.** Added 2026-11-02. dropsonde
+(hplin-ucar/dropsonde, `dropsonde_gdb.py`) compares a CPU and a GPU
+CAM-SIMA run scheme call by scheme call, under gdb, reading host memory
+only: for device data it re-reads after the cap's own `!$acc update
+self`. As the Kessler port removes those syncs (`gpu-fphystest-kessler`
+steps 4 and 6), more arguments stay on the GPU and dropsonde reads stale
+host copies. Do it once enough schemes are ported that this matters.
+The approach tried in 2026-09 (gdb calling `acc_update_self` /
+`acc_deviceptr` in the live model, under gdb and cuda-gdb) corrupted GPU
+memory or hung and must not be retried. This one only reads:
+- cuda-gdb reads GPU global memory passively at a host breakpoint
+  (`print *(@global double *)ADDR@N`).
+- The device address comes from a table the generated cap fills under a
+  debug flag (xdsl-ccpp): per device-resident argument, host and device
+  addresses from `acc_deviceptr` or `host_data use_device` -- compiled
+  code calling the runtime is safe, gdb calling it is not. The
+  alternative, decoding nvhpc's OpenACC present table, is undocumented
+  and thread-local: not worth it.
+- Kernels must have finished at the breakpoint: `NV_ACC_SYNCHRONOUS=1`
+  or `CUDA_LAUNCH_BLOCKING=1` in the environment, no injected calls.
+Plan: (1) feasibility, 1-2 days -- a small OpenACC Fortran program whose
+kernel writes an array only on the device, read under a Python-enabled
+cuda-gdb on Derecho through `@global`, first with the printed device
+pointer, then through the address table; (2) the table in xdsl-ccpp
+(flag, `--directive acc` only); (3) the read in dropsonde
+(`nvhpc-gpu-support` lineage) and in `compare_captures.py`. Risks: the
+unexplained SIGKILL of nvhpc DEBUG runs under gdb after each timestep
+may recur; cuda-gdb's Python support on Derecho.
 
 
 ## Someday-maybe: composite schemes (packages with slots and hooks)
@@ -1466,7 +1504,20 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   sync; no current suite has that mix. Worth doing once GPU physics
   coverage is large enough for the transfers to matter.
 - `gpu-ddt-deep-copy-residency` — **Device residency for derived-type
-  arguments with allocatable components.** Found 2026-10-28 while scoping
+  arguments with allocatable components. Not planned (2026-11-02).**
+  Decision: xdsl-ccpp never moves derived-type data; the scheme moves
+  its own, in its CCPP entry point (one level above the library it
+  wraps), as RRTMGP's wrappers (`rrtmgp_*_gas_optics_run`,
+  `rrtmgp_*_rte_run`) and PUMAS's `micro_pumas_tend` already do. Which
+  components are allocated and needed, and the attach order, is the
+  scheme author's knowledge; inferring it in the generator is complex
+  and its bugs (partially-present errors, stale components) are the
+  hardest to find. Cost: per-call transfers of those objects. If that
+  matters, the scheme adds `enter data` in its init/timestep_init and
+  `exit data` in final, so the per-call clauses find the data present;
+  still no generator work. The generator rejects `memory_space =
+  device` on a derived-type argument (`acc-derive-memory-space`).
+  Original proposal, kept for reference: found 2026-10-28 while scoping
   a GPU PUMAS test. The GPU passes handle a derived type only through its
   members as host variables (`phys_state%T` etc., via
   `_build_ddt_resolution_maps` in `gpu_ccpp_cap_pass.py`); a whole
@@ -1541,9 +1592,11 @@ is derived from the Fortran source's OpenACC clauses
      `micro_pumas_ccpp.F90` lives in ESCOMP/PUMAS, so this is an
      upstream change (bundle `pumas-module-props-device` with it); no
      `.meta` change.
-  4. `gpu-ddt-deep-copy-residency` — `micro_proc_rates`
-     (`proc_rates_type`, 119 allocatable components; suite-owned in the
-     generated cap).
+  4. `micro_proc_rates` (`proc_rates_type`, 119 allocatable
+     components) stays PUMAS's to move: `micro_pumas_tend`'s data
+     region copies it per call. Keeping it resident across calls, if
+     needed, is scheme-side `enter`/`exit data` (ESCOMP/PUMAS), not
+     generator work (`gpu-ddt-deep-copy-residency`, not planned).
   5. `constituent-device-residency` — PUMAS's main inputs (cloud
      liquid/ice, number concentrations, rain, snow, graupel) are
      constituents, copied per device call today.
@@ -1566,12 +1619,16 @@ is derived from the Fortran source's OpenACC clauses
   shortwave diagnostic subcycle is a loop holding host schemes. Steps:
   1. `rrtmgp-wrapper-acc-trigger` — settle the build-flag question
      first.
-  2. `acc-derive-memory-space` — derive the wrappers' device arguments
-     (and derived-type components) from their existing data clauses.
-  3. `gpu-ddt-deep-copy-residency`, including its phase 2 (nested,
-     polymorphic components) for `ty_gas_concs_ccpp`,
+  2. `acc-derive-memory-space` — the wrappers' plain-array arguments
+     from their existing data clauses (copy clauses: device only where
+     another scheme keeps the variable on the GPU).
+  3. The rte-rrtmgp objects (`ty_gas_concs_ccpp`,
      `ty_gas_optics_rrtmgp_ccpp`, `ty_optical_props_*_ccpp`,
-     `ty_source_func_lw_ccpp` and `ty_fluxes_*_ccpp`.
+     `ty_source_func_lw_ccpp`, `ty_fluxes_*_ccpp`) stay with the
+     wrappers, which deep-copy them by hand today; residency across
+     wrappers, if profiling asks for it, is scheme-side `enter`/`exit
+     data` in their init/final (`gpu-ddt-deep-copy-residency`, not
+     planned).
   4. `constituent-device-residency` — the gas concentrations come from
      constituents.
   5. `suite-cap-loop-gpu-sync` — syncs for host schemes inside the
@@ -1607,26 +1664,35 @@ is derived from the Fortran source's OpenACC clauses
   2. Capture gaps — done 2026-11-01 (CHANGELOG.md L13800): constituent
      properties captured, local captures from a CAM-SIMA run; 14 of the
      16 schemes replay from one capture on CPU and GPU.
-  3. `scheme-io-capture-group-replay` — replay
-     `kessler_test_physics_before_coupler` on the GPU against a CPU
-     capture: the check for the generator's cross-scheme data movement.
-  4. `acc-derive-memory-space` — so the ported schemes need no `.meta`
+  3. `acc-derive-memory-space` — so the ported schemes need no `.meta`
      change (`kessler` and `kessler_update` keep their explicit
      `memory_space`, which then must agree with their source).
-  5. `gpu-port-shared-utility-schemes`, Kessler's 12: the 10 state
+  4. `gpu-port-shared-utility-schemes`, Kessler's 12: the 10 state
      converters (`calc_exner`, `temp_to_potential_temp`,
      `potential_temp_to_temp`, `calc_dry_air_ideal_gas_density`,
      `wet_to_dry_*`, `dry_to_wet_*`), `qneg` and `geopotential_temp`.
-     Each port checked by per-scheme replay on the GPU, and by group
-     replay (the syncs around it should disappear).
+     Each port checked by per-scheme replay on the GPU; cross-scheme data
+     movement by FPHYStest against the CPU snapshots, localized with
+     dropsonde's CPU-vs-GPU comparison (`kessler_cpu_gpu`) while the
+     cap still syncs to the host around most schemes.
+  5. `dropsonde-cuda-gdb-device-read` — once enough schemes are ported
+     that data stays on the GPU between them, dropsonde (host memory
+     only) stops seeing it; read device copies through cuda-gdb.
   6. `constituent-device-residency` — `qv`/`qc`/`qr` and the whole
      array `qneg` takes. Riskiest step (a missed sync gives silently
-     wrong values); checked by group replay.
+     wrong values); localized with dropsonde's device reads (step 5).
   7. Validation per the acceptance criteria above, on every Kessler GPU
      testmod: FPHYStest, `se_cslam_gpu` and `se_cslam_multitape_gpu`,
      `kessler_mpas_derecho[_history]_gpu`, and the composite package-cap
      pair (`outfrq_kessler_composite_pkgcap_derecho_gpu`). Also run
-     these after steps 1 and 5 as milestones.
+     these after steps 1 and 4 as milestones.
+
+  Testing split (decided 2026-11-02): per-scheme replay for a scheme's
+  numerics; the CAM-SIMA regression for cross-scheme data movement, with
+  dropsonde to find the first diverging call. A standalone group replay
+  (`scheme-io-capture-group-replay`) was dropped from this plan: it would
+  need MPI (qneg's summaries) and `cam_history` stand-ins (the
+  diagnostics schemes), against the point of a simple unit test.
 
   `sima_state_diagnostics` and `kessler_diagnostics` stay on the host
   (history output) and keep an `update self` before them throughout.
@@ -1648,15 +1714,27 @@ Supporting items (not tracked elsewhere):
     `.meta`/`.F90` pairing `validate_fortran_sources` already does;
   - `default(present)` on a compute construct (Kessler): every
     argument referenced inside it is device-resident;
-  - derived-type components named in clauses
+  - derived-type arguments and components named in clauses
     (`copyout(proc_rates%qcsevap)`,
-    `copyin(sources%sources%lay_source)`), for
-    `gpu-ddt-deep-copy-residency`.
+    `copyin(sources%sources%lay_source)`) are skipped, reported at
+    `--verbose 2`: the scheme moves its own derived-type data
+    (`gpu-ddt-deep-copy-residency`, not planned). `memory_space =
+    device` on a derived-type argument in `.meta` becomes a generation
+    error naming the scheme and argument (today the cap would copy the
+    top-level object only, a shallow copy).
 
-  Classify `present`/`deviceptr` as "requires device" and the copy
-  family as "either" (present-or-copy: the scheme works with host data
-  and with data the cap keeps resident), and let the residency passes
-  use that. An explicit `memory_space` in `.meta` stays as an override;
+  Classify `present`/`deviceptr` (and arrays referenced inside a
+  `default(present)` construct) as "requires device", and the copy
+  family plus arrays referenced in a compute construct without a clause
+  as "either" (present-or-copy: the scheme works with host data and
+  with data the cap keeps resident). Decided 2026-11-02, rule (a): an
+  "either" argument becomes device only where another scheme in the
+  suite keeps that variable on the GPU, else stays host (the scheme
+  copies it itself). Treating it as host while the variable is resident
+  would be wrong: the cap's `update device` after the call would copy
+  the stale host value over the scheme's GPU result. Treating it as
+  always device would change today's RRTMGP GPU caps. Stage 1: derive
+  and warn only; stage 2: apply with `--directive acc`. An explicit `memory_space` in `.meta` stays as an override;
   a disagreement with the source warns. That warning is
   `acc-meta-residency-check`, which this item subsumes. Only the entry
   point's own body is read, never its callees: a scheme whose OpenACC
@@ -1665,6 +1743,23 @@ Supporting items (not tracked elsewhere):
   in the scheme's build, the derived residency must be ignored (the
   directives are comments there); tie it to `--directive`.
 
+- `omp-derive-memory-space` — **`acc-derive-memory-space` for OpenMP
+  target offload.** Added 2026-11-02. The classifier
+  (`_classify_acc_residency`, `fparser2_to_meta.py`) reads only `!$acc`;
+  with `--directive omp` an OpenMP-offloaded scheme gets no derived
+  residency, so its `.meta` `memory_space` stays hand-written. The rest is
+  directive-neutral already (the caps' directives follow `--directive`; rule
+  (a), the `.meta` comparison, the unclear-residency warning and the
+  derived-type error work on the classification). Add an OpenMP clause
+  table: device = `map(present, ...)`, `is_device_ptr`, `has_device_addr`,
+  `use_device_ptr/addr`, `target update to/from`, and arrays in a
+  `defaultmap(present)` region; either = `map(to/from/tofrom/alloc: ...)`
+  (no transfer when already present) and arrays in a `target` region with
+  no `map` (implicitly `tofrom`). Handle combined constructs (`target
+  teams distribute parallel do`) and `end target`; pick the table from
+  `--directive`. No CAM-SIMA scheme uses OpenMP offload today, so first
+  write an OpenMP-offloaded example scheme (e.g. an OpenMP variant of
+  `examples/kessler`'s scheme) to test against a real file.
 - `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
   `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
   plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,

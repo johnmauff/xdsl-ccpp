@@ -314,9 +314,10 @@ class TestGetSchemeName:
 # memory_space declarations against the same device-resident host var:
 # scheme_a wants present() (device scheme + device host), scheme_b wants
 # update self/device (host scheme + device host). This is the real shape
-# backlog item (b) describes -- and the exact scenario
-# examples/advection_flat_host's qv was built to reproduce, just as a small
-# synthetic fixture here instead of requiring the real example. Previously
+# backlog item (b) describes. examples/advection_flat_host's qv had it until
+# 2026-11-02, but only through a .meta slip (cld_ice_run's kernel uses qv on
+# the device), since fixed; no example has a genuine disagreement, so these
+# synthetic fixtures are the test of this routing. Previously
 # (backlog item (c)) this raised a hard error; it's now routed correctly
 # instead -- see gpu_data_pass.py's _process_diverged_host_vars.
 

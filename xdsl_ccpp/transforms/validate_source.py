@@ -235,3 +235,119 @@ def compare_modules(
         if name in fir_tables:
             mismatches.extend(compare_arg_tables(meta_tables[name], fir_tables[name]))
     return mismatches
+
+
+@dataclass
+class ResidencyFinding:
+    """One disagreement (or, at level "note", one detail) between a scheme's
+    `.meta` memory_space and what its entry point's own OpenACC says
+    (acc-derive-memory-space). Notes are printed at --verbose 2 only."""
+
+    level: str  # "warning" or "note"
+    table_name: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.table_name}: {self.message}"
+
+
+def compare_memory_space(
+    meta_module: builtin.ModuleOp,
+    acc_residency: dict,
+    source_path: str = "",
+) -> list[ResidencyFinding]:
+    """Compare each scheme argument's `.meta` memory_space with the
+    classification of its entry point's OpenACC (*acc_residency*: proc name
+    -> fparser2_to_meta.AccResidency).
+
+    Warnings (notes where --directive acc derives the value anyway):
+    - the entry point has no OpenACC of its own but calls a routine in the
+      same file that has some (e.g. a dispatcher calling the real kernel
+      routine): only the entry point is read, so its residency is unclear;
+    - the source requires the argument on the device (present, deviceptr,
+      update, use_device, default(present)) but `.meta` says memory_space =
+      host (a silent `.meta` is a note: derive_memory_space sets device);
+    - `.meta` says device, but the entry point has OpenACC directives and
+      none of them uses the argument on the device.
+    Notes (--verbose 2): arguments the scheme copies itself ("either": a
+    copy clause, or an array in a compute construct with no clause) whose
+    `.meta` is silent; derived-type arguments left to the scheme; entry
+    points with no OpenACC, whose memory_space comes from `.meta` only.
+    `unified` in `.meta` is not compared.
+    """
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE
+
+    def where(line_no: int) -> str:
+        return f"{source_path}:{line_no}" if source_path else f"line {line_no}"
+
+    findings: list[ResidencyFinding] = []
+    for name, table in sorted(_collect_arg_tables(meta_module).items()):
+        if table.table_type.data != TableTypeKind.Scheme or name not in acc_residency:
+            continue
+        residency = acc_residency[name]
+        meta_args = {
+            op.arg_name.data.lower(): op
+            for op in table.body.block.ops
+            if isinstance(op, ArgumentOp)
+        }
+        declared_device = sorted(
+            arg for arg, op in meta_args.items()
+            if op.memory_space is not None and op.memory_space.data == "device"
+        )
+        if not residency.has_acc:
+            callees = sorted(
+                callee for callee in residency.calls
+                if callee in acc_residency and acc_residency[callee].has_acc
+            )
+            if callees:
+                findings.append(ResidencyFinding(
+                    "warning", name,
+                    f"has no OpenACC of its own but calls {', '.join(callees)}, "
+                    "which does; only the entry point is read, so its arguments' "
+                    "device residency is unclear -- put the data directives "
+                    "(present/copy clauses) in the entry point",
+                ))
+            elif declared_device:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    "no OpenACC in the entry point; memory_space = device for "
+                    f"{', '.join(declared_device)} comes from .meta only",
+                ))
+            continue
+        for arg, op in sorted(meta_args.items()):
+            declared = op.memory_space.data if op.memory_space is not None else None
+            if declared == "unified":
+                continue
+            use = residency.args.get(arg)
+            if arg in residency.derived_types:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is a derived type its OpenACC moves itself "
+                    f"({where(residency.derived_types[arg])}); xdsl-ccpp leaves it on the host",
+                ))
+            elif use is not None and use.category == ACC_DEVICE and declared is None:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is used on the device ({use.how}, {where(use.line_no)}): "
+                    "memory_space = device is derived with --directive acc",
+                ))
+            elif use is not None and use.category == ACC_DEVICE and declared != "device":
+                findings.append(ResidencyFinding(
+                    "warning", name,
+                    f"'{arg}' is used on the device ({use.how}, {where(use.line_no)}) "
+                    f"but .meta says memory_space = {declared}",
+                ))
+            elif use is not None and use.category != ACC_DEVICE and declared is None:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is copied by the scheme itself ({use.how}, "
+                    f"{where(use.line_no)}): on the device only where the cap "
+                    "already keeps it there",
+                ))
+            elif use is None and declared == "device":
+                findings.append(ResidencyFinding(
+                    "warning", name,
+                    f"'{arg}' has memory_space = device in .meta, but the entry "
+                    "point's OpenACC never uses it on the device",
+                ))
+    return findings

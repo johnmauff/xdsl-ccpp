@@ -59,6 +59,7 @@
   type = real
   kind = kind_phys
   intent = inout
+  memory_space = device
 [ ps ]
   standard_name = surface_air_pressure
   state_variable = true
