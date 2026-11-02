@@ -158,7 +158,9 @@ def wrap_paren_list(
     cur = cont_indent
     for i, item in enumerate(items):
         sep = ", " if i < len(items) - 1 else ""
-        if len(cur) + len(item) + len(sep) + 4 > max_col:
+        # Never flush an empty line: an item too long for any line (a long
+        # string literal) goes on a line of its own.
+        if cur.strip() and len(cur) + len(item) + len(sep) + 4 > max_col:
             lines.append(cur + cont_marker)
             cur = cont_indent + item + sep
         else:
@@ -238,6 +240,13 @@ class TestDriverParam:
     cap_shared._device_arg_names lookup the real cap itself uses) --
     drives whether the driver establishes/tears down a device copy of it
     around the call; see _render_driver_enter_data/_render_driver_exit_data.
+    A captured array (in/out/inout) has no `dims`: the driver sizes it
+    from the capture file (ccpp_capture_extents).
+
+    A captured derived-type argument (scheme-io-capture-ddt-args) has
+    `ddt_read`, the procedure (in module `ddt_read_module`) that rebuilds
+    it from the capture file, and `type_module`, the module declaring its
+    type `arg_type`.
     """
 
     name: str
@@ -247,6 +256,9 @@ class TestDriverParam:
     rank: int
     dims: "list[str] | None" = None
     is_device: bool = False
+    ddt_read: "str | None" = None
+    ddt_read_module: "str | None" = None
+    type_module: "str | None" = None
 
 
 def _test_driver_decl_type(arg_type: "str | None", kind: "str | None") -> str:
@@ -308,11 +320,10 @@ def _render_driver_enter_data(directive: str, copyin_names: "list[str]", create_
     needs_in/needs_out distinction the real cap's own AccEnterDataOp
     printer makes (ccpp_utils.py/print_ftn.py's own module-level case).
     Returns None when both lists are empty (no device-resident args this
-    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: a
-    test driver only ever contains directive text at all when
-    --directive was explicitly passed at cap-generation time, so there's
-    no single-source CPU/GPU dual-build concern here to toggle at compile
-    time -- generate without --directive for a CPU-only driver instead.
+    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: the
+    capture pass always asks for directives (OpenACC by default), which
+    are comments unless the driver is compiled with OpenACC/OpenMP, so
+    one driver serves a CPU and a GPU replay.
     """
     if directive == "acc":
         clauses = []
@@ -377,16 +388,16 @@ def _render_test_driver_phase_block(
     (decls, body_lines) -- decls only for names first introduced by this
     phase, body_lines this phase's own read/call/compare sequence.
 
-    Replays every real call this phase's own tag has on disk, not just
-    the first: a shared `call_count`/`found` pair (declared once by the
-    caller, reused across every phase's own loop) drives a `do ... exit`
-    loop around this phase's whole read/call/compare sequence, reading
-    call_count=1, 2, 3, ... and stopping the moment any one of this
-    phase's own reads reports found=.false. -- the real signal that no
-    more captured calls exist for this tag (scheme-io-capture-multi-
-    timestep). A real FPHYStest run already produces several calls per
-    tag (one per chunk/timestep); replaying only the first, as earlier
-    versions of this driver did, silently ignored that data. Array
+    Replays every captured call of this phase, not just the first: a
+    shared `call_count`/`found` pair (declared once by the caller, reused
+    across every phase's own loop) drives a `do ... exit` loop that opens
+    the call's capture file (ccpp_capture_open_call: <table>_<n>.nc,
+    scheme-io-capture-netcdf) for call_count=1, 2, 3, ..., reads its `in`
+    group, calls the scheme, reads the `out` group, and stops at the
+    first call with no file. No file at all for call 1 is a FAIL (the
+    driver would otherwise pass without testing anything). A real
+    FPHYStest run produces several calls per table (one per
+    chunk/timestep). Array
     allocations move inside the loop with an `allocated()` guard (not
     allocated once up front): a real scheme's own column count can
     legitimately differ from one captured call to the next (different
@@ -422,16 +433,34 @@ def _render_test_driver_phase_block(
         declared.add(name)
         decls.append(decl_line)
 
-    def _read_lines(tag_with_timing: str, var_name: str) -> list:
-        return [
-            f'call ccpp_capture_read("{tag_with_timing}", {var_name}, '
-            f"call_count=call_count, found=found)",
-            "if (.not. found) exit",
-        ]
+    def _read_lines(group: str, captured_name: str, var_name: str) -> list:
+        return [f'call ccpp_capture_read("{group}", "{captured_name}", {var_name})']
+
+    def _allocate_lines(var_name: str, rank: int, extents: "list[str] | None", group: str,
+                        captured_name: str) -> list:
+        """(Re)allocate an array to `extents`, or, without them, to the
+        shape of `captured_name` in `group` of the open capture file."""
+        lines = [f"if (allocated({var_name})) deallocate({var_name})"]
+        if extents is None:
+            lines.append(
+                f'call ccpp_capture_extents("{group}", "{captured_name}", '
+                f"extents{rank}, extents_found)"
+            )
+            extents = [f"extents{rank}({i})" for i in range(1, rank + 1)]
+        lines.append(f"allocate({var_name}({', '.join(extents)}))")
+        return lines
 
     for p in params:
         call_kwargs.append(f"{p.name}={p.name}")
         decl_type = _test_driver_decl_type(p.arg_type, p.kind)
+
+        if p.ddt_read is not None:
+            # A derived type: rebuilt from the capture file (its read
+            # allocates it), never compared.
+            colons = ", ".join(":" for _ in range(p.rank))
+            _declare(p.name, f"type({p.arg_type}), allocatable :: {p.name}({colons})")
+            array_before_reads.append(f'call {p.ddt_read}("in", "{p.name}", {p.name})')
+            continue
 
         if p.category == "error_arg":
             _declare(p.name, f"{decl_type} :: {p.name}")
@@ -444,10 +473,10 @@ def _render_test_driver_phase_block(
         if p.rank == 0:
             _declare(p.name, f"{decl_type} :: {p.name}")
         else:
-            colons = ", ".join(":" for _ in p.dims)
+            colons = ", ".join(":" for _ in range(p.rank))
             _declare(p.name, f"{decl_type}, allocatable :: {p.name}({colons})")
-            allocates.append(f"if (allocated({p.name})) deallocate({p.name})")
-            allocates.append(f"allocate({p.name}({', '.join(p.dims)}))")
+            group = "out" if p.category == "out" else "in"
+            allocates += _allocate_lines(p.name, p.rank, p.dims, group, p.name)
 
         if p.category == "unverified":
             continue
@@ -463,9 +492,8 @@ def _render_test_driver_phase_block(
             else:
                 exit_delete.append(p.name)
 
-        tag = f"{table_name}:{p.name}:{p.category}"
         if p.category in ("in", "inout"):
-            lines = _read_lines(f"{tag}:before", p.name)
+            lines = _read_lines("in", p.name, p.name)
             if p.rank == 0:
                 scalar_before_reads += lines
             else:
@@ -475,11 +503,10 @@ def _render_test_driver_phase_block(
             if p.rank == 0:
                 _declare(expected, f"{decl_type} :: {expected}")
             else:
-                colons = ", ".join(":" for _ in p.dims)
+                colons = ", ".join(":" for _ in range(p.rank))
                 _declare(expected, f"{decl_type}, allocatable :: {expected}({colons})")
-                allocates.append(f"if (allocated({expected})) deallocate({expected})")
-                allocates.append(f"allocate({expected}({', '.join(p.dims)}))")
-            after_reads += _read_lines(f"{tag}:after", expected)
+                allocates += _allocate_lines(expected, p.rank, None, "out", p.name)
+            after_reads += _read_lines("out", p.name, expected)
             if p.rank == 0:
                 # Scalar: no "which index" diagnostic makes sense, and the
                 # driver already has both values in scope -- print them
@@ -521,7 +548,13 @@ def _render_test_driver_phase_block(
         _render_driver_exit_data(directive, exit_copyout, exit_delete) if directive else None
     )
 
-    body: list[str] = [f"  ! -- {table_name} --", "  call_count = 1", "  do"]
+    body: list[str] = [
+        f"  ! -- {table_name} --",
+        "  call_count = 1",
+        "  do",
+        f'    call ccpp_capture_open_call("{table_name}", call_count, found)',
+        "    if (.not. found) exit",
+    ]
     # Order matters: scalar "before" reads must land before the
     # allocate()s that size arrays off of them, which must in turn land
     # before the array "before" reads they size. The enter-data directive
@@ -553,14 +586,22 @@ def _render_test_driver_phase_block(
     if exit_data_line is not None:
         body += [f"    {exit_data_line}"]
     body += [f"    {r}" for r in after_reads]
+    body += ["    call ccpp_capture_close()"]
     body += [f"    {c}" for c in compares]
-    body += ["    call_count = call_count + 1", "  end do"]
+    body += [
+        "    call_count = call_count + 1",
+        "  end do",
+        "  if (call_count == 1) then",
+        f"    write(*,*) 'FAIL: no captured calls of {table_name} found'",
+        "    n_failed = n_failed + 1",
+        "  end if",
+    ]
     return decls, body
 
 
 def render_scheme_io_capture_test_driver(
     scheme_name: str,
-    phase_tables: "list[tuple[str, list[TestDriverParam]]]",
+    phase_tables: "list[tuple[str, list[TestDriverParam], str]]",
     tolerance: str,
     directive: "str | None" = None,
 ) -> str:
@@ -576,6 +617,10 @@ def render_scheme_io_capture_test_driver(
     a scheme as this whole, ordered unit, not one isolated phase at a
     time, is what makes the comparison meaningful instead of spuriously
     failing on uninitialized state.
+
+    Each `phase_tables` entry is (table name, params, Fortran module of
+    the table's subroutine -- not always the scheme name: CAM-SIMA's
+    state_converters module holds several schemes).
 
     Each `TestDriverParam` list in `phase_tables` is already fully
     resolved and filtered by the caller (no `optional` entries, every
@@ -604,13 +649,24 @@ def render_scheme_io_capture_test_driver(
     declared: set = set()
     all_decls: list[str] = []
     all_body: list[str] = []
-    for table_name, params in phase_tables:
+    for table_name, params, _module in phase_tables:
         decls, body = _render_test_driver_phase_block(table_name, params, declared, directive)
         all_decls += decls
         all_body += body
 
-    table_names = [t for t, _ in phase_tables]
-    use_lines = [f"  use {scheme_name}, only: {t}" for t in table_names]
+    table_names = [t for t, _, _ in phase_tables]
+    use_lines = [f"  use {module}, only: {t}" for t, _, module in phase_tables]
+    # Derived types: their declaring module and the procedure rebuilding them.
+    ddt_uses: list[str] = []
+    for _, params, _module in phase_tables:
+        for p in params:
+            if p.ddt_read is None:
+                continue
+            for line in (f"  use {p.type_module}, only: {p.arg_type}",
+                         f"  use {p.ddt_read_module}, only: {p.ddt_read}"):
+                if line not in ddt_uses:
+                    ddt_uses.append(line)
+    use_lines = ddt_uses + use_lines
 
     lines = [
         "! Generated by xdsl_ccpp's --capture-test-driver-dir -- reads back a",
@@ -620,8 +676,9 @@ def render_scheme_io_capture_test_driver(
         "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
         f"program test_{scheme_name}",
         "  use ccpp_kinds, only: kind_phys",
-        "  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare, &",
-        "                              ccpp_capture_tolerance_override",
+        "  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &",
+        "                              ccpp_capture_read, ccpp_capture_compare, &",
+        "                              ccpp_capture_extents, ccpp_capture_tolerance_override",
     ]
     lines += use_lines
     lines += [
@@ -635,6 +692,8 @@ def render_scheme_io_capture_test_driver(
         "  logical :: ok",
         "  real(kind=kind_phys) :: diag_max_abs_diff, diag_mean_abs_diff",
         "  integer :: diag_first_mismatch_index",
+        "  integer :: extents1(1), extents2(2), extents3(3)",
+        "  logical :: extents_found",
     ]
     lines += [f"  {d}" for d in all_decls]
     lines += [
@@ -3310,7 +3369,9 @@ class ftnPrintContext:
                 depth += 1
             elif ch == ")":
                 depth -= 1
-            elif ch == "," and depth <= 1:
+            elif ch == "," and depth <= 1 and line[i + 1 :].strip() != "&":
+                # Not the comma before the line's own trailing "&": that
+                # would leave a line holding only "&" (nvfortran rejects it).
                 split_pos = i
         if split_pos == -1:
             # No valid split point — emit as-is rather than produce invalid Fortran

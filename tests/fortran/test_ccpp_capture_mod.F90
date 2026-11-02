@@ -1,48 +1,60 @@
-! Standalone round-trip test for ccpp_capture_mod (PR 2 of the
-! scheme-io-capture backlog item) -- compiled and run directly, independent
-! of any CCPP scheme or the Python xdsl_ccpp pipeline. Exercises every
-! (type, rank) combination the runtime library supports
-! ({integer, logical, real(kind_phys)} x {rank 0..3}): write a known
-! value, read it back, and confirm ccpp_capture_compare reports a match.
-! Also confirms a deliberately-introduced mismatch is correctly flagged
-! as a failure by the compare procedures, not silently accepted.
+! Standalone round-trip test for ccpp_capture_mod (NetCDF format,
+! scheme-io-capture-netcdf) -- compiled and run directly, independent of
+! any CCPP scheme or the Python xdsl_ccpp pipeline. Writes one simulated
+! scheme call (an `in` and an `out` group) holding every supported
+! (type, rank), reads it back and compares; also checks the call counter,
+! the `found` signal for a call that was never captured, missing
+! variables, a shape mismatch, mismatch detection and diagnostics, the
+! tolerance override default, the global attributes (ccpp_capture_set_info,
+! ccpp_capture_attribute, ccpp_capture_date) and ccpp_capture_set_dir.
 !
-! Run from this directory:
-!   gfortran -o test_ccpp_capture_mod ccpp_kinds.F90 \
+! Run from this directory, with netcdf-fortran built by the same compiler
+! (on Derecho load the compiler first: `module load gcc netcdf`, or
+! `module load nvhpc netcdf` and nvfortran; the default is Intel's build):
+!   gfortran -o test_ccpp_capture_mod $(nf-config --fflags) ccpp_kinds.F90 \
 !       ../../xdsl_ccpp/framework_src/ccpp_capture_mod.F90 \
-!       test_ccpp_capture_mod.F90
+!       test_ccpp_capture_mod.F90 $(nf-config --flibs)
 !   ./test_ccpp_capture_mod
+!   ncdump -h test_table_1.nc     # optional: look at the layout
 !
 ! Exits 0 and prints "ALL TESTS PASSED" on success; exits 1 and prints
-! each failing case otherwise. Capture files are written into the current
-! working directory and removed on a clean exit.
+! each failing case otherwise. Writes test_table_1.nc and test_table_2.nc
+! into the current directory (CCPP_CAPTURE_DIR unset) and leaves them.
 program test_ccpp_capture_mod
   use ccpp_kinds, only: kind_phys
-  use ccpp_capture_mod, only: ccpp_capture, ccpp_capture_read, ccpp_capture_compare, &
+  use netcdf
+  use ccpp_capture_mod, only: ccpp_capture_begin, ccpp_capture_end, ccpp_capture, &
+                              ccpp_capture_set_dir, ccpp_capture_set_info, &
+                              ccpp_capture_attribute, &
+                              ccpp_capture_open_call, ccpp_capture_close, &
+                              ccpp_capture_read, ccpp_capture_compare, &
                               ccpp_capture_tolerance_override
 
   implicit none
 
   integer :: n_failed
 
+  ! The values written to call 1 (in) and call 1 (out).
+  integer :: i0, i1(4), i2(2,3), i3(2,2,2)
+  logical :: l0, l1(3), l2(2,2), l3(2,1,2)
+  real(kind=kind_phys) :: r0, r1(5), r2(3,2), r3(2,3,2)
+  character(len=16) :: c0
+  character(len=8) :: c1(3)
+  real(kind=kind_phys) :: r2_out(3,2)
+
   n_failed = 0
 
-  call test_int_0d(n_failed)
-  call test_int_1d(n_failed)
-  call test_int_2d(n_failed)
-  call test_int_3d(n_failed)
-  call test_log_0d(n_failed)
-  call test_log_1d(n_failed)
-  call test_log_2d(n_failed)
-  call test_log_3d(n_failed)
-  call test_r8_0d(n_failed)
-  call test_r8_1d(n_failed)
-  call test_r8_2d(n_failed)
-  call test_r8_3d(n_failed)
+  call write_call_1()
+  call write_call_2()
+  call test_round_trip(n_failed)
+  call test_out_group(n_failed)
+  call test_second_call(n_failed)
+  call test_missing_call_and_variable(n_failed)
+  call test_shape_mismatch_is_rejected(n_failed)
   call test_deliberate_mismatch_is_detected(n_failed)
-  call test_found_parameter_for_multi_call_replay(n_failed)
   call test_compare_diagnostics(n_failed)
   call test_tolerance_override_default_when_unset(n_failed)
+  call test_global_attributes(n_failed)
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
@@ -66,191 +78,175 @@ contains
     end if
   end subroutine report
 
-  subroutine test_int_0d(n_failed)
+  ! Call 1 of test_table: every (type, rank) in `in`, one result in `out`.
+  subroutine write_call_1()
+    i0 = 42
+    i1 = [1, 2, 3, 4]
+    i2 = reshape([1, 2, 3, 4, 5, 6], [2, 3])
+    i3 = reshape([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2])
+    l0 = .true.
+    l1 = [.true., .false., .true.]
+    l2 = reshape([.false., .true., .true., .false.], [2, 2])
+    l3 = reshape([.true., .true., .false., .true.], [2, 1, 2])
+    r0 = 3.25_kind_phys
+    r1 = [1.5_kind_phys, -2.0_kind_phys, 0.0_kind_phys, 1.0e-30_kind_phys, 7.0_kind_phys]
+    r2 = reshape([1._kind_phys, 2._kind_phys, 3._kind_phys, 4._kind_phys, 5._kind_phys, &
+                  6._kind_phys], [3, 2])
+    r3 = 0.5_kind_phys
+    r3(2, 3, 2) = -9.75_kind_phys
+    c0 = 'kessler'
+    c1 = [character(len=8) :: 'q', 'cldliq', 'rainqm']
+    r2_out = 2.0_kind_phys * r2
+
+    call ccpp_capture_set_info('test_label', 'test_generator 1.0')
+    call ccpp_capture_begin('test_table', 'before')
+    call ccpp_capture_attribute('current_timestep_number', 5)
+    call ccpp_capture_attribute('a_note', 'hello')
+    call ccpp_capture('i0', i0, standard_name='an_integer', units='1')
+    call ccpp_capture('i1', i1, dim_names='four')
+    call ccpp_capture('i2', i2, dim_names='horizontal_loop_extent,three')
+    call ccpp_capture('i3', i3)
+    call ccpp_capture('l0', l0)
+    call ccpp_capture('l1', l1)
+    call ccpp_capture('l2', l2)
+    call ccpp_capture('l3', l3)
+    call ccpp_capture('r0', r0, units='K')
+    call ccpp_capture('r1', r1)
+    ! horizontal_loop_extent again, with another length: a suffixed dimension.
+    call ccpp_capture('r2', r2, dim_names='horizontal_loop_extent,vertical_layer_dimension')
+    call ccpp_capture('r3', r3)
+    call ccpp_capture('c0', c0)
+    call ccpp_capture('c1', c1, dim_names='number_of_constituents')
+    call ccpp_capture_end()
+
+    call ccpp_capture_begin('test_table', 'after')
+    call ccpp_capture('r2', r2_out, dim_names='horizontal_loop_extent,vertical_layer_dimension')
+    call ccpp_capture_end()
+  end subroutine write_call_1
+
+  ! Call 2 of test_table: a second file, numbered by the per-table counter,
+  ! written through ccpp_capture_set_dir ('.': <dir>/<table>_<n>.nc; with a
+  ! label it would be <dir>/<label>/..., so the label is cleared first).
+  subroutine write_call_2()
+    call ccpp_capture_set_info('', 'test_generator 1.0')
+    call ccpp_capture_set_dir('.')
+    call ccpp_capture_begin('test_table', 'before')
+    call ccpp_capture('i0', 7)
+    call ccpp_capture_end()
+    call ccpp_capture_begin('test_table', 'after')
+    call ccpp_capture_end()
+  end subroutine write_call_2
+
+  subroutine test_round_trip(n_failed)
     integer, intent(inout) :: n_failed
-    integer :: written, readback
+    integer :: ri0, ri1(4), ri2(2,3), ri3(2,2,2)
+    logical :: rl0, rl1(3), rl2(2,2), rl3(2,1,2)
+    real(kind=kind_phys) :: rr0, rr1(5), rr2(3,2), rr3(2,3,2)
+    character(len=16) :: rc0
+    character(len=8) :: rc1(3)
+    logical :: found
 
-    written = 42
-    call ccpp_capture('test:int_0d:in:before', written)
-    call ccpp_capture_read('test:int_0d:in:before', readback, call_count=1)
-    call report('int_0d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_int_0d
+    call ccpp_capture_open_call('test_table', 1, found)
+    call report('call 1 file found', found, n_failed)
+    call ccpp_capture_read('in', 'i0', ri0)
+    call ccpp_capture_read('in', 'i1', ri1)
+    call ccpp_capture_read('in', 'i2', ri2)
+    call ccpp_capture_read('in', 'i3', ri3)
+    call ccpp_capture_read('in', 'l0', rl0)
+    call ccpp_capture_read('in', 'l1', rl1)
+    call ccpp_capture_read('in', 'l2', rl2)
+    call ccpp_capture_read('in', 'l3', rl3)
+    call ccpp_capture_read('in', 'r0', rr0)
+    call ccpp_capture_read('in', 'r1', rr1)
+    call ccpp_capture_read('in', 'r2', rr2)
+    call ccpp_capture_read('in', 'r3', rr3)
+    call ccpp_capture_read('in', 'c0', rc0)
+    call ccpp_capture_read('in', 'c1', rc1)
+    call ccpp_capture_close()
 
-  subroutine test_int_1d(n_failed)
+    call report('int_0d round-trip', ccpp_capture_compare(ri0, i0), n_failed)
+    call report('int_1d round-trip', ccpp_capture_compare(ri1, i1), n_failed)
+    call report('int_2d round-trip', ccpp_capture_compare(ri2, i2), n_failed)
+    call report('int_3d round-trip', ccpp_capture_compare(ri3, i3), n_failed)
+    call report('log_0d round-trip', ccpp_capture_compare(rl0, l0), n_failed)
+    call report('log_1d round-trip', ccpp_capture_compare(rl1, l1), n_failed)
+    call report('log_2d round-trip', ccpp_capture_compare(rl2, l2), n_failed)
+    call report('log_3d round-trip', ccpp_capture_compare(rl3, l3), n_failed)
+    call report('r8_0d round-trip', ccpp_capture_compare(rr0, r0, 0.0_kind_phys), n_failed)
+    call report('r8_1d round-trip', ccpp_capture_compare(rr1, r1, 0.0_kind_phys), n_failed)
+    call report('r8_2d round-trip', ccpp_capture_compare(rr2, r2, 0.0_kind_phys), n_failed)
+    call report('r8_3d round-trip', ccpp_capture_compare(rr3, r3, 0.0_kind_phys), n_failed)
+    call report('char_0d round-trip', ccpp_capture_compare(rc0, c0), n_failed)
+    call report('char_1d round-trip', ccpp_capture_compare(rc1, c1), n_failed)
+  end subroutine test_round_trip
+
+  subroutine test_out_group(n_failed)
     integer, intent(inout) :: n_failed
-    integer :: written(4), readback(4)
+    real(kind=kind_phys) :: rr2(3,2)
+    logical :: found
 
-    written = [1, 2, 3, 4]
-    call ccpp_capture('test:int_1d:in:before', written)
-    call ccpp_capture_read('test:int_1d:in:before', readback, call_count=1)
-    call report('int_1d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_int_1d
+    call ccpp_capture_open_call('test_table', 1, found)
+    call ccpp_capture_read('out', 'r2', rr2, found)
+    call ccpp_capture_close()
+    call report('out group written after reopening', found, n_failed)
+    call report('out group value', ccpp_capture_compare(rr2, r2_out, 0.0_kind_phys), n_failed)
+  end subroutine test_out_group
 
-  subroutine test_int_2d(n_failed)
+  subroutine test_second_call(n_failed)
     integer, intent(inout) :: n_failed
-    integer :: written(2,3), readback(2,3)
+    integer :: ri0
+    logical :: found
 
-    written = reshape([1,2,3,4,5,6], [2,3])
-    call ccpp_capture('test:int_2d:in:before', written)
-    call ccpp_capture_read('test:int_2d:in:before', readback, call_count=1)
-    call report('int_2d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_int_2d
+    call ccpp_capture_open_call('test_table', 2, found)
+    call report('call 2 file found', found, n_failed)
+    call ccpp_capture_read('in', 'i0', ri0)
+    call ccpp_capture_close()
+    call report('call 2 holds its own value', ri0 == 7, n_failed)
+  end subroutine test_second_call
 
-  subroutine test_int_3d(n_failed)
+  subroutine test_missing_call_and_variable(n_failed)
     integer, intent(inout) :: n_failed
-    integer :: written(2,2,2), readback(2,2,2)
+    integer :: ri0
+    logical :: found
 
-    written = reshape([1,2,3,4,5,6,7,8], [2,2,2])
-    call ccpp_capture('test:int_3d:in:before', written)
-    call ccpp_capture_read('test:int_3d:in:before', readback, call_count=1)
-    call report('int_3d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_int_3d
+    call ccpp_capture_open_call('test_table', 99, found)
+    call report('found=.false. for a call never captured', .not. found, n_failed)
 
-  subroutine test_log_0d(n_failed)
+    call ccpp_capture_open_call('test_table', 1, found)
+    ri0 = -1
+    call ccpp_capture_read('out', 'i0', ri0, found)
+    call ccpp_capture_close()
+    call report('found=.false. for a variable not in the group', .not. found, n_failed)
+    call report('value unchanged when nothing is read', ri0 == -1, n_failed)
+  end subroutine test_missing_call_and_variable
+
+  subroutine test_shape_mismatch_is_rejected(n_failed)
     integer, intent(inout) :: n_failed
-    logical :: written, readback
+    real(kind=kind_phys) :: wrong(2,3)
+    logical :: found
 
-    written = .true.
-    call ccpp_capture('test:log_0d:in:before', written)
-    call ccpp_capture_read('test:log_0d:in:before', readback, call_count=1)
-    call report('log_0d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_log_0d
-
-  subroutine test_log_1d(n_failed)
-    integer, intent(inout) :: n_failed
-    logical :: written(3), readback(3)
-
-    written = [.true., .false., .true.]
-    call ccpp_capture('test:log_1d:in:before', written)
-    call ccpp_capture_read('test:log_1d:in:before', readback, call_count=1)
-    call report('log_1d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_log_1d
-
-  subroutine test_log_2d(n_failed)
-    integer, intent(inout) :: n_failed
-    logical :: written(2,2), readback(2,2)
-
-    written = reshape([.true., .false., .false., .true.], [2,2])
-    call ccpp_capture('test:log_2d:in:before', written)
-    call ccpp_capture_read('test:log_2d:in:before', readback, call_count=1)
-    call report('log_2d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_log_2d
-
-  subroutine test_log_3d(n_failed)
-    integer, intent(inout) :: n_failed
-    logical :: written(2,1,2), readback(2,1,2)
-
-    written = reshape([.true., .false., .true., .false.], [2,1,2])
-    call ccpp_capture('test:log_3d:in:before', written)
-    call ccpp_capture_read('test:log_3d:in:before', readback, call_count=1)
-    call report('log_3d round-trip', ccpp_capture_compare(readback, written), n_failed)
-  end subroutine test_log_3d
-
-  subroutine test_r8_0d(n_failed)
-    integer, intent(inout) :: n_failed
-    real(kind=kind_phys) :: written, readback
-
-    written = 3.14159265358979_kind_phys
-    call ccpp_capture('test:r8_0d:in:before', written)
-    call ccpp_capture_read('test:r8_0d:in:before', readback, call_count=1)
-    call report('r8_0d round-trip', &
-                ccpp_capture_compare(readback, written, 1.0e-12_kind_phys), n_failed)
-  end subroutine test_r8_0d
-
-  subroutine test_r8_1d(n_failed)
-    integer, intent(inout) :: n_failed
-    real(kind=kind_phys) :: written(4), readback(4)
-
-    written = [1.1_kind_phys, 2.2_kind_phys, 3.3_kind_phys, 4.4_kind_phys]
-    call ccpp_capture('test:r8_1d:in:before', written)
-    call ccpp_capture_read('test:r8_1d:in:before', readback, call_count=1)
-    call report('r8_1d round-trip', &
-                ccpp_capture_compare(readback, written, 1.0e-12_kind_phys), n_failed)
-  end subroutine test_r8_1d
-
-  subroutine test_r8_2d(n_failed)
-    integer, intent(inout) :: n_failed
-    real(kind=kind_phys) :: written(3,2), readback(3,2)
-
-    written = reshape([1.0_kind_phys, 2.0_kind_phys, 3.0_kind_phys, &
-                        4.0_kind_phys, 5.0_kind_phys, 6.0_kind_phys], [3,2])
-    call ccpp_capture('test:r8_2d:inout:before', written)
-    call ccpp_capture_read('test:r8_2d:inout:before', readback, call_count=1)
-    call report('r8_2d round-trip', &
-                ccpp_capture_compare(readback, written, 1.0e-12_kind_phys), n_failed)
-  end subroutine test_r8_2d
-
-  subroutine test_r8_3d(n_failed)
-    integer, intent(inout) :: n_failed
-    real(kind=kind_phys) :: written(2,2,2), readback(2,2,2)
-    integer :: i
-
-    written = reshape([(real(i, kind_phys), i = 1, 8)], [2,2,2])
-    call ccpp_capture('test:r8_3d:in:before', written)
-    call ccpp_capture_read('test:r8_3d:in:before', readback, call_count=1)
-    call report('r8_3d round-trip', &
-                ccpp_capture_compare(readback, written, 1.0e-12_kind_phys), n_failed)
-  end subroutine test_r8_3d
+    write(*,*) '(expect one shape-mismatch message on stderr)'
+    wrong = -1.0_kind_phys
+    call ccpp_capture_open_call('test_table', 1, found)
+    call ccpp_capture_read('in', 'r2', wrong, found)
+    call ccpp_capture_close()
+    call report('shape mismatch: not found', .not. found, n_failed)
+    call report('shape mismatch: value unchanged', all(wrong == -1.0_kind_phys), n_failed)
+  end subroutine test_shape_mismatch_is_rejected
 
   subroutine test_deliberate_mismatch_is_detected(n_failed)
     integer, intent(inout) :: n_failed
-    real(kind=kind_phys) :: written(3,2), readback(3,2), corrupted(3,2)
+    real(kind=kind_phys) :: corrupted(3,2)
     logical :: ok
 
-    ! Reuses the r8_2d fixture tag from test_r8_2d above -- this is the
-    ! second write under that tag, so it lands in call_count=2's own file,
-    ! independent of the first.
-    written = reshape([1.0_kind_phys, 2.0_kind_phys, 3.0_kind_phys, &
-                        4.0_kind_phys, 5.0_kind_phys, 6.0_kind_phys], [3,2])
-    call ccpp_capture('test:r8_2d:inout:before', written)
-    call ccpp_capture_read('test:r8_2d:inout:before', readback, call_count=2)
-
-    ! A real captured-vs-regenerated divergence, not a round-trip check:
-    ! corrupt one element the way a real scheme regression would (e.g. a
-    ! sign flip from a bad CPU->GPU port) and confirm compare correctly
-    ! reports FAIL, not a false PASS.
-    corrupted = readback
+    corrupted = r2
     corrupted(2,1) = -corrupted(2,1)
-    ok = ccpp_capture_compare(corrupted, written, 1.0e-12_kind_phys)
+    ok = ccpp_capture_compare(corrupted, r2, 1.0e-12_kind_phys)
     call report('deliberate mismatch correctly flagged as FAIL', .not. ok, n_failed)
-
-    ! And the unmodified readback must still compare equal, confirming
-    ! the corruption above -- not some other bug -- is what triggered FAIL.
-    ok = ccpp_capture_compare(readback, written, 1.0e-12_kind_phys)
-    call report('uncorrupted readback still compares equal', ok, n_failed)
+    call report('character mismatch flagged', .not. ccpp_capture_compare('kessler', 'qneg'), n_failed)
   end subroutine test_deliberate_mismatch_is_detected
 
-  subroutine test_found_parameter_for_multi_call_replay(n_failed)
-    ! The `found` status parameter (scheme-io-capture-multi-timestep) is
-    ! what lets a generated test driver loop "replay call 1, 2, 3, ...
-    ! until no more captured data exists" without needing to know ahead
-    ! of time how many real calls a fixture actually contains. Confirms:
-    ! found=.true. for a call_count that was actually written, and
-    ! found=.false. (not a crash, not a stderr-noise false alarm) for one
-    ! that wasn't -- exactly the "no more calls" signal a replay loop's
-    ! own exit condition depends on.
-    integer, intent(inout) :: n_failed
-    integer :: written, readback
-    logical :: found
-
-    written = 7
-    call ccpp_capture('test:found_param:in:before', written)
-
-    call ccpp_capture_read('test:found_param:in:before', readback, call_count=1, found=found)
-    call report('found=.true. for a real call_count', found, n_failed)
-    call report('value read correctly alongside found=.true.', readback == written, n_failed)
-
-    call ccpp_capture_read('test:found_param:in:before', readback, call_count=99, found=found)
-    call report('found=.false. for a call_count that was never written', .not. found, n_failed)
-  end subroutine test_found_parameter_for_multi_call_replay
-
   subroutine test_compare_diagnostics(n_failed)
-    ! scheme-io-capture-compare-diagnostics: a bare pass/fail used to tell
-    ! a generated driver *that* a GPU-port regression existed but never
-    ! how badly or where. Confirms the optional first_mismatch_index/
-    ! max_abs_diff/mean_abs_diff outputs report the exact, known location
-    ! and magnitude of a deliberately-introduced mismatch -- not just
-    ! that ok comes back .false.
     integer, intent(inout) :: n_failed
     real(kind=kind_phys) :: actual2d(3,2), expected2d(3,2)
     real(kind=kind_phys) :: max_abs_diff, mean_abs_diff
@@ -258,10 +254,7 @@ contains
     integer :: actual1d(4), expected1d(4)
     logical :: ok
 
-    ! Column-major linear index for (i=2, j=1) in a (3,2) array is
-    ! 2 + (1-1)*3 = 2 -- deliberately perturb exactly that element by a
-    ! known amount (5.0) so every diagnostic output has a known-correct
-    ! answer to check against, not just "some nonzero value."
+    ! (2,1) of a (3,2) array is column-major linear index 2.
     expected2d = reshape( &
         [1._kind_phys, 2._kind_phys, 3._kind_phys, 4._kind_phys, 5._kind_phys, 6._kind_phys], [3,2])
     actual2d = expected2d
@@ -276,19 +269,12 @@ contains
     call report('real 2d diagnostics: mean_abs_diff == 5.0/6', &
         abs(mean_abs_diff - 5._kind_phys/6._kind_phys) < 1.0e-12_kind_phys, n_failed)
 
-    ! A clean match must report first_mismatch_index=0, not a stale value
-    ! from a previous call -- also confirms diagnostics are computed on a
-    ! PASS too ("how close", not only "how far" on a FAIL).
     ok = ccpp_capture_compare( &
         expected2d, expected2d, 1.0e-12_kind_phys, max_abs_diff, mean_abs_diff, first_mismatch_index)
-    call report('real 2d diagnostics: ok is .true. on an exact match', ok, n_failed)
+    call report('real 2d diagnostics: ok on an exact match', ok, n_failed)
     call report('real 2d diagnostics: first_mismatch_index == 0 on a match', &
         first_mismatch_index == 0, n_failed)
-    call report('real 2d diagnostics: max_abs_diff == 0 on a match', &
-        abs(max_abs_diff) < 1.0e-12_kind_phys, n_failed)
 
-    ! Integer compares get first_mismatch_index only (no magnitude
-    ! concept for an exact-match type) -- mismatch at index 3.
     expected1d = [1, 2, 3, 4]
     actual1d = expected1d
     actual1d(3) = 30
@@ -298,14 +284,8 @@ contains
   end subroutine test_compare_diagnostics
 
   subroutine test_tolerance_override_default_when_unset(n_failed)
-    ! scheme-io-capture-tolerance-config's runtime-override follow-on:
-    ! with CCPP_CAPTURE_TOLERANCE unset (the normal case this test's own
-    ! environment is assumed to be in -- setting/unsetting an environment
-    ! variable mid-process has no portable standard Fortran mechanism, so
-    ! the actual "variable IS set" override path is verified separately,
-    ! via a real build run from the shell with CCPP_CAPTURE_TOLERANCE
-    ! exported -- see scheme-io-capture's own CHANGELOG entry), the
-    ! function must return the caller's own default unchanged.
+    ! With CCPP_CAPTURE_TOLERANCE unset the caller's default comes back
+    ! (the set case is checked from the shell; Fortran cannot set it).
     integer, intent(inout) :: n_failed
     real(kind=kind_phys) :: tolerance
 
@@ -313,5 +293,31 @@ contains
     call report('tolerance override: default returned when unset', &
         abs(tolerance - 1.0e-10_kind_phys) < 1.0e-20_kind_phys, n_failed)
   end subroutine test_tolerance_override_default_when_unset
+
+  subroutine test_global_attributes(n_failed)
+    integer, intent(inout) :: n_failed
+    integer :: ncid, status, step
+    character(len=64) :: text
+
+    status = nf90_open('test_table_1.nc', NF90_NOWRITE, ncid)
+    call report('call 1 file opens', status == NF90_NOERR, n_failed)
+    if (status /= NF90_NOERR) return
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_capture_label', text)
+    call report('ccpp_capture_label', status == NF90_NOERR .and. text == 'test_label', n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_generator', text)
+    call report('ccpp_generator', status == NF90_NOERR .and. text == 'test_generator 1.0', n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_capture_date', text)
+    call report('ccpp_capture_date', status == NF90_NOERR .and. len_trim(text) == 19, n_failed)
+    step = -1
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'current_timestep_number', step)
+    call report('integer attribute', status == NF90_NOERR .and. step == 5, n_failed)
+    text = ''
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'a_note', text)
+    call report('character attribute', status == NF90_NOERR .and. text == 'hello', n_failed)
+    status = nf90_close(ncid)
+  end subroutine test_global_attributes
 
 end program test_ccpp_capture_mod
