@@ -113,27 +113,28 @@ def _capture_label(label: str) -> str:
 
 
 def _validate_fortran_source(
-    meta_path: str, f90_path: str, preproc_defs, verbose: int = 1
+    meta_path: str, f90_path: str, preproc_defs, verbose: int = 1, language: str = "acc"
 ) -> str:
     """_check_fortran_source's messages only."""
-    return _check_fortran_source(meta_path, f90_path, preproc_defs, verbose)[0]
+    return _check_fortran_source(meta_path, f90_path, preproc_defs, verbose, language)[0]
 
 
 def _check_fortran_source(
-    meta_path: str, f90_path: str, preproc_defs, verbose: int = 1
+    meta_path: str, f90_path: str, preproc_defs, verbose: int = 1, language: str = "acc"
 ) -> tuple[str, dict]:
     """Compare one scheme's .meta file with its paired .F90 and return what
     that printed to stderr (the mismatch warnings), so the comparisons can
     run in worker processes and still be printed in file order.
 
     Also compares each argument's memory_space with what the entry point's
-    own OpenACC says (acc-derive-memory-space, validate_source.
+    own OpenACC or OpenMP says (acc-derive-memory-space, validate_source.
     compare_memory_space): disagreements are warnings, details are printed
     at *verbose* 2 (passed in: a worker process has its own verbosity).
 
-    Returns (the messages, the OpenACC classification of the .F90's
-    subroutines: entry point -> {argument: "device" | "either"}), the
-    latter for derive_memory_space (stage 2, --directive acc)."""
+    Returns (the messages, the classification of the .F90's subroutines by
+    their *language* directives, "acc" or "omp": entry point -> {argument:
+    "device" | "either"}), the latter for derive_memory_space (--directive
+    acc or omp)."""
     from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
     from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
     from xdsl_ccpp.transforms.validate_source import compare_memory_space, compare_modules
@@ -146,7 +147,9 @@ def _check_fortran_source(
             return err.getvalue(), {}  # host/module-type .meta, or failed to load (already warned)
         acc_residency: dict = {}
         try:
-            source_module = build_meta_module_from_file(f90_path, preproc_defs, acc_residency)
+            source_module = build_meta_module_from_file(
+                f90_path, preproc_defs, acc_residency, language
+            )
         except Exception as exc:
             print(
                 f"Warning: fparser2 failed to parse '{f90_path}' for "
@@ -156,7 +159,7 @@ def _check_fortran_source(
             return err.getvalue(), {}
         for mismatch in compare_modules(meta_module, source_module):
             print(f"Warning: {mismatch}", file=sys.stderr)
-        for finding in compare_memory_space(meta_module, acc_residency, f90_path):
+        for finding in compare_memory_space(meta_module, acc_residency, f90_path, language):
             if finding.level == "warning":
                 print(f"Warning: {finding}", file=sys.stderr)
             elif verbose >= 2:
@@ -847,6 +850,9 @@ class ccppMain:
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
 
         preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
+        # The directives the classification reads: --directive's, else
+        # OpenACC (the check then only warns).
+        language = "omp" if self.options_db.get("directive") == "omp" else "acc"
 
         pairs = []
         for meta_path in self.options_db.get("scheme_files") or []:
@@ -860,13 +866,13 @@ class ccppMain:
         jobs = min(self.options_db.get("jobs") or 1, len(pairs))
         if jobs <= 1:
             return None, [
-                _check_fortran_source(m, f, preproc_defs, verbosity()) for m, f in pairs
+                _check_fortran_source(m, f, preproc_defs, verbosity(), language) for m, f in pairs
             ]
         pool = ProcessPoolExecutor(max_workers=jobs)
         # Largest sources first: the slowest file bounds the wall time.
         order = sorted(range(len(pairs)), key=lambda i: -os.path.getsize(pairs[i][1]))
         futures = {
-            i: pool.submit(_check_fortran_source, *pairs[i], preproc_defs, verbosity())
+            i: pool.submit(_check_fortran_source, *pairs[i], preproc_defs, verbosity(), language)
             for i in order
         }
         return pool, [futures[i] for i in range(len(pairs))]
@@ -884,7 +890,7 @@ class ccppMain:
                 pool.shutdown(cancel_futures=True)
 
     def _apply_derived_memory_space(self, mlir_file: str, handle) -> None:
-        """acc-derive-memory-space stage 2 (--directive acc): wait for the
+        """acc-derive-memory-space (--directive acc or omp): wait for the
         Fortran check's classifications and set memory_space = device on
         the scheme arguments of the frontend module in *mlir_file* that
         derive_memory_space puts on the device (rewriting the file, before
@@ -898,14 +904,17 @@ class ccppMain:
         if not classification:
             return
         module = self._parse_frontend(mlir_file)
-        derived = apply_derived_memory_space(module, classification)
+        derived = apply_derived_memory_space(
+            module, classification,
+            either_is_device=self.options_db.get("directive") == "omp",
+        )
         if not derived:
             return
         with open(mlir_file, "w") as f:
             Printer(stream=f).print_op(module)
             f.write("\n")
         if verbosity() >= 2:
-            print("memory_space derived from the schemes' OpenACC:", file=sys.stderr)
+            print("memory_space derived from the schemes' directives:", file=sys.stderr)
             for line in derived:
                 print(f"  {line}", file=sys.stderr)
 
@@ -1603,9 +1612,10 @@ class ccppMain:
         # memory-space check and the datatable only read the frontend
         # module, so they run alongside the frontend and ccpp_opt instead of
         # before them (generator-speed step 5); the caps do not change.
-        # Exception: with --directive acc the check's OpenACC classification
-        # sets memory_space (acc-derive-memory-space), so ccpp_opt waits for
-        # it; the check still overlaps the frontend.
+        # Exception: with --directive acc or omp the check's classification
+        # of the schemes' directives sets memory_space
+        # (acc-derive-memory-space), so ccpp_opt waits for it; the check
+        # still overlaps the frontend.
         fortran_check = self._start_fortran_check()
         opt = None
         try:
@@ -1614,7 +1624,7 @@ class ccppMain:
                 self.merge_meta_files(mlir_file)
             else:
                 mlir_file = self.run_frontend(tmp_dir)
-            if self.options_db.get("directive") == "acc":
+            if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
             wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
             target = "ftn_and_cpp_header" if wants_cpp else "ftn"

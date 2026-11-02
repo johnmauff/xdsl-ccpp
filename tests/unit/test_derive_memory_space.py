@@ -38,7 +38,7 @@ def test_device_is_set_where_meta_is_silent():
     m = _module({"a_run": [_arg("x", "x_std")]})
     report = apply_derived_memory_space(m, {"a_run": {"x": "device"}})
     assert _spaces(m)[("a_run", "x")] == "device"
-    assert report == ["a_run: 'x' memory_space = device (its OpenACC requires it on the device)"]
+    assert report == ["a_run: 'x' memory_space = device (its directives require it on the device)"]
 
 
 def test_explicit_meta_always_wins():
@@ -88,3 +88,15 @@ def test_unclassified_arguments_untouched():
     m = _module({"a_run": [_arg("x", "x_std"), _arg("y", "y_std")]})
     apply_derived_memory_space(m, {"a_run": {"x": "device"}})
     assert _spaces(m)[("a_run", "y")] is None
+
+
+def test_either_is_device_with_directive_omp():
+    # --directive omp: a kernel-style OpenMP port is all "either"; it is
+    # device data even where nothing else anchors it.
+    m = _module({"a_run": [_arg("x", "x_std")], "b_run": [_arg("y", "y_std", "host")]})
+    report = apply_derived_memory_space(
+        m, {"a_run": {"x": "either"}, "b_run": {"y": "either"}}, either_is_device=True
+    )
+    assert _spaces(m) == {("a_run", "x"): "device", ("b_run", "y"): "host"}
+    assert report == ["a_run: 'x' memory_space = device "
+                      "(the scheme maps it to the device itself; --directive omp)"]

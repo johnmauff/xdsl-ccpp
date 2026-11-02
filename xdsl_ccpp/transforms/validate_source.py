@@ -255,12 +255,14 @@ def compare_memory_space(
     meta_module: builtin.ModuleOp,
     acc_residency: dict,
     source_path: str = "",
+    language: str = "acc",
 ) -> list[ResidencyFinding]:
     """Compare each scheme argument's `.meta` memory_space with the
-    classification of its entry point's OpenACC (*acc_residency*: proc name
-    -> fparser2_to_meta.AccResidency).
+    classification of its entry point's directives in *language* ("acc":
+    OpenACC, "omp": OpenMP target offload; *acc_residency*: proc name ->
+    fparser2_to_meta.AccResidency).
 
-    Warnings (notes where --directive acc derives the value anyway):
+    Warnings (notes where --directive derives the value anyway):
     - the entry point has no OpenACC of its own but calls a routine in the
       same file that has some (e.g. a dispatcher calling the real kernel
       routine): only the entry point is read, so its residency is unclear;
@@ -270,12 +272,21 @@ def compare_memory_space(
     - `.meta` says device, but the entry point has OpenACC directives and
       none of them uses the argument on the device.
     Notes (--verbose 2): arguments the scheme copies itself ("either": a
-    copy clause, or an array in a compute construct with no clause) whose
-    `.meta` is silent; derived-type arguments left to the scheme; entry
+    copy clause or map, or an array in a compute construct with no clause)
+    whose `.meta` is silent (device with --directive omp; with acc only
+    where the cap already keeps the variable there); derived-type arguments left to the scheme; entry
     points with no OpenACC, whose memory_space comes from `.meta` only.
     `unified` in `.meta` is not compared.
     """
     from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE
+
+    lang = "OpenMP" if language == "omp" else "OpenACC"
+    examples = "map clauses" if language == "omp" else "present/copy clauses"
+    either_outcome = (
+        "memory_space = device is derived with --directive omp"
+        if language == "omp"
+        else "on the device only where the cap already keeps it there"
+    )
 
     def where(line_no: int) -> str:
         return f"{source_path}:{line_no}" if source_path else f"line {line_no}"
@@ -302,15 +313,15 @@ def compare_memory_space(
             if callees:
                 findings.append(ResidencyFinding(
                     "warning", name,
-                    f"has no OpenACC of its own but calls {', '.join(callees)}, "
+                    f"has no {lang} of its own but calls {', '.join(callees)}, "
                     "which does; only the entry point is read, so its arguments' "
                     "device residency is unclear -- put the data directives "
-                    "(present/copy clauses) in the entry point",
+                    f"({examples}) in the entry point",
                 ))
             elif declared_device:
                 findings.append(ResidencyFinding(
                     "note", name,
-                    "no OpenACC in the entry point; memory_space = device for "
+                    f"no {lang} in the entry point; memory_space = device for "
                     f"{', '.join(declared_device)} comes from .meta only",
                 ))
             continue
@@ -322,14 +333,14 @@ def compare_memory_space(
             if arg in residency.derived_types:
                 findings.append(ResidencyFinding(
                     "note", name,
-                    f"'{arg}' is a derived type its OpenACC moves itself "
+                    f"'{arg}' is a derived type its {lang} moves itself "
                     f"({where(residency.derived_types[arg])}); xdsl-ccpp leaves it on the host",
                 ))
             elif use is not None and use.category == ACC_DEVICE and declared is None:
                 findings.append(ResidencyFinding(
                     "note", name,
                     f"'{arg}' is used on the device ({use.how}, {where(use.line_no)}): "
-                    "memory_space = device is derived with --directive acc",
+                    f"memory_space = device is derived with --directive {language}",
                 ))
             elif use is not None and use.category == ACC_DEVICE and declared != "device":
                 findings.append(ResidencyFinding(
@@ -341,13 +352,12 @@ def compare_memory_space(
                 findings.append(ResidencyFinding(
                     "note", name,
                     f"'{arg}' is copied by the scheme itself ({use.how}, "
-                    f"{where(use.line_no)}): on the device only where the cap "
-                    "already keeps it there",
+                    f"{where(use.line_no)}): {either_outcome}",
                 ))
             elif use is None and declared == "device":
                 findings.append(ResidencyFinding(
                     "warning", name,
                     f"'{arg}' has memory_space = device in .meta, but the entry "
-                    "point's OpenACC never uses it on the device",
+                    f"point's {lang} never uses it on the device",
                 ))
     return findings

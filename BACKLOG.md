@@ -57,19 +57,18 @@ measured data, and will drift as items are reassessed.
 | `registry-scheme-objects` | ~1 day read-only survey first; then 3-5 days for a suite-aware `metadata_file` filter, or more (unsized) to move scheme objects into package-owned state; both upstream CAM-SIMA changes needing design agreement | S-L |
 | `package-shared-state-per-suite` | <1 day (narrow the warning in `package_scope.py`, note at `--verbose 2` otherwise, a unit test) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
-| `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
 | `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
 | `gpu-ddt-deep-copy-residency` | not planned (2026-11-02): schemes move their own derived-type data | -- |
-| `gpu-fphystest-pumas` | umbrella, ~25-40 days in total: the sum of its steps below plus `acc-derive-memory-space` and `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
-| `gpu-fphystest-rrtmgp` | umbrella, ~40-60 days in total: its steps below plus `acc-derive-memory-space` and `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
+| `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below plus `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
+| `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below plus `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
 | `gpu-pumas-testmod` | 1-2 days | XS |
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
-| `gpu-fphystest-kessler` | umbrella, ~20-35 days left: `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
+| `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -78,8 +77,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
-| `acc-derive-memory-space` | 4-7 days (hand-written `.meta` pairing, `default(present)`, the either rule in the residency analysis, precedence and warnings, the derived-type `memory_space` error; entry-point body only; includes `acc-meta-residency-check`'s 2-4) | S-M |
-| `omp-derive-memory-space` | 2-3 days (OpenMP clause table, combined `target` constructs, choice by `--directive`, tests) plus an OpenMP-offloaded example scheme to test against | S |
+| `example-gpu-build-flags` | 1-2 days (`-acc` for the OpenACC examples, offload flags at link time, `OMP_TARGET_OFFLOAD=MANDATORY`/kernel check in the GPU tests; then fix whatever starts running on the GPU) | XS-S |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
@@ -1005,8 +1003,9 @@ remove for Fortran stays for C++.
 
 **Dependencies:** do `cxx-scheme-no-e2e-test` first — it supplies the real
 `extern "C"` scheme to annotate and a compiled test proving the generated
-`.meta` is correct. Coordinate with `acc-meta-residency-check` (same
-`memory_space`-from-pragmas logic, Fortran side) and with
+`.meta` is correct. Mirror `acc-derive-memory-space`'s Fortran classifier
+(`fparser2_to_meta._classify_acc_residency`, device/either, done
+2026-11-02) for the pragmas, and coordinate with
 `direct-fortran-ingest`, whose design should allow C++ sources too.
 
 ## Someday-maybe: EAMxx bridge automation (merged from `EAMxx/EAMxx-bridge-automation.md`, 2026-09-29)
@@ -1432,20 +1431,7 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
 `!$acc`, and the manual-only nvhpc job runs on a GPU-less runner with
 `ARCH=CPU` (`-noacc`). Two follow-ons:
 
-- `acc-meta-residency-check` — **Static `.meta` vs `!$acc` residency
-  consistency check.** `ccpp_dsl.py`'s `validate_fortran_sources` already
-  pairs each `--scheme-files` `.meta` with its `.F90` and runs
-  `validate_source.compare_modules`, which compares type/rank/intent/
-  optional/kind/extra args but not `memory_space`. Extend it to compare
-  each argument's declared `memory_space` with what the routine's own
-  `!$acc present(...)`/`deviceptr(...)` clauses imply (the derivation
-  `fparser2_to_meta.py` already performs for `!$ccpp`-tagged sources), and
-  report mismatches the same way (warn-only first, like the existing
-  check). Subsumed by `acc-derive-memory-space` (2026-10-28), which
-  derives `memory_space` from the source and warns where an explicit
-  `.meta` value disagrees; do it as that item's first stage. Needs no GPU, would have flagged the `cld_ice` bug at generation
-  time, and applies equally to CAM-SIMA's hand-written atmospheric_physics
-  `.meta`.
+- **ID: `acc-meta-residency-check`. Resolved (2026-11-02, PR #187)** -- CHANGELOG.md L13862.
 - `gpu-ci` — **CI that actually runs generated OpenACC on a GPU.** GitHub's
   standard hosted runners have no GPU, so this needs a GPU-equipped runner:
   a paid GitHub GPU runner, or a self-hosted/scheduled job on NCAR
@@ -1619,9 +1605,10 @@ is derived from the Fortran source's OpenACC clauses
   shortwave diagnostic subcycle is a loop holding host schemes. Steps:
   1. `rrtmgp-wrapper-acc-trigger` — settle the build-flag question
      first.
-  2. `acc-derive-memory-space` — the wrappers' plain-array arguments
-     from their existing data clauses (copy clauses: device only where
-     another scheme keeps the variable on the GPU).
+  2. `acc-derive-memory-space` — done 2026-11-02: the wrappers'
+     plain-array arguments from their existing data clauses (copy
+     clauses: device only where another scheme keeps the variable on the
+     GPU).
   3. The rte-rrtmgp objects (`ty_gas_concs_ccpp`,
      `ty_gas_optics_rrtmgp_ccpp`, `ty_optical_props_*_ccpp`,
      `ty_source_func_lw_ccpp`, `ty_fluxes_*_ccpp`) stay with the
@@ -1664,9 +1651,9 @@ is derived from the Fortran source's OpenACC clauses
   2. Capture gaps — done 2026-11-01 (CHANGELOG.md L13800): constituent
      properties captured, local captures from a CAM-SIMA run; 14 of the
      16 schemes replay from one capture on CPU and GPU.
-  3. `acc-derive-memory-space` — so the ported schemes need no `.meta`
-     change (`kessler` and `kessler_update` keep their explicit
-     `memory_space`, which then must agree with their source).
+  3. `acc-derive-memory-space` — done 2026-11-02 (CHANGELOG.md L13862):
+     ported schemes need no `.meta` change; the Kessler `.meta` files no
+     longer declare `memory_space` (s44a passed).
   4. `gpu-port-shared-utility-schemes`, Kessler's 12: the 10 state
      converters (`calc_exner`, `temp_to_potential_temp`,
      `potential_temp_to_temp`, `calc_dry_air_ideal_gas_density`,
@@ -1701,65 +1688,27 @@ Supporting items (not tracked elsewhere):
 
 - **ID: `gpu-sync-intent-aware`. Resolved (2026-10-31)** -- CHANGELOG.md L13758.
 
-- `acc-derive-memory-space` — **Derive argument residency from the
-  scheme's Fortran source instead of `.meta`.** The `.F90` already says
-  which arguments the scheme uses on the device; `memory_space` in
-  `.meta` duplicates it and can drift (the `cld_ice` bug above). The
-  derivation exists in part: `_extract_device_resident_vars`
-  (`transforms/fparser2_to_meta.py:365`) reads `present`/`deviceptr`/
-  `copyin`/`copyout`/`copy` clauses, but only for `!$ccpp`-tagged
-  sources whose `.meta` is generated, and only within the routine's own
-  body. Extend it to:
-  - every `--scheme-files` entry with hand-written `.meta`, using the
-    `.meta`/`.F90` pairing `validate_fortran_sources` already does;
-  - `default(present)` on a compute construct (Kessler): every
-    argument referenced inside it is device-resident;
-  - derived-type arguments and components named in clauses
-    (`copyout(proc_rates%qcsevap)`,
-    `copyin(sources%sources%lay_source)`) are skipped, reported at
-    `--verbose 2`: the scheme moves its own derived-type data
-    (`gpu-ddt-deep-copy-residency`, not planned). `memory_space =
-    device` on a derived-type argument in `.meta` becomes a generation
-    error naming the scheme and argument (today the cap would copy the
-    top-level object only, a shallow copy).
+- **ID: `acc-derive-memory-space`. Resolved (2026-11-02, PR #187)** -- CHANGELOG.md L13862.
 
-  Classify `present`/`deviceptr` (and arrays referenced inside a
-  `default(present)` construct) as "requires device", and the copy
-  family plus arrays referenced in a compute construct without a clause
-  as "either" (present-or-copy: the scheme works with host data and
-  with data the cap keeps resident). Decided 2026-11-02, rule (a): an
-  "either" argument becomes device only where another scheme in the
-  suite keeps that variable on the GPU, else stays host (the scheme
-  copies it itself). Treating it as host while the variable is resident
-  would be wrong: the cap's `update device` after the call would copy
-  the stale host value over the scheme's GPU result. Treating it as
-  always device would change today's RRTMGP GPU caps. Stage 1: derive
-  and warn only; stage 2: apply with `--directive acc`. An explicit `memory_space` in `.meta` stays as an override;
-  a disagreement with the source warns. That warning is
-  `acc-meta-residency-check`, which this item subsumes. Only the entry
-  point's own body is read, never its callees: a scheme whose OpenACC
-  sits deeper (PUMAS) gets directives added at the entry point, the
-  routine its `.meta` describes. Without `-acc`
-  in the scheme's build, the derived residency must be ignored (the
-  directives are comments there); tie it to `--directive`.
-
-- `omp-derive-memory-space` — **`acc-derive-memory-space` for OpenMP
-  target offload.** Added 2026-11-02. The classifier
-  (`_classify_acc_residency`, `fparser2_to_meta.py`) reads only `!$acc`;
-  with `--directive omp` an OpenMP-offloaded scheme gets no derived
-  residency, so its `.meta` `memory_space` stays hand-written. The rest is
-  directive-neutral already (the caps' directives follow `--directive`; rule
-  (a), the `.meta` comparison, the unclear-residency warning and the
-  derived-type error work on the classification). Add an OpenMP clause
-  table: device = `map(present, ...)`, `is_device_ptr`, `has_device_addr`,
-  `use_device_ptr/addr`, `target update to/from`, and arrays in a
-  `defaultmap(present)` region; either = `map(to/from/tofrom/alloc: ...)`
-  (no transfer when already present) and arrays in a `target` region with
-  no `map` (implicitly `tofrom`). Handle combined constructs (`target
-  teams distribute parallel do`) and `end target`; pick the table from
-  `--directive`. No CAM-SIMA scheme uses OpenMP offload today, so first
-  write an OpenMP-offloaded example scheme (e.g. an OpenMP variant of
-  `examples/kessler`'s scheme) to test against a real file.
+- `example-gpu-build-flags` — **The OpenACC examples' GPU builds probably
+  never ran on the GPU.** Found 2026-11-02 while testing
+  `examples/kessler_omp`. With `-DARCH=GPU` and nvfortran,
+  `examples/kessler` (`kessler_apply_arch_flags`) and `examples/advection`
+  compile with `-mp=gpu` (OpenMP) and never `-acc`, and link with neither
+  (flags.make/link.txt of a configured tree). nvfortran ignores `!$acc`
+  without `-acc`, so their kernels and the caps' OpenACC directives most
+  likely ran on the host and the GPU tests (`ctest_kessler_parity` on GPU,
+  `ctest_kessler_cpu_gpu_parity`, `run_cpu_gpu_parity.sh`) compared host
+  results. For `kessler_omp` the same missing link flag made every target
+  region fall back to the host silently (`OMP_TARGET_OFFLOAD=MANDATORY`:
+  "Could not run target region on device 0"; nsys: no CUDA kernels);
+  fixed there with `target_link_options(-mp=gpu)` and MANDATORY on its
+  GPU tests. To do: compile and link the OpenACC examples with `-acc`
+  (plus `-mp=gpu` where hand-written OpenMP drivers need it), confirm
+  kernels run (`NV_ACC_NOTIFY`/nsys), then fix what breaks once they do
+  (the known `kessler_hand.exe`/C++ drivers "PRESENT clause was not
+  found" cases). Not related to CAM-SIMA, whose GPU builds use `-acc`.
+- **ID: `omp-derive-memory-space`. Resolved (2026-11-02, PR #188)** -- CHANGELOG.md L13916.
 - `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
   `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
   plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,

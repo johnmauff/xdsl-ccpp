@@ -13858,3 +13858,100 @@ the generated build: 14/14 pass on CPU and on an A100 with `-DOPENACC=ON`
 (`kessler` and `kessler_update` on the device). The two left out
 (`kessler_diagnostics`, `sima_state_diagnostics`) need CAM-SIMA's
 history module: `scheme-io-capture-host-module-schemes`.
+
+## `acc-derive-memory-space`: GPU residency from the scheme's OpenACC (PR #187, 2026-11-02)
+
+Step 3 of `gpu-fphystest-kessler`: a scheme ported to the GPU needs no
+`.meta` change. Resolves `acc-derive-memory-space` and
+`acc-meta-residency-check`.
+
+- One classifier (`fparser2_to_meta._classify_acc_residency`, replacing
+  `_extract_device_resident_vars`) reads an entry point's own `!$acc`
+  directives: "device" for `present`/`deviceptr`, `update
+  self/host/device`, `host_data use_device` and arrays used in a
+  `default(present)` construct; "either" (present-or-copy) for the copy
+  family and arrays used in a compute construct with no clause. A
+  combined `... loop` directive's body is the DO construct after it, else
+  the lines up to its `end`. Subscripts, modifiers (`readonly:`) and
+  continuations are handled; an unclosed `(` is an input error with
+  file:line. Derived-type arguments and components are never classified.
+  Only the entry point's body is read; `!$omp` is not
+  (`omp-derive-memory-space`).
+- Generation (`transforms/derive_memory_space.py`, `--directive acc`):
+  `ccpp_dsl` takes the classification from the Fortran-vs-`.meta` check's
+  workers and sets `memory_space = device` on the frontend module before
+  `ccpp_opt` where the `.meta` is silent; explicit values always win.
+  "Either" becomes device only where the variable (same standard name) is
+  device data elsewhere, a scheme argument or host variable (rule (a),
+  decided 2026-11-02): leaving it host while resident would let the cap's
+  `update device` overwrite the scheme's device result; always device
+  would change RRTMGP's caps. CPU generation keeps its overlap. Generated
+  `.meta` (tagged sources) is written away from its `.F90`, so it keeps
+  mapping "either" to device. `--verbose 2` lists every derived value.
+- Fortran-vs-`.meta` check (`validate_source.compare_memory_space`):
+  warns where an explicit `.meta` value contradicts the source, and where
+  an entry point has no OpenACC of its own but calls a routine in the same
+  file that has some (residency unclear); details at `--verbose 2`.
+- `memory_space = device` on a scheme's derived-type argument is an input
+  error: xdsl-ccpp never moves derived-type data, schemes move their own
+  (`gpu-ddt-deep-copy-residency`, not planned).
+- Examples: `advection_flat_host/cld_ice.meta` gets the `qv`
+  `memory_space = device` that `advection`'s copy always had (without it
+  the cap's `update device(qv)` overwrote `cld_ice_run`'s device result;
+  the July "diverging qv" scenario came from this slip; synthetic
+  fixtures in `test_gpu_directives.py` cover genuine disagreement);
+  `kessler/scheme/kessler.F90`: `kessler_run` holds the kernels (was a
+  dispatcher to `kessler_runv2`), matching CAM-SIMA.
+- CAM-SIMA (user): `kessler.F90` restructured the same way; every
+  `memory_space` line removed from `kessler.meta` and `kessler_update.meta`.
+
+Verification: pytest 1397 passed; `cap_oracle diff` against `main`: 30/30
+identical (gnu and nvhpc regression sets, Kessler and RRTMGP GPU,
+composite package-cap GPU). Kessler GPU caps generated without any
+`memory_space` in the Kessler `.meta` are identical to the explicit ones
+(rule (a) puts `kessler_update_timestep_init`'s bare-loop arrays on the
+device). Kessler GPU FPHYStest s44a (nvhpc, A100, no `memory_space` in
+the Kessler `.meta`): PASS. CI passed; merged as #187.
+
+## `omp-derive-memory-space`: GPU residency from the scheme's OpenMP, and an OpenMP Kessler example (PR #188, 2026-11-02)
+
+`acc-derive-memory-space` for OpenMP target offload. Resolves
+`omp-derive-memory-space`.
+
+- Compiler check (nvfortran 25.9 `-mp=gpu`, A100): the OpenMP 5.1 forms
+  that require presence are not supported (`map(present, ...)`: syntax
+  error; `defaultmap(present)`: "presents cannot be used with defaultmap
+  clause"). Implicit mapping and `map(to:)` of present data use the
+  device copy. So a kernel-style OpenMP port can only say "either".
+- `examples/kessler_omp`: examples/kessler's schemes ported to OpenMP
+  target offload (`target teams distribute parallel do`, explicit
+  `private` list for the column loop's scalars, implicit maps), its
+  suite, host and CCPP driver, caps from `--directive omp`, and `.meta`
+  with no `memory_space`. The first example whose caps carry OpenMP
+  directives. Tests: CPU bit-for-bit against `kessler_ccpp.exe`; on the
+  GPU a run and a CPU-vs-GPU comparison, both with
+  `OMP_TARGET_OFFLOAD=MANDATORY`. Linked with `-mp=gpu`: compiled-only,
+  every target region silently ran on the host. `check_parity.py` takes
+  any number of drivers; CI's kessler filter is anchored.
+- Classifier (`_classify_acc_residency(..., language)`): `!$omp` read
+  with its own clause table -- device: `map` with `present`,
+  `is_device_ptr`, `has_device_addr`, `use_device_ptr/addr`, `target
+  update to/from`, arrays in a `defaultmap(present)` region; either:
+  other maps (`release`/`delete` ignored) and arrays a target region uses
+  with no map. Combined loop constructs take the next DO construct as
+  body, `target` regions end at `end target`; host `parallel do` is
+  ignored. `--directive` picks the language (OpenACC otherwise);
+  generated `.meta` takes the union.
+- Rule: with `--directive omp` "either" is device outright (decided
+  2026-11-02); an explicit `memory_space = host` opts out. Rule (a) stays
+  for `--directive acc`. The `.meta` check names the language.
+- Found on the way: the OpenACC examples' GPU builds compile with
+  `-mp=gpu` and never `-acc` (BACKLOG `example-gpu-build-flags`).
+
+Verification: pytest 1410 passed; `cap_oracle diff` against this branch's
+previous commit: 30/30 identical. `kessler_omp` caps without any
+`memory_space` are identical to the explicit ones. On Derecho (nvhpc
+25.9): CPU parity passes; on an A100 the four kernels run (nsys; MANDATORY
+offload) and match the CPU run exactly, before and after removing the
+`memory_space` lines. CI passed (PR #188; rebased onto `main` after #187
+was squash-merged).

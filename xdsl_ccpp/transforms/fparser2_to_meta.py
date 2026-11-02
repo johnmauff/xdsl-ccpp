@@ -361,7 +361,15 @@ def _extract_ccpp_tags(
 # Derived-type arguments, and components named in clauses
 # (`copyin(sources%sources%lay_source)`), are never classified: the scheme
 # moves its own derived-type data (gpu-ddt-deep-copy-residency, not planned).
-# OpenACC only; `!$omp` is not read.
+#
+# OpenMP target offload (omp-derive-memory-space), read when the language
+# is "omp": "device" for a `map` with the `present` modifier,
+# `is_device_ptr`/`has_device_addr`/`use_device_ptr`/`use_device_addr`,
+# `target update to/from`, and arrays in a target region with
+# `defaultmap(present)`; "either" for any other `map` and arrays in a
+# target region with no `map` for them (implicitly tofrom). nvfortran 25.9
+# supports neither present form, so a kernel-style OpenMP port is all
+# "either" (derive_memory_space treats that as device for --directive omp).
 ACC_DEVICE = "device"
 ACC_EITHER = "either"
 
@@ -376,6 +384,92 @@ _ACC_EITHER_CLAUSES = frozenset({
 _ACC_UPDATE_CLAUSES = frozenset({"self", "host", "device"})
 _ACC_HOST_DATA_CLAUSES = frozenset({"use_device"})
 _ACC_COMPUTE_KINDS = ("parallel", "kernels", "serial")
+
+_OMP_DEVICE_CLAUSES = frozenset({
+    "is_device_ptr", "has_device_addr", "use_device_ptr", "use_device_addr",
+})
+# map types that end a mapping rather than use the data.
+_OMP_UNMAP_TYPES = frozenset({"release", "delete"})
+# Words of a combined target construct that make it a loop construct.
+_OMP_LOOP_WORDS = frozenset({"do", "loop", "simd", "distribute"})
+_OMP_TARGET_DATA_WORDS = frozenset({"data", "enter", "exit", "update"})
+
+LANGUAGES = ("acc", "omp")
+
+
+def _split_modifiers(arg_text: str) -> tuple[list[str], str]:
+    """Split a clause argument at its top-level ':' (OpenMP `map(present,
+    to: a, b)`, `to(present: x)`): ([modifier words], variable list). No
+    top-level ':' (a subscript's ':' is inside parentheses): ([], text)."""
+    depth = 0
+    for i, c in enumerate(arg_text):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == ":" and depth == 0:
+            return [m.strip() for m in arg_text[:i].split(",") if m.strip()], arg_text[i + 1:]
+    return [], arg_text
+
+
+def _acc_directive(words, clauses):
+    """OpenACC: the clauses that name variables, [(category, how, variable
+    list)], and the compute construct, (is a loop construct, matches its
+    end directive's words, default(present)) or None."""
+    kind = words[0]
+    named = []
+    for clause, arg_text in clauses:
+        if clause in _ACC_DEVICE_CLAUSES:
+            named.append((ACC_DEVICE, clause, arg_text))
+        elif clause in _ACC_EITHER_CLAUSES:
+            named.append((ACC_EITHER, clause, arg_text))
+        elif kind == "update" and clause in _ACC_UPDATE_CLAUSES:
+            named.append((ACC_DEVICE, clause, arg_text))
+        elif kind == "host_data" and clause in _ACC_HOST_DATA_CLAUSES:
+            named.append((ACC_DEVICE, clause, arg_text))
+    if kind not in _ACC_COMPUTE_KINDS:
+        return named, None
+    default_present = any(c == "default" and a.strip() == "present" for c, a in clauses)
+    return named, (
+        len(words) > 1 and words[1] == "loop",
+        lambda end_words: end_words[:2] == ["end", kind],
+        default_present,
+    )
+
+
+def _omp_directive(words, clauses):
+    """OpenMP target offload: as _acc_directive. Only target constructs
+    count: `!$omp parallel do` alone is host threading."""
+    if words[0] != "target":
+        return [], None
+    named = []
+    is_update = len(words) > 1 and words[1] == "update"
+    for clause, arg_text in clauses:
+        if clause == "map":
+            modifiers, variables = _split_modifiers(arg_text)
+            if any(m in _OMP_UNMAP_TYPES for m in modifiers):
+                continue
+            if "present" in modifiers:
+                named.append((ACC_DEVICE, "map(present)", variables))
+            else:
+                map_type = next((m for m in modifiers if m in ("to", "from", "tofrom", "alloc")), "tofrom")
+                named.append((ACC_EITHER, f"map({map_type})", variables))
+        elif clause in _OMP_DEVICE_CLAUSES:
+            named.append((ACC_DEVICE, clause, arg_text))
+        elif is_update and clause in ("to", "from"):
+            named.append((ACC_DEVICE, f"update {clause}", _split_modifiers(arg_text)[1]))
+    if len(words) > 1 and words[1] in _OMP_TARGET_DATA_WORDS:
+        return named, None
+    default_present = any(
+        c == "defaultmap" and _split_modifiers(a)[0][:1] == ["present"]
+        or c == "defaultmap" and a.strip() == "present"
+        for c, a in clauses
+    )
+    return named, (
+        any(w in _OMP_LOOP_WORDS for w in words[1:]),
+        lambda end_words: end_words[:2] == ["end", "target"] and end_words[2:3] != ["data"],
+        default_present,
+    )
 
 
 @dataclass
@@ -532,19 +626,23 @@ def _referenced_names(source_lines: list[str], first: int, last: int) -> set[str
 
 def _classify_acc_residency(
     sub, source_lines: list[str], span: tuple[int, int] | None,
-    decl_map: dict[str, dict], filename: str = "<source>",
+    decl_map: dict[str, dict], filename: str = "<source>", language: str = "acc",
 ) -> AccResidency:
     """Classify the dummy arguments of one entry point (*sub*, a
     Subroutine_Subprogram; *decl_map* its dummy declarations) by its own
-    `!$acc` directives -- see ACC_DEVICE / ACC_EITHER. Only the routine's
-    own body is read, never its callees.
+    directives in *language* ("acc": `!$acc`, "omp": `!$omp` target
+    offload) -- see ACC_DEVICE / ACC_EITHER. Only the routine's own body is
+    read, never its callees.
 
-    A compute construct's body is the DO construct after a combined
-    `parallel loop`/`kernels loop`/`serial loop` directive, else the lines
-    up to its `end parallel`/`end kernels`/`end serial`; arrays referenced
-    there are classified ("device" under default(present), else
-    "either"). Scalars referenced there are firstprivate, not classified.
+    A compute construct's body is the DO construct after a combined loop
+    directive (`parallel loop`, `target teams distribute parallel do`,
+    ...), else the lines up to its end directive (`end parallel`, `end
+    target`, ...); arrays referenced there are classified ("device" under
+    default(present)/defaultmap(present), else "either"). Scalars
+    referenced there are firstprivate, not classified.
     """
+    if language not in LANGUAGES:
+        raise ValueError(f"unknown directive language {language!r}")
     import fparser.two.Fortran2003 as f03
     from fparser.two.utils import walk
 
@@ -556,7 +654,7 @@ def _classify_acc_residency(
         return result
     directives = [
         (line_no, " ".join(remainders).lower())
-        for line_no, remainders in _join_comment_continuations(source_lines, span, ("!$acc",))
+        for line_no, remainders in _join_comment_continuations(source_lines, span, (f"!${language}",))
     ]
     if not directives:
         return result
@@ -572,46 +670,37 @@ def _classify_acc_residency(
         ) if s is not None
     )
 
+    interpret = _acc_directive if language == "acc" else _omp_directive
     for index, (line_no, text) in enumerate(directives):
         words, clauses = _split_directive(text, f"{filename}:{line_no}")
         if not words or words[0] in ("end", "routine", "wait", "atomic", "cache"):
             continue
-        kind = words[0]
-        for clause, arg_text in clauses:
-            if clause in _ACC_DEVICE_CLAUSES:
-                category = ACC_DEVICE
-            elif clause in _ACC_EITHER_CLAUSES:
-                category = ACC_EITHER
-            elif kind == "update" and clause in _ACC_UPDATE_CLAUSES:
-                category = ACC_DEVICE
-            elif kind == "host_data" and clause in _ACC_HOST_DATA_CLAUSES:
-                category = ACC_DEVICE
-            else:
-                continue
+        named, compute = interpret(words, clauses)
+        for category, how, arg_text in named:
             for name, is_component in _clause_variables(arg_text):
                 if name not in decl_map:
                     continue  # a local or module variable
                 if is_component or is_derived(name):
                     result.derived_types.setdefault(name, line_no)
                 else:
-                    result.note(name, category, line_no, clause)
+                    result.note(name, category, line_no, how)
 
-        if kind not in _ACC_COMPUTE_KINDS:
+        if compute is None:
             continue
+        is_loop, is_end, default_present = compute
         body = None
-        if len(words) > 1 and words[1] == "loop":
+        if is_loop:
             body = next((s for s in do_spans if s[0] > line_no), None)
         else:
             end = next(
                 (ln for ln, t in directives[index + 1:]
-                 if _split_directive(t, f"{filename}:{ln}")[0][:2] == ["end", kind]),
+                 if is_end(_split_directive(t, f"{filename}:{ln}")[0])),
                 None,
             )
             if end is not None:
                 body = (line_no + 1, end - 1)
         if body is None:
             continue
-        default_present = any(c == "default" and a.strip() == "present" for c, a in clauses)
         for name in _referenced_names(source_lines, body[0], body[1]):
             if name not in decl_map:
                 continue
@@ -619,7 +708,8 @@ def _classify_acc_residency(
                 result.derived_types.setdefault(name, line_no)
             elif decl_map[name]["rank"] > 0:
                 if default_present:
-                    result.note(name, ACC_DEVICE, line_no, "default(present)")
+                    how = "default(present)" if language == "acc" else "defaultmap(present)"
+                    result.note(name, ACC_DEVICE, line_no, how)
                 else:
                     result.note(name, ACC_EITHER, line_no, "implicit")
     return result
@@ -630,12 +720,13 @@ def _extract_subroutines(
     filename: str = "<source>",
     preproc_defs: dict | None = None,
     acc_residency: dict | None = None,
+    language: str = "acc",
 ) -> list[tuple[str, str, list[dict]]]:
     """Parse *f90_source* and return a list of (module_name, proc_name, args).
 
     *acc_residency*, if given, is filled with proc_name -> AccResidency (what
-    each subroutine's own OpenACC says about its dummy arguments,
-    acc-derive-memory-space) from the same parse.
+    each subroutine's own directives in *language*, "acc" or "omp", say
+    about its dummy arguments, acc-derive-memory-space) from the same parse.
 
     Each element of *args* is a dict with keys:
     ``name``, ``type``, ``rank``, ``intent`` (or None), ``optional`` (bool),
@@ -702,9 +793,15 @@ def _extract_subroutines(
             # Directives legitimately also name locals (e.g. kessler.F90's
             # `present(r,rhalf,...)` on its own work arrays); the classifier
             # only records dummy arguments.
-            residency = _classify_acc_residency(sub, source_lines, span, decl_map, filename)
+            by_language = {
+                lang: _classify_acc_residency(sub, source_lines, span, decl_map, filename, lang)
+                for lang in LANGUAGES
+            }
             if acc_residency is not None:
-                acc_residency[proc_name] = residency
+                acc_residency[proc_name] = by_language[language]
+            # Generated .meta does not know the directive language: an
+            # argument either language classifies gets memory_space.
+            classified = set(by_language["acc"].args) | set(by_language["omp"].args)
 
             # Return args in dummy-argument order, enriched with any !ccpp
             # tag content found for that argument's name (standard_name/
@@ -720,7 +817,7 @@ def _extract_subroutines(
                 if name not in decl_map:
                     continue
                 extra = dict(tags.get(name, {}))
-                if "memory_space" not in extra and name in residency.args:
+                if "memory_space" not in extra and name in classified:
                     extra["memory_space"] = "device"
                 args.append({"name": name, **decl_map[name], **extra})
 
@@ -815,6 +912,7 @@ def build_meta_module_from_source(
     filename: str = "<source>",
     preproc_defs: dict | None = None,
     acc_residency: dict | None = None,
+    language: str = "acc",
 ) -> builtin.ModuleOp:
     """Parse *f90_source* and return a ``builtin.ModuleOp`` containing
     ``ccpp.table_properties`` / ``ccpp.arg_table`` / ``ccpp.arg`` ops.
@@ -839,7 +937,7 @@ def build_meta_module_from_source(
 
     Raises ``ImportError`` if fparser is not installed.
     """
-    subroutines = _extract_subroutines(f90_source, filename, preproc_defs, acc_residency)
+    subroutines = _extract_subroutines(f90_source, filename, preproc_defs, acc_residency, language)
 
     # Group by module name → one TablePropertiesOp per module
     by_module: dict[str, list[tuple[str, list[dict]]]] = defaultdict(list)
@@ -900,7 +998,8 @@ def build_meta_module_from_source(
 
 
 def build_meta_module_from_file(
-    f90_path: str, preproc_defs: dict | None = None, acc_residency: dict | None = None
+    f90_path: str, preproc_defs: dict | None = None, acc_residency: dict | None = None,
+    language: str = "acc",
 ) -> builtin.ModuleOp:
     """Read *f90_path* and return CCPP metadata IR extracted via fparser2.
 
@@ -910,4 +1009,4 @@ def build_meta_module_from_file(
     """
     with open(f90_path) as f:
         source = f.read()
-    return build_meta_module_from_source(source, f90_path, preproc_defs, acc_residency)
+    return build_meta_module_from_source(source, f90_path, preproc_defs, acc_residency, language)
