@@ -13858,3 +13858,57 @@ the generated build: 14/14 pass on CPU and on an A100 with `-DOPENACC=ON`
 (`kessler` and `kessler_update` on the device). The two left out
 (`kessler_diagnostics`, `sima_state_diagnostics`) need CAM-SIMA's
 history module: `scheme-io-capture-host-module-schemes`.
+
+## `acc-derive-memory-space`: GPU residency from the scheme's OpenACC (2026-11-02)
+
+Step 3 of `gpu-fphystest-kessler`: a scheme ported to the GPU needs no
+`.meta` change. Resolves `acc-derive-memory-space` and
+`acc-meta-residency-check`.
+
+- One classifier (`fparser2_to_meta._classify_acc_residency`, replacing
+  `_extract_device_resident_vars`) reads an entry point's own `!$acc`
+  directives: "device" for `present`/`deviceptr`, `update
+  self/host/device`, `host_data use_device` and arrays used in a
+  `default(present)` construct; "either" (present-or-copy) for the copy
+  family and arrays used in a compute construct with no clause. A
+  combined `... loop` directive's body is the DO construct after it, else
+  the lines up to its `end`. Subscripts, modifiers (`readonly:`) and
+  continuations are handled; an unclosed `(` is an input error with
+  file:line. Derived-type arguments and components are never classified.
+  Only the entry point's body is read; `!$omp` is not
+  (`omp-derive-memory-space`).
+- Generation (`transforms/derive_memory_space.py`, `--directive acc`):
+  `ccpp_dsl` takes the classification from the Fortran-vs-`.meta` check's
+  workers and sets `memory_space = device` on the frontend module before
+  `ccpp_opt` where the `.meta` is silent; explicit values always win.
+  "Either" becomes device only where the variable (same standard name) is
+  device data elsewhere, a scheme argument or host variable (rule (a),
+  decided 2026-11-02): leaving it host while resident would let the cap's
+  `update device` overwrite the scheme's device result; always device
+  would change RRTMGP's caps. CPU generation keeps its overlap. Generated
+  `.meta` (tagged sources) is written away from its `.F90`, so it keeps
+  mapping "either" to device. `--verbose 2` lists every derived value.
+- Fortran-vs-`.meta` check (`validate_source.compare_memory_space`):
+  warns where an explicit `.meta` value contradicts the source, and where
+  an entry point has no OpenACC of its own but calls a routine in the same
+  file that has some (residency unclear); details at `--verbose 2`.
+- `memory_space = device` on a scheme's derived-type argument is an input
+  error: xdsl-ccpp never moves derived-type data, schemes move their own
+  (`gpu-ddt-deep-copy-residency`, not planned).
+- Examples: `advection_flat_host/cld_ice.meta` gets the `qv`
+  `memory_space = device` that `advection`'s copy always had (without it
+  the cap's `update device(qv)` overwrote `cld_ice_run`'s device result;
+  the July "diverging qv" scenario came from this slip; synthetic
+  fixtures in `test_gpu_directives.py` cover genuine disagreement);
+  `kessler/scheme/kessler.F90`: `kessler_run` holds the kernels (was a
+  dispatcher to `kessler_runv2`), matching CAM-SIMA.
+- CAM-SIMA (user): `kessler.F90` restructured the same way; every
+  `memory_space` line removed from `kessler.meta` and `kessler_update.meta`.
+
+Verification: pytest 1397 passed; `cap_oracle diff` against `main`: 30/30
+identical (gnu and nvhpc regression sets, Kessler and RRTMGP GPU,
+composite package-cap GPU). Kessler GPU caps generated without any
+`memory_space` in the Kessler `.meta` are identical to the explicit ones
+(rule (a) puts `kessler_update_timestep_init`'s bare-loop arrays on the
+device). Kessler GPU FPHYStest s44a (nvhpc, A100, no `memory_space` in
+the Kessler `.meta`): PASS.
