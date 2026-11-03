@@ -25,7 +25,7 @@ from xdsl_ccpp.transforms.suite_meta import MetaCAP
 
 _ROOT = Path(__file__).resolve().parents[2]
 _EX = _ROOT / "examples" / "advection"
-_SCHEMES = ["const_indices", "cld_liq", "apply_constituent_tendencies", "cld_ice"]
+_SCHEMES = ["const_indices", "cld_liq", "apply_constituent_tendencies", "cld_ice", "cld_shadow"]
 _HOSTS = ["test_host_data", "test_host_mod", "test_host"]
 
 
@@ -119,3 +119,49 @@ def test_nothing_device_capable_is_a_no_op():
         _clear_memory_space(arg)
     assert resolve_constituent_residency(module) == []
     assert all(a.memory_space is None for _, a in args)
+
+
+# ── stage 2: per-step syncs in the host cap ──────────────────────────────────
+
+def _host_cap_fortran(make_device: bool) -> str:
+    from io import StringIO
+
+    from xdsl_ccpp.backend.print_ftn import print_to_ftn
+    from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
+    from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
+    from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
+    from xdsl_ccpp.transforms.suite_cap import SuiteCAP
+    from xdsl_ccpp.transforms.suite_kinds import MetaKind
+
+    module = _module()
+    for _, arg in _constituent_args(module):
+        _clear_memory_space(arg)
+        if make_device:
+            arg.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    ctx = Context()
+    for dialect in (builtin.Builtin, func.Func, arith.Arith, CCPP, CCPPUtils):
+        ctx.load_dialect(dialect)
+    for pass_cls in (MetaKind, SuiteCAP, CCPPCAP, GenerateKinds, StripCCPP):
+        pass_cls().apply(ctx, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+def _physics_run(fortran: str) -> list[str]:
+    start = fortran.index("subroutine ccpp_physics_run(")
+    end = fortran.index("end subroutine ccpp_physics_run", start)
+    return [l.strip() for l in fortran[start:end].splitlines()]
+
+
+def test_resident_constituents_synced_around_the_group_call():
+    lines = _physics_run(_host_cap_fortran(make_device=True))
+    call = next(i for i, l in enumerate(lines) if l.startswith("call ") and "cld_suite" in l)
+    assert "!$acc update device(lc_constituent_array)" in lines[:call]
+    assert "!$acc update self(lc_constituent_array)" in lines[call:]
+
+
+def test_host_constituents_get_no_syncs():
+    lines = _physics_run(_host_cap_fortran(make_device=False))
+    assert not any("lc_constituent_array)" in l and "!$acc update" in l for l in lines)
