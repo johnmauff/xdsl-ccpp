@@ -165,3 +165,75 @@ def test_resident_constituents_synced_around_the_group_call():
 def test_host_constituents_get_no_syncs():
     lines = _physics_run(_host_cap_fortran(make_device=False))
     assert not any("lc_constituent_array)" in l and "!$acc update" in l for l in lines)
+
+
+# ── stage 3: CPU readers of a constituent view ───────────────────────────────
+
+def _suite_cap_run(view_reader_on_cpu: bool, resident: bool = True) -> list[str]:
+    """examples/advection's suite cap, physics run group, generated with
+    --directive acc: apply_constituent_tendencies (twice) uses the whole
+    array on the device; cld_ice_run reads its view cld_ice_array."""
+    from io import StringIO
+
+    from xdsl.dialects.builtin import StringAttr
+
+    from xdsl_ccpp.backend.print_ftn import print_to_ftn
+    from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
+    from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
+    from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
+    from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
+    from xdsl_ccpp.transforms.suite_cap import SuiteCAP
+    from xdsl_ccpp.transforms.suite_kinds import MetaKind
+
+    module = _module()
+    for table, arg in _constituent_args(module):
+        _clear_memory_space(arg)
+        if table == "apply_constituent_tendencies_run" and resident:
+            arg.properties["memory_space"] = StringAttr("device")
+        if table == "cld_ice_run":
+            arg.properties["intent"] = StringAttr("in")
+            if not view_reader_on_cpu:
+                arg.properties["memory_space"] = StringAttr("device")
+    ctx = Context()
+    for dialect in (builtin.Builtin, func.Func, arith.Arith, CCPP, CCPPUtils):
+        ctx.load_dialect(dialect)
+    for pass_cls in (MetaKind, SuiteCAP):
+        pass_cls().apply(ctx, module)
+    GPUDataPass(directive="acc").apply(ctx, module)
+    for pass_cls in (CCPPCAP, GenerateKinds, StripCCPP):
+        pass_cls().apply(ctx, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    text = out.getvalue()
+    start = text.index("subroutine cld_suite_physics(")
+    end = text.index("end subroutine cld_suite_physics", start)
+    return [l.strip() for l in text[start:end].splitlines()]
+
+
+def _between(lines, first_call, second_call):
+    i = next(k for k, l in enumerate(lines) if l.startswith(f"call {first_call}"))
+    j = next(k for k, l in enumerate(lines) if k > i and l.startswith(f"call {second_call}"))
+    return lines[i:j]
+
+
+def test_cpu_view_reader_after_device_write_gets_update_self():
+    lines = _suite_cap_run(view_reader_on_cpu=True)
+    gap = _between(lines, "apply_constituent_tendencies_run", "cld_ice_run")
+    # The whole array, which covers the view.
+    assert "!$acc update self(const)" in gap, gap
+    # A reader pushes nothing back to the device.
+    after = _between(lines, "cld_ice_run", "apply_constituent_tendencies_run")
+    assert not any(l.startswith("!$acc update device(") for l in after), after
+
+
+def test_device_view_user_needs_no_update():
+    lines = _suite_cap_run(view_reader_on_cpu=False)
+    gap = _between(lines, "apply_constituent_tendencies_run", "cld_ice_run")
+    assert not any("!$acc update" in l for l in gap), gap
+
+
+def test_view_reader_ignored_when_array_not_resident():
+    # The constituents are host data: no sync of the array (const); the
+    # example's own tendency syncs (const_tend) are unrelated.
+    lines = _suite_cap_run(view_reader_on_cpu=True, resident=False)
+    assert not any("!$acc update" in l and "(const)" in l for l in lines), lines

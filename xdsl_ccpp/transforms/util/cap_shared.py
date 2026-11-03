@@ -1122,6 +1122,36 @@ def is_constituent_view_arg(arg) -> bool:
     )
 
 
+def constituent_array_resident(scheme_names, meta_data) -> bool:
+    """True when lc_constituent_array is device-resident: some scheme in
+    scheme_names declares memory_space = device on a whole-array argument
+    (not a view) resolving to it -- the same condition under which
+    ccpp_cap.py's framework_var_residency enters it
+    (constituent-device-residency)."""
+    for scheme_name in scheme_names:
+        props = meta_data.get(scheme_name)
+        if props is None:
+            continue
+        for table_name, table in props.arg_tables.items():
+            if split_scheme_table_name(table_name) is None:
+                continue
+            for arg in table.getFunctionArguments():
+                if (
+                    arg.hasAttr("ownership_kind")
+                    and arg.getAttr("ownership_kind") == ArgOwnershipKind.CapScratch
+                    and arg.hasAttr("standard_name")
+                    and not is_constituent_view_arg(arg)
+                    and arg.hasAttr("memory_space")
+                    and arg.getAttr("memory_space") == "device"
+                    and resolve_capscratch_cap_var_name(
+                        arg.getAttr("standard_name"), arg.hasAttr("constituent"),
+                        arg.hasAttr("advected"),
+                    ) == "lc_constituent_array"
+                ):
+                    return True
+    return False
+
+
 def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
     """Return the set of cap var names (e.g. lc_const_tend,
     lc_constituent_array) for which different schemes in scheme_names
@@ -1146,8 +1176,16 @@ def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
     update self/update device handling instead of the blanket
     enter-once/exit-once whole-suite residency treatment every occurrence
     would otherwise get lumped into.
+
+    Constituent views (lc_qv, ...) count as occurrences of
+    lc_constituent_array only while that array is device-resident
+    (constituent_array_resident): a CPU scheme reading a view then needs an
+    update self after a device write, like a CPU reader of the whole array.
+    Otherwise each device call copies its own views (generate-gpu-data) and
+    the host copy is always current.
     """
     by_cap_var: dict = {}  # cap_var_name -> category ("present" | "update") -> set[scheme_name]
+    views_count = constituent_array_resident(scheme_names, meta_data)
 
     for scheme_name in scheme_names:
         props = meta_data.get(scheme_name)
@@ -1162,7 +1200,9 @@ def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
                     or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
                 ):
                     continue
-                if not arg.hasAttr("standard_name") or is_constituent_view_arg(arg):
+                if not arg.hasAttr("standard_name"):
+                    continue
+                if is_constituent_view_arg(arg) and not views_count:
                     continue
                 cap_var = resolve_capscratch_cap_var_name(
                     arg.getAttr("standard_name"), arg.hasAttr("constituent"),
@@ -1941,6 +1981,10 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     boundary they share, so several variables' runs sharing a boundary
     fold into one shared call instead of one each.
 
+    "device" touches are "present" touches without the emitted assertion:
+    the caller already wraps that call in its own data region (a
+    constituent view's copy region, gpu_data_pass.py), so the touch only
+    ends a host run.
     "produced" touches are a third, distinct kind (debug-sync only -- see
     gpu_data_pass.py's/suite_cap.py's own debug_sync support): a single
     call just *wrote* a device-resident value and nothing needs pushed
@@ -1981,6 +2025,11 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
         for touch in (Touch(*t) for t in touch_list):
             if touch.category == "present":
                 emit_present(ref, touch.call_op)
+                _close_run(ref, update_run)
+            elif touch.category == "device":
+                # A device use whose data region the caller already emits
+                # (a constituent view's per-call copy region): it ends a
+                # host run like "present", without its own assertion.
                 _close_run(ref, update_run)
             elif touch.category == "produced":
                 _close_run(ref, update_run)

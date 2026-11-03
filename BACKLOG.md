@@ -70,6 +70,8 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-diagnostics-conditional-sync` | 2-4 days (classifier: `update ... if_present` is "either"; per-field `update self(...) if(is_history_field_active(...)) if_present` in `sima_state_diagnostics` and `kessler_diagnostics`; tests; Kessler GPU FPHYStest with sparse history output) | S |
+| `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
+| `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
@@ -1785,6 +1787,41 @@ Supporting items (not tracked elsewhere):
   `default(present)` kernel) with host-only local arrays. Port it with an
   `!$acc data copyin(icimrst) copy(niic, rei)` region around that loop
   and add `pumas_post_main.o` to `GPU_SCHEME_OBJS` in `Depends.nvhpc`.
+- `gpu-port-kessler-energy-utilities` — **OpenACC ports of the `kessler`
+  suite's pointwise energy utilities.** Added 2026-11-02. The `kessler`
+  suite (FKESSLER: SE and MPAS testmods) runs `kessler_test`'s 16 schemes
+  plus seven CPU schemes; three are one-line pointwise updates:
+  `check_energy_scaling` (`scaling_dycore = cpairv / cp_or_cv_dycore`),
+  `dycore_energy_consistency_adjust` (`tend_dTdt_local = (scaling_dycore
+  - 1) * tend_dTdt` under a flag) and `apply_tendency_of_air_temperature`
+  (`temp += t_tend*dt`, `dTdt_total += t_tend`, `t_tend = 0`). Port each as
+  a `parallel loop collapse(2)` with present-or-copy clauses (as the state
+  converters, `gpu-fphystest-kessler` step 4) and add the objects to
+  `GPU_SCHEME_OBJS` in `Depends.nvhpc`. Main gain:
+  `apply_tendency_of_air_temperature` writes `temp` (device data), so on
+  the CPU it forces syncs back to the device in the after-coupler group.
+  Do not port `check_energy_zero_fluxes` alone: its outputs only feed
+  `check_energy_chng`, so on the device it would add syncs
+  (`gpu-port-check-energy-chng`). `sima_tend_diagnostics` stays on the
+  host (history; `gpu-diagnostics-conditional-sync`). Test: per-scheme
+  capture replays from an FKESSLER case (`/cam-sima-capture`), then the SE
+  and MPAS Kessler GPU testmods.
+- `gpu-port-check-energy-chng` — **GPU port of `check_energy_chng` (with
+  `check_energy_zero_fluxes`).** Added 2026-11-02. The `kessler` suite's
+  energy and water conservation check (also in the cam suites). Most of
+  its work is CAM's own `get_hydrostatic_energy` (`src/data/cam_thermo.F90`,
+  ~190 lines): index arrays allocated from module data
+  (`thermodynamic_active_species_*`), a formula chosen by vertical
+  coordinate, per-column vertical integrals. Porting means a device
+  version of that routine (`!$acc routine` or a kernel inside it) and its
+  module data on the device -- a CAM-SIMA change outside
+  atmospheric_physics. The scheme also prints conservation errors
+  (`write(iulog, ...)`), which must stay on the host (reduce on the
+  device, print on the host). Port `check_energy_zero_fluxes` with it (its
+  flux outputs feed only this scheme). Gain is small while the state
+  diagnostics stay on the host: today it only reads device data (`temp`,
+  `z`, `phis`, `q`) and costs one `update self` that
+  `sima_state_diagnostics` right after it needs anyway.
 - `gpu-diagnostics-conditional-sync` — **Diagnostics schemes copy device
   data to the host only for fields being output.** Added 2026-11-02.
   `sima_state_diagnostics_run` and `kessler_diagnostics_run` run every
