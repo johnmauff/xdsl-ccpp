@@ -209,3 +209,7 @@ __marimo__/
 # Generated example output (each examples/*/Makefile regenerates these into
 # bindc/ via `make caps` / `make gen-chost`; not meant to be committed)
 bindc/
+
+
+# MacOS DS_Store files
+*.DS_Store
