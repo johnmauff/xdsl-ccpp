@@ -25,6 +25,7 @@ from xdsl_ccpp.transforms.gpu_debug_print_pass import GPUDebugPrintPass
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
+from xdsl_ccpp.transforms.constituent_residency_pass import ConstituentResidencyPass
 from xdsl_ccpp.transforms.scheme_io_capture_pass import SchemeIOCapturePass
 from xdsl_ccpp.util.ccpp_conventions import set_verbosity
 from xdsl_ccpp.util.errors import report_input_errors
@@ -92,6 +93,7 @@ class CCPPOptMain(xDSLOptMain):
         self.register_pass("generate-host-match", lambda: HostVariableMatchPass)
         self.register_pass("generate-gpu-ccpp-cap", lambda: GPUCcppCapPass)
         self.register_pass("generate-arg-ownership", lambda: ArgOwnershipPass)
+        self.register_pass("resolve-constituent-residency", lambda: ConstituentResidencyPass)
 
     def register_all_targets(self):
         super().register_all_targets()

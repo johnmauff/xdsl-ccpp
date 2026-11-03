@@ -257,6 +257,13 @@ def _build_cap_var_map(
                     continue
                 _, _, _ci_types, _ci_names, _ = public_fns[_callee_cv]
                 _arg_info_cv: dict[str, _CVArgInfo] = {}
+                # Standard names any scheme of this group wants on the
+                # device. Keyed by standard name, not by the group's dummy
+                # name: the group signature names a shared argument after
+                # one scheme's local name (e.g. sima_state_diagnostics'
+                # const_array), so another scheme's device occurrence
+                # (geopotential_temp's carr) would otherwise be missed.
+                _gpu_std_cv: set[str] = set()
                 for _scheme_cv in _grp_schemes:
                     _tbl_cv = _resolve_lifecycle_table_name(_scheme_cv, meta_data, _postfix_cv)
                     if _tbl_cv is None:
@@ -275,6 +282,8 @@ def _build_cap_var_map(
                             _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
                         if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
                             _info_cv.needs_gpu = True
+                            if _fa_cv.hasAttr("standard_name"):
+                                _gpu_std_cv.add(_fa_cv.getAttr("standard_name").lower())
                 for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                     _info_cv = _arg_info_cv.get(_an_cv)
                     # Anything not classified CapScratch (HostMatched, Block, or
@@ -289,7 +298,7 @@ def _build_cap_var_map(
                     _std_cv = _info_cv.std_name
                     if not _std_cv:
                         continue
-                    _needs_gpu_cv = _info_cv.needs_gpu
+                    _needs_gpu_cv = _info_cv.needs_gpu or _std_cv in _gpu_std_cv
                     _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
                         _std_cv, _info_cv.is_constituent, _info_cv.is_advected
                     )

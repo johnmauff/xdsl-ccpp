@@ -35,7 +35,7 @@ derived-type data). This module reads and sets CCPP metadata only.
 from __future__ import annotations
 
 from xdsl.dialects import builtin
-from xdsl.dialects.builtin import StringAttr
+from xdsl.dialects.builtin import StringAttr, UnitAttr
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TableTypeKind
 
@@ -89,6 +89,10 @@ def apply_derived_memory_space(
     report: list[str] = []
     for table_name, arg, category in scheme_args:
         if category == EITHER and not either_is_device and _std_name(arg) not in device_names:
+            # Left on the host; recorded so later passes know the scheme
+            # also works with the data on the device (constituents:
+            # resolve-constituent-residency).
+            arg.properties["device_capable"] = UnitAttr()
             continue
         arg.properties["memory_space"] = StringAttr(DEVICE)
         if category == DEVICE:

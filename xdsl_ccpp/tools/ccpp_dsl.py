@@ -908,12 +908,12 @@ class ccppMain:
             module, classification,
             either_is_device=self.options_db.get("directive") == "omp",
         )
-        if not derived:
-            return
+        # Rewritten even when nothing became device: the "either" arguments
+        # left on the host carry device_capable for later passes.
         with open(mlir_file, "w") as f:
             Printer(stream=f).print_op(module)
             f.write("\n")
-        if verbosity() >= 2:
+        if derived and verbosity() >= 2:
             print("memory_space derived from the schemes' directives:", file=sys.stderr)
             for line in derived:
                 print(f"  {line}", file=sys.stderr)
@@ -1091,6 +1091,10 @@ class ccppMain:
         # metadata: HostMatched simply never triggers in that case, same as
         # generate-host-match's own annotations.
         passes.append("generate-arg-ownership")
+        if directive == "acc":
+            # Needs the CapScratch classification of the constituent views
+            # (constituent-device-residency).
+            passes.append("resolve-constituent-residency")
         passes.append(meta_kinds_pass)
         passes.append(suite_cap_pass)
         if directive:
