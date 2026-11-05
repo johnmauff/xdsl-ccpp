@@ -13955,3 +13955,31 @@ previous commit: 30/30 identical. `kessler_omp` caps without any
 offload) and match the CPU run exactly, before and after removing the
 `memory_space` lines. CI passed (PR #188; rebased onto `main` after #187
 was squash-merged).
+
+## `scheme-io-capture-exact-compare`: bit-for-bit real compares in scheme replays (PR #191, 2026-11-05)
+
+Resolves `scheme-io-capture-exact-compare`. Generated replay drivers default
+to tolerance 0 (PR #190), but `ccpp_capture_mod`'s real compares were not
+bit-for-bit: arrays flagged a mismatch only where `abs(actual - expected) >
+tolerance`, which is `.false.` when either side is NaN, so a GPU replay
+writing NaN where the CPU capture had a number passed; and `-0.0` matched
+`+0.0`.
+
+- `xdsl_ccpp/framework_src/ccpp_capture_mod.F90`: every real compare
+  (ranks 0-3) goes through a new private elemental `r8_mismatch`. At
+  tolerance 0 it compares bit patterns (bytes via `transfer`, any
+  `kind_phys`): NaN differs from every number, `-0.0` from `+0.0`, and two
+  NaNs match only with identical bits. Above 0 it is the absolute tolerance
+  as before, except that a NaN on one side only is a mismatch (NaN vs NaN
+  matches). Diagnostics (max/mean abs diff, first-mismatch index)
+  unchanged; a NaN element shows as a NaN diff. Generated drivers unchanged.
+- `tests/fortran/test_ccpp_capture_mod.F90`: `test_exact_real_compare`, 18
+  checks (NaN vs number at tolerance 0 and 1 for ranks 0-3 and both
+  argument orders, the NaN's first-mismatch index, NaN vs the same NaN,
+  signed zero, 1 ulp).
+- Outside this repo: the user's replay script
+  (`/glade/derecho/scratch/dennis/build_capture_tests.sh`) unsets
+  `CCPP_CAPTURE_TOLERANCE`, so its CPU and GPU replays are always exact.
+
+Verification: Fortran runtime test ALL TESTS PASSED; pytest `-k capture` 98
+passed; CI passed (PR #191).

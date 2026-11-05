@@ -4,7 +4,8 @@
 ! scheme call (an `in` and an `out` group) holding every supported
 ! (type, rank), reads it back and compares; also checks the call counter,
 ! the `found` signal for a call that was never captured, missing
-! variables, a shape mismatch, mismatch detection and diagnostics, the
+! variables, a shape mismatch, mismatch detection and diagnostics, exact
+! (bit-for-bit) real compares at tolerance 0 and NaN handling, the
 ! tolerance override default, the global attributes (ccpp_capture_set_info,
 ! ccpp_capture_attribute, ccpp_capture_date) and ccpp_capture_set_dir.
 !
@@ -53,6 +54,7 @@ program test_ccpp_capture_mod
   call test_shape_mismatch_is_rejected(n_failed)
   call test_deliberate_mismatch_is_detected(n_failed)
   call test_compare_diagnostics(n_failed)
+  call test_exact_real_compare(n_failed)
   call test_tolerance_override_default_when_unset(n_failed)
   call test_global_attributes(n_failed)
 
@@ -282,6 +284,76 @@ contains
     call report('integer 1d diagnostics: ok is .false.', .not. ok, n_failed)
     call report('integer 1d diagnostics: first_mismatch_index == 3', first_mismatch_index == 3, n_failed)
   end subroutine test_compare_diagnostics
+
+  subroutine test_exact_real_compare(n_failed)
+    ! Tolerance 0 compares bit patterns; a nonzero tolerance never lets a
+    ! NaN on one side pass (scheme-io-capture-exact-compare).
+    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+    integer, intent(inout) :: n_failed
+    real(kind=kind_phys) :: nan, pzero, mzero, one, one_ulp
+    real(kind=kind_phys) :: a1(3), e1(3), a2(2,2), e2(2,2), a3(2,1,2), e3(2,1,2)
+    real(kind=kind_phys) :: max_abs_diff, mean_abs_diff
+    integer :: first_mismatch_index
+    logical :: ok
+
+    nan = ieee_value(1.0_kind_phys, ieee_quiet_nan)
+    pzero = 0.0_kind_phys
+    mzero = sign(0.0_kind_phys, -1.0_kind_phys)
+    one = 1.0_kind_phys
+    one_ulp = nearest(one, 2.0_kind_phys)
+
+    ! NaN where the capture has a number: fails at 0 and at a tolerance,
+    ! every rank (abs(NaN - x) > tol is .false., the old hole).
+    e1 = [1.0_kind_phys, 2.0_kind_phys, 3.0_kind_phys]
+    a1 = e1
+    a1(2) = nan
+    ok = ccpp_capture_compare(a1, e1, 0.0_kind_phys, max_abs_diff, mean_abs_diff, first_mismatch_index)
+    call report('exact: NaN vs number fails at tolerance 0 (1d)', .not. ok, n_failed)
+    call report('exact: NaN first_mismatch_index == 2', first_mismatch_index == 2, n_failed)
+    call report('exact: NaN vs number fails at tolerance 1 (1d)', &
+        .not. ccpp_capture_compare(a1, e1, 1.0_kind_phys), n_failed)
+    call report('exact: number vs captured NaN fails at tolerance 1 (1d)', &
+        .not. ccpp_capture_compare(e1, a1, 1.0_kind_phys), n_failed)
+    e2 = 1.0_kind_phys
+    a2 = e2
+    a2(1,2) = nan
+    call report('exact: NaN vs number fails at tolerance 0 (2d)', &
+        .not. ccpp_capture_compare(a2, e2, 0.0_kind_phys), n_failed)
+    call report('exact: NaN vs number fails at tolerance 1 (2d)', &
+        .not. ccpp_capture_compare(a2, e2, 1.0_kind_phys), n_failed)
+    e3 = 1.0_kind_phys
+    a3 = e3
+    a3(2,1,2) = nan
+    call report('exact: NaN vs number fails at tolerance 0 (3d)', &
+        .not. ccpp_capture_compare(a3, e3, 0.0_kind_phys), n_failed)
+    call report('exact: NaN vs number fails at tolerance 1 (3d)', &
+        .not. ccpp_capture_compare(a3, e3, 1.0_kind_phys), n_failed)
+    call report('exact: NaN vs number fails (0d)', &
+        .not. ccpp_capture_compare(nan, one, 1.0_kind_phys), n_failed)
+
+    ! The same NaN on both sides matches, at 0 and at a tolerance.
+    call report('exact: NaN vs the same NaN passes at tolerance 0 (1d)', &
+        ccpp_capture_compare(a1, a1, 0.0_kind_phys), n_failed)
+    call report('exact: NaN vs NaN passes at tolerance 1 (0d)', &
+        ccpp_capture_compare(nan, nan, 1.0_kind_phys), n_failed)
+
+    ! Signed zero: different bits, equal values.
+    call report('exact: -0.0 vs +0.0 fails at tolerance 0', &
+        .not. ccpp_capture_compare(mzero, pzero, 0.0_kind_phys), n_failed)
+    call report('exact: -0.0 vs +0.0 passes at tolerance 1e-12', &
+        ccpp_capture_compare(mzero, pzero, 1.0e-12_kind_phys), n_failed)
+
+    ! One ulp apart: fails at 0, passes at a tolerance that covers it.
+    e1 = one
+    a1 = one
+    a1(3) = one_ulp
+    call report('exact: 1 ulp fails at tolerance 0', &
+        .not. ccpp_capture_compare(a1, e1, 0.0_kind_phys), n_failed)
+    call report('exact: 1 ulp passes at tolerance 1e-12', &
+        ccpp_capture_compare(a1, e1, 1.0e-12_kind_phys), n_failed)
+    call report('exact: identical values pass at tolerance 0', &
+        ccpp_capture_compare(e1, e1, 0.0_kind_phys), n_failed)
+  end subroutine test_exact_real_compare
 
   subroutine test_tolerance_override_default_when_unset(n_failed)
     ! With CCPP_CAPTURE_TOLERANCE unset the caller's default comes back
