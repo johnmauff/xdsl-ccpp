@@ -19,6 +19,12 @@
 ! properties live in this module (props points at them) until the next
 ! read. Constituent properties are intent(in) only, so there is nothing
 ! to compare.
+!
+! ccpp_capture_rebuild_constituents does the same into storage the caller
+! owns (ccpp_capture_replay_mod keeps the run's constituent table that way).
+!
+! Compiled into the model as well as the test drivers: no dependency on
+! ccpp_scheme_utils, whose host-model version differs (original capgen's).
 module ccpp_capture_constituents_mod
 
   use ccpp_kinds, only: kind_phys
@@ -32,6 +38,7 @@ module ccpp_capture_constituents_mod
 
   public :: ccpp_capture_constituents
   public :: ccpp_capture_read_constituents
+  public :: ccpp_capture_rebuild_constituents
 
   integer, parameter :: name_len = 256
   character(len=*), parameter :: dim_name = 'number_of_ccpp_constituents'
@@ -115,6 +122,16 @@ contains
   subroutine ccpp_capture_read_constituents(group, name, props)
     character(len=*), intent(in) :: group, name
     type(ccpp_constituent_prop_ptr_t), allocatable, intent(out) :: props(:)
+
+    call ccpp_capture_rebuild_constituents(group, name, lc_props, props)
+  end subroutine ccpp_capture_read_constituents
+
+  subroutine ccpp_capture_rebuild_constituents(group, name, store, props)
+    ! Rebuild <group>/<name> of the open call into *store* (reallocated)
+    ! and point *props* at its elements.
+    character(len=*), intent(in) :: group, name
+    type(ccpp_constituent_properties_t), allocatable, target, intent(inout) :: store(:)
+    type(ccpp_constituent_prop_ptr_t), allocatable, intent(out) :: props(:)
     character(len=:), allocatable :: path
     character(len=name_len), allocatable :: std_name(:), long_name(:), diag_name(:)
     character(len=name_len), allocatable :: units(:), vert_dim(:)
@@ -153,31 +170,31 @@ contains
     call ccpp_capture_read(path, 'minimum', minimum)
     call ccpp_capture_read(path, 'molar_mass', molar_mass)
 
-    if (allocated(lc_props)) then
-      do i = 1, size(lc_props)
-        call lc_props(i)%deallocate()
+    if (allocated(store)) then
+      do i = 1, size(store)
+        call store(i)%deallocate()
       end do
-      deallocate(lc_props)
+      deallocate(store)
     end if
-    allocate(lc_props(n))
+    allocate(store(n))
     allocate(props(n))
     do i = 1, n
       if (len_trim(std_name(i)) == 0) cycle  ! not captured: left unset
       if (has_default(i)) then
-        call lc_props(i)%instantiate(std_name=trim(std_name(i)), long_name=trim(long_name(i)), &
+        call store(i)%instantiate(std_name=trim(std_name(i)), long_name=trim(long_name(i)), &
           diag_name=trim(diag_name(i)), units=trim(units(i)), vertical_dim=trim(vert_dim(i)), &
           advected=advected(i), default_value=default_value(i), min_value=minimum(i), &
           molar_mass=molar_mass(i), water_species=water_species(i), &
           mixing_ratio_type=trim(mixing_ratio_type(i)), errcode=errcode, errmsg=errmsg)
       else
-        call lc_props(i)%instantiate(std_name=trim(std_name(i)), long_name=trim(long_name(i)), &
+        call store(i)%instantiate(std_name=trim(std_name(i)), long_name=trim(long_name(i)), &
           diag_name=trim(diag_name(i)), units=trim(units(i)), vertical_dim=trim(vert_dim(i)), &
           advected=advected(i), min_value=minimum(i), &
           molar_mass=molar_mass(i), water_species=water_species(i), &
           mixing_ratio_type=trim(mixing_ratio_type(i)), errcode=errcode, errmsg=errmsg)
       end if
       if (errcode == 0) then
-        prop => lc_props(i)
+        prop => store(i)
         call props(i)%set(prop, errcode=errcode, errmsg=errmsg)
       end if
       if (errcode == 0) call props(i)%set_const_index(const_index(i), errcode=errcode, errmsg=errmsg)
@@ -187,6 +204,6 @@ contains
                    '): ', trim(errmsg)
       end if
     end do
-  end subroutine ccpp_capture_read_constituents
+  end subroutine ccpp_capture_rebuild_constituents
 
 end module ccpp_capture_constituents_mod

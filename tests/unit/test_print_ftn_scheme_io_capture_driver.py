@@ -441,3 +441,21 @@ def test_no_iso_fortran_env_use_without_a_log_unit_argument():
         "s", [("s_run", params, "s")], _TOLERANCE,
     )
     assert "iso_fortran_env" not in source
+
+
+def test_driver_restores_the_constituent_table_before_replaying():
+    """scheme-io-capture-constituent-index-table: every driver loads the
+    run's constituent table into ccpp_scheme_utils first (a no-op for a
+    capture without one)."""
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "s", [("s_init", params, "s"), ("s_run", params, "s")], _TOLERANCE,
+    )
+    assert "  use ccpp_capture_replay_mod, only: ccpp_capture_restore_constituents\n" in source
+    assert source.count("call ccpp_capture_restore_constituents()") == 1
+    restore = source.index("call ccpp_capture_restore_constituents()")
+    assert restore < source.index('ccpp_capture_open_call("s_init"')

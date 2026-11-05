@@ -193,7 +193,8 @@ def test_before_and_after_blocks_frame_the_call(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     init_after = "call ccpp_capture_begin('test_io_capture_scheme_init', 'after')"
     assert init_after in fortran
-    assert fortran.count("call ccpp_capture_end()") == 4  # init + run, before + after
+    # init + run, before + after, plus the constituent table (once)
+    assert fortran.count("call ccpp_capture_end()") == 5
     for procedure in ("ccpp_capture", "ccpp_capture_begin", "ccpp_capture_end"):
         assert f"use ccpp_capture_mod, only: {procedure}\n" in fortran
 
@@ -206,8 +207,9 @@ def test_driver_dir_becomes_the_capture_directory(run_host_match, ccpp_context, 
         test_driver_dir=str(tmp_path),
     )
     set_dir = "call ccpp_capture_set_dir("
-    assert fortran.count(set_dir) == 2  # init + run, "before" only
-    assert fortran.count(f"'{tmp_path}')") == 2
+    # init + run, "before" only, plus the constituent table
+    assert fortran.count(set_dir) == 3
+    assert fortran.count(f"'{tmp_path}')") == 3
     init_after = fortran.index("call ccpp_capture_begin('test_io_capture_scheme_init', 'after')")
     assert fortran.index(set_dir, init_after) < fortran.index(_BEGIN_BEFORE) < fortran.index(_SCHEME_CALL)
     assert "use ccpp_capture_mod, only: ccpp_capture_set_dir\n" in fortran
@@ -229,8 +231,8 @@ def test_label_names_the_data_subdirectory(run_host_match, ccpp_context, tmp_pat
 
     assert (tmp_path / "case.c01b").is_dir()
     # The caps name the driver dir; the runtime appends the label.
-    assert fortran.count(f"'{tmp_path}')") == 2
-    assert fortran.count("call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp") == 2
+    assert fortran.count(f"'{tmp_path}')") == 3  # + the constituent table
+    assert fortran.count("call ccpp_capture_set_info('case.c01b', 'xdsl_ccpp") == 3
     # The drivers stay in the driver directory itself.
     assert (tmp_path / "test_test_io_capture_scheme.F90").exists()
 
@@ -238,7 +240,7 @@ def test_label_names_the_data_subdirectory(run_host_match, ccpp_context, tmp_pat
 def test_set_info_records_generator_in_each_before_block(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     set_info = "call ccpp_capture_set_info('', 'xdsl_ccpp"
-    assert fortran.count(set_info) == 2  # init + run
+    assert fortran.count(set_info) == 3  # init + run + the constituent table
     assert fortran.index(set_info, fortran.index(
         "call ccpp_capture_begin('test_io_capture_scheme_init', 'after')")) < fortran.index(_BEGIN_BEFORE)
     # This host has no current_timestep_number: no attribute call.
@@ -779,3 +781,62 @@ def test_log_output_unit_gets_its_own_driver_category(std_name, intent, expected
             return self.attrs[name]
 
     assert _driver_param_category(_Arg()) == expected
+
+
+
+_TABLE_BEGIN = "call ccpp_capture_begin('ccpp_constituents', 'before')"
+_TABLE_WRITE = "call ccpp_capture_constituents('constituents', lc_const_props)"
+
+
+def test_constituent_table_captured_once_where_the_cap_fills_it(run_host_match, ccpp_context):
+    """scheme-io-capture-constituent-index-table: the host cap's
+    constituent-properties array is captured once, right after the cap
+    fills it and before it is handed to ccpp_scheme_utils, so a driver can
+    answer the scheme's ccpp_constituent_index lookups as the run did."""
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
+    assert fortran.count(_TABLE_BEGIN) == 1
+    assert fortran.count(_TABLE_WRITE) == 1
+    fill = fortran.index("lc_const_props = lc_props_ptr")
+    table = fortran.index(_TABLE_BEGIN)
+    handed = fortran.index("call ccpp_scheme_utils_set_constituents(lc_const_props)")
+    assert fill < fortran.index("call ccpp_capture_set_info(", fill) < table
+    assert table < fortran.index(_TABLE_WRITE) < fortran.index("call ccpp_capture_end()", table) < handed
+    assert "use ccpp_capture_constituents_mod, only: ccpp_capture_constituents\n" in fortran
+
+
+def test_constituent_table_captured_once_for_several_schemes(run_host_match, ccpp_context):
+    """One pass instance runs per --capture-scheme entry; only the first
+    inserts the table capture."""
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META], host_metas=[_HOST_META], suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    for phase in ("init", "run"):
+        SchemeIOCapturePass(scheme="test_io_capture_scheme", phase=phase).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    assert out.getvalue().count(_TABLE_BEGIN) == 1
+
+
+def test_constituent_table_capture_guarded_by_host_mpi_root_flag(run_host_match, ccpp_context):
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META], host_metas=[_HOST_META_WITH_MPI_ROOT], suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme").apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    fortran = out.getvalue()
+    table = fortran.index(_TABLE_BEGIN)
+    guard = fortran.rindex("if (masterproc) then", 0, table)
+    assert fortran.index("lc_const_props = lc_props_ptr") < guard
+    assert table < fortran.index("end if", table)
+
+
+def test_no_constituent_table_capture_when_nothing_is_captured(run_host_match, ccpp_context):
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="nonexistent_scheme")
+    assert "ccpp_constituents" not in fortran

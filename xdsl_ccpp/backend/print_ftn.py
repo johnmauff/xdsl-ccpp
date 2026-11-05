@@ -697,6 +697,7 @@ def render_scheme_io_capture_test_driver(
         "  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &",
         "                              ccpp_capture_read, ccpp_capture_compare, &",
         "                              ccpp_capture_extents, ccpp_capture_tolerance_override",
+        "  use ccpp_capture_replay_mod, only: ccpp_capture_restore_constituents",
     ]
     lines += use_lines
     lines += [
@@ -718,6 +719,9 @@ def render_scheme_io_capture_test_driver(
         "",
         f"  tolerance = ccpp_capture_tolerance_override({tolerance})",
         "  n_failed = 0",
+        "  ! The run's constituent table, for ccpp_constituent_index lookups",
+        "  ! (nothing when the capture has none).",
+        "  call ccpp_capture_restore_constituents()",
         "",
     ]
     lines += all_body

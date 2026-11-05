@@ -46,7 +46,8 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "add_library(ccpp_capture_support STATIC" in text
     for name in ("ccpp_kinds.F90", "ccpp_hashable.F90", "ccpp_hash_table.F90",
                  "ccpp_constituent_prop_mod.F90", "ccpp_scheme_utils.F90",
-                 "ccpp_capture_mod.F90", "ccpp_capture_constituents_mod.F90"):
+                 "ccpp_capture_mod.F90", "ccpp_capture_constituents_mod.F90",
+                 "ccpp_capture_replay_mod.F90"):
         assert f'/{name}"' in text
     assert "find_program(NF_CONFIG nf-config REQUIRED)" in text
     # The tests run against the generating capture's directory unless

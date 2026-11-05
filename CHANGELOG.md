@@ -14039,3 +14039,52 @@ Verification: over all atmospheric_physics metadata the lookup finds
 `schemes/pumas/pumas/pumas_kinds.F90` only, nothing missing; pytest 1380
 passed; CI passed (PR #193). End-to-end check pending the post-Tier-1 pumas
 recapture.
+
+## `scheme-io-capture-constituent-index-table`: capture the run's constituent table, restore it in every driver (PR #194, 2026-11-05)
+
+Resolves `scheme-io-capture-constituent-index-table`. Schemes look
+constituents up by standard name (`ccpp_constituent_index(es)`), which
+searches the table the host cap hands to `ccpp_scheme_utils` at
+registration; a generated test driver never filled it, so every lookup
+returned `int_unassigned` and the replay went wrong (c02i
+`test_rrtmgp_constituents`: zeros where the run had the O2 mixing ratio, max
+diff 0.23143; likewise `hack_convect_shallow`).
+
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: when anything is
+  captured, `_capture_constituent_table` captures the host cap's
+  `lc_const_props` once, right after the cap fills it and before it goes to
+  `ccpp_scheme_utils` (table `ccpp_constituents`, call 1, subgroup
+  `in/constituents`, existing `ccpp_capture_constituents` writer), guarded
+  by the host's MPI-root flag; inserted by the first pass instance only, not
+  at all without a constituent API. Built from IR ops; the call-file
+  preamble (`ccpp_capture_set_dir`/`ccpp_capture_set_info`) is shared via
+  the new `_preamble_ops()`.
+- New `xdsl_ccpp/framework_src/ccpp_capture_replay_mod.F90` (drivers'
+  support library only): `ccpp_capture_restore_constituents()` rebuilds the
+  table into its own storage and calls
+  `ccpp_scheme_utils_set_constituents`; a capture without the table leaves
+  `ccpp_scheme_utils` empty, as before. Kept out of the model: the host's
+  `ccpp_scheme_utils` (capgen's, in CAM-SIMA) has no
+  `ccpp_scheme_utils_set_constituents`, and `ccpp_capture_constituents_mod`
+  is compiled into the model (`ccpp_datatable.py`).
+- `ccpp_capture_constituents_mod.F90`: the rebuild is now the public
+  `ccpp_capture_rebuild_constituents(group, name, store, props)` into
+  caller-owned storage; `ccpp_capture_read_constituents` unchanged in
+  behaviour; still no `ccpp_scheme_utils` dependency.
+- `xdsl_ccpp/backend/print_ftn.py`: every generated driver calls
+  `ccpp_capture_restore_constituents()` once before replaying.
+  `xdsl_ccpp/tools/capture_cmake.py`: support library adds the replay module.
+- Tests: pytest for the table capture's position, one capture for several
+  schemes, the MPI-root guard, none without captures, the driver's restore,
+  the support library; four existing tests count the table's block.
+  `tests/fortran/test_ccpp_capture_constituents.F90`: lookups unassigned
+  before restore, right indices after it (unassigned for an unknown name),
+  table intact after a later `cprops` read.
+- Outside this repo: all 25 RRTMGP run-phase schemes added to
+  `/glade/derecho/scratch/dennis/capture_cam4/unit-tests.txt` (cam4
+  radiates hourly, so its capture covers non-radiation steps; see
+  `scheme-io-capture-rrtmgp-coverage`).
+
+Verification: pytest 1385 passed; Fortran constituents test ALL TESTS
+PASSED (nvfortran); CI passed (PR #194). End-to-end check pending the
+post-Tier-1 rrtmgp and cam4 recaptures.

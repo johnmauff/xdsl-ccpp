@@ -151,7 +151,9 @@ from xdsl_ccpp.backend.print_ftn import (
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
+    AssignOp,
     CallStatementOp,
+    MemberAccessExprOp,
     OmpTargetUpdateFromOp,
     StringLiteralExprOp,
     ValueExprOp,
@@ -276,6 +278,16 @@ _SET_DIR_PROCEDURE = "ccpp_capture_set_dir"
 # Writes a global attribute: the host's timestep number, when it has one.
 _ATTRIBUTE_PROCEDURE = "ccpp_capture_attribute"
 _STEP_STD_NAME = "current_timestep_number"
+
+# The run's constituent table (scheme-io-capture-constituent-index-table):
+# the host cap's constituent-properties array (_CONSTITUENT_PROPS_VAR, which
+# it hands to ccpp_scheme_utils for ccpp_constituent_index lookups) is
+# captured once, when the cap fills it, as call 1 of this table, subgroup
+# in/<_CONSTITUENT_TABLE_ARG>. Every test driver restores it into
+# ccpp_scheme_utils before replaying (ccpp_capture_restore_constituents).
+_CONSTITUENT_TABLE = "ccpp_constituents"
+_CONSTITUENT_TABLE_ARG = "constituents"
+_CONSTITUENT_PROPS_VAR = "lc_const_props"
 
 
 @functools.lru_cache(maxsize=1)
@@ -405,6 +417,32 @@ def _resolve_array_dims(arg, std_name_to_param: dict) -> "list[str] | None":
             return None
         resolved.append(local)
     return resolved
+
+
+def _constituent_props_assignment(op) -> "AssignOp | None":
+    """The host cap's `lc_const_props = ...` (constituent_cap.py's
+    register-constituents subroutine; a member of lc_instances(i) in a
+    multi-instance cap), or None."""
+    for candidate in op.walk():
+        if not isa(candidate, AssignOp):
+            continue
+        lhs = candidate.lhs.block.first_op
+        if isa(lhs, VarRefExprOp) and lhs.var_name.data == _CONSTITUENT_PROPS_VAR:
+            return candidate
+        if isa(lhs, MemberAccessExprOp) and lhs.member.data == _CONSTITUENT_PROPS_VAR:
+            return candidate
+    return None
+
+
+def _captures_constituent_table(op) -> bool:
+    """Whether a capture of the constituent table is already in *op*."""
+    for candidate in op.walk():
+        if not isa(candidate, CallStatementOp) or candidate.callee.data != "ccpp_capture_begin":
+            continue
+        first = candidate.arg_exprs[0].block.first_op
+        if isa(first, StringLiteralExprOp) and first.text.data == _CONSTITUENT_TABLE:
+            return True
+    return False
 
 
 def _uncast(value):
@@ -597,6 +635,7 @@ class SchemeIOCapturePass(ModulePass):
         # outright wrong (e.g. kessler_run depends on module state only
         # kessler_init, a separate phase, sets).
         captured_tables: dict = {}
+        captured_any = False
 
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
             if scheme_name != self.scheme:
@@ -652,6 +691,7 @@ class SchemeIOCapturePass(ModulePass):
                     after.append(entry)
 
             if before or after:
+                captured_any = True
                 self._ensure_capture_decl(call_op, declared_decls, step_ref is not None)
                 for ref in (mpi_root_ref, step_ref):
                     if ref is not None:
@@ -681,8 +721,68 @@ class SchemeIOCapturePass(ModulePass):
                     module = _callee_module(call_op, table_name, scheme_name)
                     captured_tables[table_name] = (phase, params, module)
 
+        if captured_any:
+            self._capture_constituent_table(op, mpi_root_ref, declared_decls)
+
         if self.test_driver_dir and captured_tables:
             self._maybe_emit_test_driver(self.scheme, captured_tables)
+
+    def _capture_constituent_table(self, op, mpi_root_ref, declared_decls: set) -> None:
+        """Capture the host cap's constituent-properties array once, right
+        after the cap fills it at constituent registration
+        (scheme-io-capture-constituent-index-table): schemes look
+        constituents up by standard name (ccpp_constituent_index), which a
+        test driver can only answer with the run's table. Inserted by the
+        first pass instance only (one per --capture-scheme entry); nothing
+        when the cap has no constituent table (no constituent API)."""
+        assign = _constituent_props_assignment(op)
+        if assign is None or _captures_constituent_table(op):
+            return
+        for procedure in ("ccpp_capture_begin", "ccpp_capture_end") + (
+            (_SET_DIR_PROCEDURE,) if self.test_driver_dir else ()
+        ) + ("ccpp_capture_set_info",):
+            self._ensure_decl(assign, procedure, "ccpp_capture_mod", declared_decls)
+        handler = _DDT_CAPTURES["ccpp_constituent_prop_ptr_t"]
+        self._ensure_decl(assign, handler.write, handler.module, declared_decls)
+        if mpi_root_ref is not None:
+            self._ensure_host_var_decl(assign, mpi_root_ref[0], mpi_root_ref[1], declared_decls)
+
+        writes = self._preamble_ops() + [
+            CallStatementOp("ccpp_capture_begin", arg_ops=[
+                StringLiteralExprOp(_CONSTITUENT_TABLE), StringLiteralExprOp("before"),
+            ]),
+            CallStatementOp(handler.write, arg_ops=[
+                StringLiteralExprOp(_CONSTITUENT_TABLE_ARG),
+                assign.lhs.block.first_op.clone(),
+            ]),
+            CallStatementOp("ccpp_capture_end", arg_ops=[]),
+        ]
+        if mpi_root_ref is not None:
+            writes = _scf_if(VarRefExprOp(mpi_root_ref[0], result_type=i1), writes)
+        anchor = InsertPoint.after(assign)
+        for new_op in writes:
+            Rewriter.insert_op(new_op, anchor)
+            anchor = InsertPoint.after(new_op)
+        data_dir = self._data_dir()
+        if data_dir:
+            os.makedirs(data_dir, exist_ok=True)
+
+    def _preamble_ops(self) -> list:
+        """The calls that start a capture file: ccpp_capture_set_dir (with
+        a driver directory: the runtime appends the label, from
+        ccpp_capture_set_info, which keeps each literal short) and
+        ccpp_capture_set_info(label, generator)."""
+        ops = []
+        if self.test_driver_dir:
+            ops.append(CallStatementOp(
+                _SET_DIR_PROCEDURE,
+                arg_ops=[StringLiteralExprOp(os.path.abspath(self.test_driver_dir))],
+            ))
+        ops.append(CallStatementOp("ccpp_capture_set_info", arg_ops=[
+            StringLiteralExprOp(self.label or ""),
+            StringLiteralExprOp(_generator_version()),
+        ]))
+        return ops
 
     def _data_dir(self) -> "str | None":
         """Where the run writes its files unless CCPP_CAPTURE_DIR is set:
@@ -842,19 +942,7 @@ class SchemeIOCapturePass(ModulePass):
                     AccUpdateSelfOp, {"array_refs": device_values},
                     OmpTargetUpdateFromOp, {"array_refs": device_values},
                 ))
-        writes = []
-        # The driver directory only: the runtime appends the label (from
-        # ccpp_capture_set_info), which keeps each literal short.
-        if self.test_driver_dir and timing == "before":
-            writes.append(CallStatementOp(
-                _SET_DIR_PROCEDURE,
-                arg_ops=[StringLiteralExprOp(os.path.abspath(self.test_driver_dir))],
-            ))
-        if timing == "before":
-            writes.append(CallStatementOp("ccpp_capture_set_info", arg_ops=[
-                StringLiteralExprOp(self.label or ""),
-                StringLiteralExprOp(_generator_version()),
-            ]))
+        writes = self._preamble_ops() if timing == "before" else []
         writes.append(CallStatementOp(
             "ccpp_capture_begin",
             arg_ops=[StringLiteralExprOp(table_name), StringLiteralExprOp(timing)],
