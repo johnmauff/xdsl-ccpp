@@ -1,29 +1,36 @@
 ! Standalone round-trip test for ccpp_capture_constituents_mod: writes two
 ! constituent properties (one with a default value, one without) the way
 ! a generated cap does, reads them back the way a generated driver does,
-! and checks every property, plus an unset pointer left unset.
+! and checks every property, plus an unset pointer left unset. Then the
+! run's constituent table (scheme-io-capture-constituent-index-table):
+! captured as table ccpp_constituents, restored into ccpp_scheme_utils, and
+! looked up by standard name, also after a later read of other properties.
 !
 ! Run from this directory (compiler and netcdf-fortran as for
 ! test_ccpp_capture_mod.F90, e.g. `module load gcc netcdf`):
 !   S=../../xdsl_ccpp/framework_src
 !   gfortran -ffree-line-length-none -o test_ccpp_capture_constituents $(nf-config --fflags) \
 !       ccpp_kinds.F90 $S/ccpp_hashable.F90 $S/ccpp_hash_table.F90 \
-!       $S/ccpp_constituent_prop_mod.F90 $S/ccpp_capture_mod.F90 \
-!       $S/ccpp_capture_constituents_mod.F90 test_ccpp_capture_constituents.F90 \
+!       $S/ccpp_constituent_prop_mod.F90 $S/ccpp_scheme_utils.F90 $S/ccpp_capture_mod.F90 \
+!       $S/ccpp_capture_constituents_mod.F90 $S/ccpp_capture_replay_mod.F90 \
+!       test_ccpp_capture_constituents.F90 \
 !       $(nf-config --flibs)
 !   ./test_ccpp_capture_constituents
 !   ncdump -h const_table_1.nc     # optional: group in/cprops
 !
 ! Exits 0 and prints "ALL TESTS PASSED" on success, 1 otherwise. Writes
-! const_table_1.nc into the current directory and leaves it.
+! const_table_1.nc and ccpp_constituents_1.nc into the current directory
+! and leaves them.
 program test_ccpp_capture_constituents
   use ccpp_kinds, only: kind_phys
   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, &
-                                       ccpp_constituent_prop_ptr_t
+                                       ccpp_constituent_prop_ptr_t, int_unassigned
+  use ccpp_scheme_utils, only: ccpp_constituent_index
   use ccpp_capture_mod, only: ccpp_capture_begin, ccpp_capture_end, &
                               ccpp_capture_open_call, ccpp_capture_close
   use ccpp_capture_constituents_mod, only: ccpp_capture_constituents, &
                                            ccpp_capture_read_constituents
+  use ccpp_capture_replay_mod, only: ccpp_capture_restore_constituents
 
   implicit none
 
@@ -31,7 +38,7 @@ program test_ccpp_capture_constituents
   type(ccpp_constituent_prop_ptr_t) :: written(3)
   type(ccpp_constituent_prop_ptr_t), allocatable :: rebuilt(:)
   type(ccpp_constituent_properties_t), pointer :: prop
-  integer :: n_failed, errcode, i
+  integer :: n_failed, errcode, i, cindex
   character(len=512) :: errmsg
   logical :: found
 
@@ -73,6 +80,22 @@ program test_ccpp_capture_constituents
     call check(errcode /= 0, 'unset element stays unset')
   end if
 
+  ! The constituent table: nothing to look up before it is restored.
+  call ccpp_constituent_index('ozone_volume_mixing_ratio', cindex, errcode, errmsg)
+  call check(cindex == int_unassigned, 'no table before restore')
+  call ccpp_capture_begin('ccpp_constituents', 'before')
+  call ccpp_capture_constituents('constituents', written(1:2))
+  call ccpp_capture_end()
+  call ccpp_capture_restore_constituents()
+  call check_index('ozone_volume_mixing_ratio', 2, 'table lookup')
+  call check_index('water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water', 1, 'table lookup')
+  call check_index('not_a_constituent', int_unassigned, 'table lookup')
+  ! A later read of a scheme's properties must not disturb the table.
+  call ccpp_capture_open_call('const_table', 1, found)
+  call ccpp_capture_read_constituents('in', 'cprops', rebuilt)
+  call ccpp_capture_close()
+  call check_index('ozone_volume_mixing_ratio', 2, 'table lookup after a read')
+
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
   else
@@ -81,6 +104,15 @@ program test_ccpp_capture_constituents
   end if
 
 contains
+
+  subroutine check_index(std_name, expected, what)
+    character(len=*), intent(in) :: std_name, what
+    integer, intent(in) :: expected
+    integer :: idx, ec
+    character(len=512) :: em
+    call ccpp_constituent_index(std_name, idx, ec, em)
+    call check(idx == expected .and. ec == 0, what // ' ' // std_name)
+  end subroutine check_index
 
   subroutine check(ok, what)
     logical, intent(in) :: ok
