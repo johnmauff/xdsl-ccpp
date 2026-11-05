@@ -756,3 +756,26 @@ def test_driver_device_args_reach_only_the_driver(run_host_match, ccpp_context, 
     from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp
 
     assert not any(isinstance(o, AccUpdateSelfOp) for o in module.walk())
+
+
+@pytest.mark.parametrize("std_name, intent, expected", [
+    ("log_output_unit", "in", "log_unit"),
+    ("log_output_unit", "inout", "log_unit"),
+    ("horizontal_loop_extent", "in", "in"),
+])
+def test_log_output_unit_gets_its_own_driver_category(std_name, intent, expected):
+    """scheme-io-capture-log-unit: the host's log unit is replaced in the
+    driver, whatever its intent, so it is never read back or compared."""
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _driver_param_category
+
+    class _Arg:
+        attrs = {"type": "integer", "dimensions": 0, "intent": intent,
+                 "standard_name": std_name}
+
+        def hasAttr(self, name):
+            return name in self.attrs
+
+        def getAttr(self, name):
+            return self.attrs[name]
+
+    assert _driver_param_category(_Arg()) == expected

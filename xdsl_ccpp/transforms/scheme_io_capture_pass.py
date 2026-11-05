@@ -194,6 +194,12 @@ _TEST_DRIVER_TOLERANCE = "0.0_kind_phys"
 # unconditionally, which is already correct there.
 _MPI_ROOT_STD_NAME = "flag_for_mpi_root"
 
+# The host's log unit (scheme-io-capture-log-unit). Captured like any other
+# integer, but the captured value is the host's own open unit (CAM's is a
+# newunit= number such as -15), which is not open in a standalone test
+# driver: the driver passes standard output instead and never compares it.
+_LOG_UNIT_STD_NAME = "log_output_unit"
+
 # Canonical CCPP lifecycle order -- used only to sequence a scheme's own
 # captured phases within ONE generated test driver (see
 # _maybe_emit_test_driver), not to filter or validate anything. An
@@ -318,6 +324,8 @@ def _driver_param_category(arg) -> str:
     (errmsg/errflg -- always declared and passed, never compared),
     "unverified" (mandatory but outside this pass's v1 capture type scope
     -- still declared and passed so the call compiles, never compared),
+    "log_unit" (the host's log unit -- the driver passes its own standard
+    output unit, never the captured value, and never compares it),
     or "in"/"out"/"inout" (a real captured argument -- matches exactly
     what apply()'s own per-argument capture loop would do for it)."""
     if arg.hasAttr("optional"):
@@ -325,6 +333,8 @@ def _driver_param_category(arg) -> str:
     std_name = arg.getAttr("standard_name") if arg.hasAttr("standard_name") else None
     if std_name in CCPP_ERROR_STD_NAMES:
         return "error_arg"
+    if std_name == _LOG_UNIT_STD_NAME:
+        return "log_unit"
     intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
     if intent not in ("in", "out", "inout"):
         return "unverified"
