@@ -6,7 +6,11 @@ import os
 
 import pytest
 
+from xdsl.dialects import builtin
+
+from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 from xdsl_ccpp.tools.capture_cmake import (
+    kinds_sources,
     render_capture_cmakelists,
     render_capture_fragment,
     scheme_meta_files,
@@ -347,3 +351,75 @@ def test_cpu_capture_caps_unchanged_by_driver_device_data(tmp_path):
         drivers_b, cap_b = _run_kessler_capture(tmp_path / "b", scheme)
     assert cap == cap_b.replace(str(tmp_path / "b" / "drivers"), str(tmp_path / "a" / "drivers"))
     assert "!$acc enter data" not in (drivers_b / "test_kessler_update.F90").read_text()
+
+
+def _meta_module(meta_files) -> builtin.ModuleOp:
+    """The frontend IR of real .meta files on disk (dependencies_path
+    resolved against each file's directory, as ccpp_dsl does)."""
+    frontend = ccppXML()
+    ops = [
+        frontend.build_meta_ir(m, meta_file_path=str(path))
+        for path in meta_files
+        for m in parse_meta_file(str(path), True)
+    ]
+    return builtin.ModuleOp(ops)
+
+
+def _kind_scheme_meta(path, name, kind_spec, deps, deps_path=None):
+    lines = ["[ccpp-table-properties]", f"  name = {name}", "  type = scheme"]
+    if kind_spec:
+        lines.append(f"  kind_spec = {kind_spec}")
+    lines += [f"  dependencies = {d}" for d in deps]
+    if deps_path:
+        lines.append(f"  dependencies_path = {deps_path}")
+    lines += ["[ccpp-arg-table]", f"  name = {name}_run", "  type = scheme", ""]
+    path.write_text("\n".join(lines))
+    return path
+
+
+def test_kinds_sources_finds_the_kind_spec_modules_dependency(tmp_path):
+    """scheme-io-capture-kinds-deps: CAM-SIMA's pumas schemes declare
+    kind_spec = pumas_kinds:pumas_r8=>kind_r8 with pumas/pumas_kinds.F90 in
+    their dependencies; the generated ccpp_kinds.F90 then uses pumas_kinds,
+    so its source belongs in the support library."""
+    (tmp_path / "pumas").mkdir()
+    kinds = tmp_path / "pumas" / "pumas_kinds.F90"
+    kinds.write_text("module pumas_kinds\nend module pumas_kinds\n")
+    (tmp_path / "pumas" / "micro_pumas_utils.F90").write_text("module micro_pumas_utils\nend module\n")
+    spec = "pumas_kinds:pumas_r8=>kind_r8"
+    module = _meta_module([
+        _kind_scheme_meta(tmp_path / "post.meta", "pumas_post_main", spec,
+                          ["pumas/micro_pumas_utils.F90", "pumas/pumas_kinds.F90"]),
+        _kind_scheme_meta(tmp_path / "pre.meta", "dims_pre", spec, ["pumas/pumas_kinds.F90"]),
+        _kind_scheme_meta(tmp_path / "plain.meta", "plain", None, ["pumas/micro_pumas_utils.F90"]),
+    ])
+    sources, missing = kinds_sources(module)
+    assert [os.path.realpath(p) for p in sources] == [os.path.realpath(kinds)]
+    assert missing == []
+
+
+def test_kinds_sources_falls_back_to_the_file_declaring_the_module(tmp_path):
+    (tmp_path / "adjust").mkdir()
+    src = tmp_path / "adjust" / "all_kinds.F90"
+    src.write_text("! kinds\n  MODULE temp_kinds  ! precision\nend module temp_kinds\n")
+    module = _meta_module([_kind_scheme_meta(
+        tmp_path / "t.meta", "temp_adjust", "temp_kinds:kind_temp=>temp_r8",
+        ["all_kinds.F90"], "adjust")])
+    sources, missing = kinds_sources(module)
+    assert [os.path.realpath(p) for p in sources] == [os.path.realpath(src)]
+    assert missing == []
+
+
+def test_kinds_sources_reports_a_kind_module_no_dependency_provides(tmp_path):
+    module = _meta_module([_kind_scheme_meta(
+        tmp_path / "t.meta", "temp_adjust", "temp_kinds:kind_temp=>temp_r8", [])])
+    assert kinds_sources(module) == ([], ["temp_kinds"])
+
+
+def test_kind_module_sources_come_before_ccpp_kinds_in_the_support_library():
+    text = render_capture_cmakelists(
+        support_sources("/out/ccpp_kinds.F90", ["/phys/pumas/pumas_kinds.F90"]), "/d")
+    assert '"/phys/pumas/pumas_kinds.F90"' in text
+    assert (text.index('"/phys/pumas/pumas_kinds.F90"')
+            < text.index('"/out/ccpp_kinds.F90"')
+            < text.index("ccpp_capture_mod.F90"))

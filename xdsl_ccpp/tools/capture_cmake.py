@@ -5,8 +5,9 @@ scheme. This module writes, next to them:
 
 - ``test_<scheme>.cmake`` per scheme: the driver executable (driver, the
   scheme's ``.F90`` and its metadata ``dependencies``) and its ``add_test``;
-- ``CMakeLists.txt``: a support library (the generated ``ccpp_kinds.F90``,
-  the capture runtime and xdsl_ccpp's framework sources), NetCDF from
+- ``CMakeLists.txt``: a support library (the generated ``ccpp_kinds.F90``
+  and the kind modules it uses, the capture runtime and xdsl_ccpp's
+  framework sources), NetCDF from
   ``nf-config``, options, and an ``include()`` of every fragment.
 
 The scheme sources are written relative to the root of the repository
@@ -33,10 +34,12 @@ at another capture instead.
 from __future__ import annotations
 
 import os
+import re
 
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp import TablePropertiesOp
+from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value
 
 _TOP_FILE = "CMakeLists.txt"
 
@@ -262,22 +265,80 @@ def scheme_dependencies(module, scheme: str) -> list:
             continue
         if op.table_type.data != "scheme" or op.table_name.data != scheme:
             continue
-        deps_attr = op.attributes.get("dependencies")
-        if deps_attr is None:
-            continue
-        dep_dir_attr = op.attributes.get("dependencies_path")
-        dep_dir = dep_dir_attr.data if dep_dir_attr is not None else ""
-        for dep in deps_attr.data:
-            path = os.path.join(dep_dir, dep.data) if dep_dir else dep.data
+        for path in _table_dependency_paths(op):
             if path not in deps:
                 deps.append(path)
     return deps
 
 
-def support_sources(kinds_path: str) -> list:
-    """The support library's sources: the generated ccpp_kinds.F90 and
-    xdsl_ccpp's framework and capture runtime files."""
-    return [kinds_path] + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES]
+def _table_dependency_paths(op) -> list:
+    """The paths of one TablePropertiesOp's `dependencies`, each joined
+    with its `dependencies_path` (the .meta file's directory by default)."""
+    deps_attr = op.attributes.get("dependencies")
+    if deps_attr is None:
+        return []
+    dep_dir_attr = op.attributes.get("dependencies_path")
+    dep_dir = dep_dir_attr.data if dep_dir_attr is not None else ""
+    return [os.path.join(dep_dir, dep.data) if dep_dir else dep.data
+            for dep in deps_attr.data]
+
+
+def _declares_module(path: str, module: str) -> bool:
+    """Whether the Fortran file *path* has a `module <module>` statement."""
+    pattern = re.compile(rf"^\s*module\s+{re.escape(module)}\s*(!.*)?$", re.IGNORECASE)
+    try:
+        with open(path, errors="replace") as f:
+            return any(pattern.match(line) for line in f)
+    except OSError:
+        return False
+
+
+def kinds_sources(module) -> "tuple[list, list]":
+    """The sources of the kind modules the generated ccpp_kinds.F90 uses
+    (scheme-io-capture-kinds-deps): every module named by a table's
+    `kind_spec` (e.g. pumas_kinds), found among that table's own
+    `dependencies` -- the file named after the module, else the one
+    declaring it. Returns (sources in first-seen order, names of the
+    modules no dependency provides)."""
+    sources: list = []
+    resolved: set = set()
+    named: dict = {}  # lower-case module name -> name as written
+    for op in module.walk():
+        if not isa(op, TablePropertiesOp):
+            continue
+        specs_attr = op.attributes.get("kind_specs")
+        if specs_attr is None:
+            continue
+        deps = _table_dependency_paths(op)
+        for entry in specs_attr.data:
+            kind_module = parse_kind_spec_value(entry.data)[1]
+            key = kind_module.lower()
+            if key == "iso_fortran_env":
+                continue
+            named.setdefault(key, kind_module)
+            if key in resolved:
+                continue
+            found = next(
+                (d for d in deps
+                 if os.path.splitext(os.path.basename(d))[0].lower() == key),
+                None,
+            ) or next((d for d in deps if _declares_module(d, kind_module)), None)
+            if found is None:
+                continue  # another table may list its source
+            resolved.add(key)
+            if found not in sources:
+                sources.append(found)
+    missing = [name for key, name in named.items() if key not in resolved]
+    return sources, missing
+
+
+def support_sources(kinds_path: str, kind_module_sources=()) -> list:
+    """The support library's sources: the kind modules the generated
+    ccpp_kinds.F90 uses (*kind_module_sources*, see kinds_sources), the
+    generated ccpp_kinds.F90 and xdsl_ccpp's framework and capture runtime
+    files."""
+    return (list(kind_module_sources) + [kinds_path]
+            + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES])
 
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,

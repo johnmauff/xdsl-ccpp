@@ -1540,6 +1540,7 @@ class ccppMain:
         A scheme whose .F90 cannot be found (next to its .meta, same stem)
         gets no fragment, with a warning."""
         from xdsl_ccpp.tools.capture_cmake import (
+            kinds_sources,
             scheme_dependencies,
             scheme_meta_files,
             support_sources,
@@ -1569,7 +1570,22 @@ class ccppMain:
             scheme_sources[scheme] = [f90_path] + scheme_dependencies(module, scheme)
         if not scheme_sources:
             return
-        support = support_sources(os.path.join(out_dir, "ccpp_kinds.F90"))
+        # The kind modules ccpp_kinds.F90 uses (a scheme's kind_spec, e.g.
+        # pumas_kinds) go in the support library, and so out of the
+        # drivers, which link it.
+        kind_srcs, kind_missing = kinds_sources(module)
+        for name in kind_missing:
+            warn_once(
+                f"capture test drivers: no metadata dependencies entry provides "
+                f"kind module '{name}' (kind_spec); the support library will "
+                f"not build without it (-DCCPP_CAPTURE_EXTRA_SOURCES=<its source>)"
+            )
+        support = support_sources(os.path.join(out_dir, "ccpp_kinds.F90"), kind_srcs)
+        in_support = {os.path.abspath(p) for p in kind_srcs}
+        scheme_sources = {
+            scheme: [p for p in srcs if os.path.abspath(p) not in in_support]
+            for scheme, srcs in scheme_sources.items()
+        }
         label = self.options_db.get("capture_label")
         data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
         for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir):
