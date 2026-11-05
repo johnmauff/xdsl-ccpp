@@ -96,9 +96,8 @@ measured data, and will drift as items are reassessed.
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
-| `scheme-io-capture-constituent-index-table` | 1 day (capture the constituent standard-name table once, driver restores it in `ccpp_scheme_utils` before replay, unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
-| `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (recapture `rrtmgp` with a run past `irad_always` so non-radiation steps are captured) | XS |
+| `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -1232,29 +1231,20 @@ state is not a scheme argument and is not captured.
 
 **ID: `scheme-io-capture-exact-compare`. Resolved (2026-11-05, PR #191).** CHANGELOG.md L13959.
 
-**ID: `scheme-io-capture-constituent-index-table`. Drivers lack the
-constituent-index table.** Found 2026-11-05 replaying c02i (`rrtmgp`):
-`test_rrtmgp_constituents` fails every call (`rad_const_array` max diff
-0.23143, the O2 mixing ratio; replay gives zeros). The scheme maps gas
-names to constituent indices with `ccpp_constituent_index`
-(`xdsl_ccpp/framework_src/ccpp_scheme_utils.F90`), which searches the
-module table `lc_constituents` that the host cap fills at init; the
-driver never fills it, so every lookup returns `int_unassigned` and the
-copy is skipped. Any scheme calling `ccpp_constituent_index(es)` replays
-wrong (e.g. `hack_convect_shallow`). Wanted: capture the constituent
-standard names in index order once per run (with the constituent
-properties capture, `ccpp_capture_constituents_mod`), and have every
-generated driver load them into `ccpp_scheme_utils` before the first
-replayed call; pytest for the generated driver.
+**ID: `scheme-io-capture-constituent-index-table`. Resolved (2026-11-05, PR #194).** CHANGELOG.md L14043.
 
 **ID: `scheme-io-capture-rrtmgp-coverage`. The rrtmgp capture has no
 non-radiation steps.** Found 2026-11-05: c02i (`SMS_Ln2`, `irad_always =
 3`) runs radiation on every captured step, so `rrtmgp_pre` always sets
 `dosw_heat = dolw_heat = .false.` (`dosw_heat = .not. dosw`) and the
 `calc_*_heat = .true.` path of `rrtmgp_dry_static_energy_tendency` (and
-any other non-radiation-step branch) is never captured. Wanted: a
-recapture with a run past `irad_always` with hourly radiation (e.g.
-`Ln6` or longer), after `rrtmgp-dry-static-energy-intent-out`.
+any other non-radiation-step branch) is never captured. Plan
+(2026-11-05): cover it from the cam4 capture instead -- cam4 (c02m:
+`SMS_Ln9`, 30-minute steps, `iradsw = iradlw = irad_always = -1`)
+radiates hourly, and all 25 RRTMGP run-phase schemes are now in
+`/glade/derecho/scratch/dennis/capture_cam4/unit-tests.txt`. Wanted: that
+cam4 recapture, after `rrtmgp-dry-static-energy-intent-out`, and a check
+that its drivers replay both kinds of step.
 
 **ID: `scheme-io-capture-optional-args`. v2 follow-on: `optional`-argument
 support.** Deliberately out of v1 scope from the original design proposal
