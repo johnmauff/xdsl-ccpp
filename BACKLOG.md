@@ -97,7 +97,6 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
 | `scheme-io-capture-kinds-deps` | 0.5-1 day (add the sources the generated `ccpp_kinds.F90` uses to the support library, unit test) | XS |
-| `scheme-io-capture-log-unit` | 0.5-1 day (driver substitutes `output_unit` for `log_output_unit` arguments, unit test) | XS |
 | `scheme-io-capture-constituent-index-table` | 1 day (capture the constituent standard-name table once, driver restores it in `ccpp_scheme_utils` before replay, unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (recapture `rrtmgp` with a run past `irad_always` so non-radiation steps are captured) | XS |
@@ -1243,17 +1242,7 @@ the source files of the modules the generated `ccpp_kinds` uses (the
 kind-providing scheme files the cap generator already knows about) to the
 support library.
 
-**ID: `scheme-io-capture-log-unit`. Drivers replay the captured log
-unit.** Found 2026-11-05 replaying c02f (`rk_stratiform`):
-`test_convective_cloud_cover` builds but aborts with `FIO-F-212/list-directed
-write/unit=-15/invalid unit number` at `convective_cloud_cover.F90:48`.
-`convective_cloud_cover_init` does `if (amIRoot) write(iulog,*) ...`; the
-driver passes the captured `iulog` (standard name `log_output_unit`),
-which is CAM's log unit (a `newunit=` number, -15) and is not open in the
-driver. Every scheme whose init/run writes to the log unit will hit this.
-Wanted: the generated driver passes `output_unit` (iso_fortran_env) for
-any `log_output_unit` argument instead of the captured value, and does not
-compare it as an output.
+**ID: `scheme-io-capture-log-unit`. Resolved (2026-11-05, PR #192).** CHANGELOG.md L13987.
 
 **ID: `scheme-io-capture-exact-compare`. Resolved (2026-11-05, PR #191).** CHANGELOG.md L13959.
 

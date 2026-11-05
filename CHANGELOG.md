@@ -13983,3 +13983,28 @@ writing NaN where the CPU capture had a number passed; and `-0.0` matched
 
 Verification: Fortran runtime test ALL TESTS PASSED; pytest `-k capture` 98
 passed; CI passed (PR #191).
+
+## `scheme-io-capture-log-unit`: drivers pass `output_unit` for `log_output_unit` arguments (PR #192, 2026-11-05)
+
+Resolves `scheme-io-capture-log-unit`. Generated replay drivers passed the
+captured `log_output_unit` to the scheme: the host's own open unit (CAM's is
+a `newunit=` number such as -15), not open in a standalone driver. Any scheme
+writing to its log unit aborted on replay (c02f rk_stratiform:
+`test_convective_cloud_cover`, `FIO-F-212 ... unit=-15 ... invalid unit
+number`); 34 atmospheric_physics schemes take this argument.
+
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: `_driver_param_category`
+  gives a `log_output_unit` argument (any intent) the new category
+  `log_unit`; it does not count as a captured argument.
+- `xdsl_ccpp/backend/print_ftn.py`: a `log_unit` argument is declared
+  `integer`, set before the call to `iso_fortran_env`'s `output_unit`
+  (imported as `ccpp_driver_output_unit`, so it cannot clash with a scheme
+  argument), passed, and never read from the capture or compared. Drivers
+  without such an argument are unchanged; the capture itself still records
+  the value.
+- Tests: `test_log_output_unit_gets_its_own_driver_category` (3 cases),
+  `test_log_unit_argument_is_standard_output_never_the_captured_unit`,
+  `test_no_iso_fortran_env_use_without_a_log_unit_argument`.
+
+Verification: pytest 1376 passed; CI passed (PR #192). End-to-end check
+pending the post-Tier-1 rk_stratiform recapture.
