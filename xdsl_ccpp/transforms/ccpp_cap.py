@@ -21,6 +21,8 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccExitDataOp,
+    AccUpdateDeviceOp,
+    AccUpdateSelfOp,
     AllocateOp,
     AssignOp,
     CallExprOp,
@@ -257,6 +259,13 @@ def _build_cap_var_map(
                     continue
                 _, _, _ci_types, _ci_names, _ = public_fns[_callee_cv]
                 _arg_info_cv: dict[str, _CVArgInfo] = {}
+                # Standard names any scheme of this group wants on the
+                # device. Keyed by standard name, not by the group's dummy
+                # name: the group signature names a shared argument after
+                # one scheme's local name (e.g. sima_state_diagnostics'
+                # const_array), so another scheme's device occurrence
+                # (geopotential_temp's carr) would otherwise be missed.
+                _gpu_std_cv: set[str] = set()
                 for _scheme_cv in _grp_schemes:
                     _tbl_cv = _resolve_lifecycle_table_name(_scheme_cv, meta_data, _postfix_cv)
                     if _tbl_cv is None:
@@ -275,6 +284,8 @@ def _build_cap_var_map(
                             _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
                         if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
                             _info_cv.needs_gpu = True
+                            if _fa_cv.hasAttr("standard_name"):
+                                _gpu_std_cv.add(_fa_cv.getAttr("standard_name").lower())
                 for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                     _info_cv = _arg_info_cv.get(_an_cv)
                     # Anything not classified CapScratch (HostMatched, Block, or
@@ -289,7 +300,7 @@ def _build_cap_var_map(
                     _std_cv = _info_cv.std_name
                     if not _std_cv:
                         continue
-                    _needs_gpu_cv = _info_cv.needs_gpu
+                    _needs_gpu_cv = _info_cv.needs_gpu or _std_cv in _gpu_std_cv
                     _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
                         _std_cv, _info_cv.is_constituent, _info_cv.is_advected
                     )
@@ -354,6 +365,82 @@ def _build_cap_var_map(
     # occurrences); returned as tuples to preserve the established
     # "scratch_var_list is a list of tuples" contract callers rely on.
     return cap_var_map, host_var_map_lc, [tuple(e) for e in scratch_var_list], framework_var_residency
+
+
+# Host-cap functions that call suite groups once per physics phase.
+_PHYSICS_PHASE_FNS = (
+    "ccpp_physics_init", "ccpp_physics_timestep_init", "ccpp_physics_run",
+    "ccpp_physics_timestep_final", "ccpp_physics_final",
+)
+
+
+def _referenced_var_names(value, seen=None) -> set:
+    """The variable names an SSA value is built from: host variables
+    (HostVarRefOp) and cap-module variables (CapVarRefOp, including the
+    expression in its target region, e.g. lc_constituent_array(:, :, :)),
+    following the defining ops' operands (array sections, casts)."""
+    seen = set() if seen is None else seen
+    owner = getattr(value, "owner", None)
+    if owner is None or not hasattr(owner, "operands") or id(owner) in seen:
+        return set()
+    seen.add(id(owner))
+    names = set()
+    for op in owner.walk():
+        name = op.properties.get("var_name")
+        if isa(name, StringAttr):
+            names.add(name.data)
+    for operand in owner.operands:
+        names |= _referenced_var_names(operand, seen)
+    return names
+
+
+def _inject_constituent_step_syncs(
+    all_definitions, framework_var_residency, scratch_var_list,
+    instance_local_name: "str | None" = None,
+):
+    """constituent-device-residency, stage 2: keep the device copy of a
+    resident lc_constituent_array in step with the host model.
+
+    lc_constituent_array is entered once, in initialize_constituents
+    (framework_var_residency). The host model reads and writes the
+    constituents on the host between physics calls, so around every call
+    from a physics-phase function (ccpp_physics_init ... _final) into a suite
+    group that passes the array or one of its views (lc_qv, ...): an `update
+    device` of the whole array before, an `update self` after. Inside the
+    groups the device copy is current (no CPU scheme writes the
+    constituents: resolve-constituent-residency); CPU readers get their
+    own update self (generate-gpu-data).
+    """
+    if not framework_var_residency.get("lc_constituent_array"):
+        return
+    names = {"lc_constituent_array"} | {
+        lc_name for lc_name, _rank, _dims, cst_std, _gpu, base in scratch_var_list
+        if cst_std and base == "lc_constituent_array"
+    }
+    if instance_local_name is not None:
+        names.add("lc_instances")
+    var_type = TypeConversions.convert("real", "kind_phys", 3)
+
+    def ref():
+        if instance_local_name is not None:
+            return HostVarRefOp("lc_instances", "", var_type,
+                                member_path="lc_constituent_array",
+                                index_expr=instance_local_name)
+        return HostVarRefOp("lc_constituent_array", "", var_type)
+
+    for fn in all_definitions:
+        if not isa(fn, func.FuncOp) or fn.sym_name.data not in _PHYSICS_PHASE_FNS:
+            continue
+        calls = [
+            op for op in fn.walk()
+            if isa(op, func.CallOp) and SUITE_FN_INFIX in op.callee.root_reference.data
+            and any(_referenced_var_names(arg) & names for arg in op.arguments)
+        ]
+        for call in calls:
+            before = ref()
+            Rewriter.insert_op([before, AccUpdateDeviceOp([before.res])], InsertPoint.before(call))
+            after = ref()
+            Rewriter.insert_op([after, AccUpdateSelfOp([after.res])], InsertPoint.after(call))
 
 
 def _inject_capscratch_gpu_exit(
@@ -1324,6 +1411,10 @@ class CCPPCAP(ModulePass):
         _inject_capscratch_gpu_exit(
             all_definitions, "ccpp_final",
             framework_var_residency, scratch_var_list,
+            instance_local_name=instance_local_name,
+        )
+        _inject_constituent_step_syncs(
+            all_definitions, framework_var_residency, scratch_var_list,
             instance_local_name=instance_local_name,
         )
 

@@ -241,7 +241,7 @@ class GPUDataPass(ModulePass):
                 or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
             ):
                 continue
-            if not arg.hasAttr("standard_name") or is_constituent_view_arg(arg):
+            if not arg.hasAttr("standard_name"):
                 continue
             std_name = arg.getAttr("standard_name")
             cap_var = resolve_capscratch_cap_var_name(
@@ -249,10 +249,19 @@ class GPUDataPass(ModulePass):
             )
             if cap_var is None or cap_var not in diverged_capscratch_vars:
                 continue
+            # A view is an occurrence of lc_constituent_array only when that
+            # array is diverged, which find_diverged_capscratch_vars allows
+            # only while it is device-resident.
+            if is_constituent_view_arg(arg) and cap_var != "lc_constituent_array":
+                continue
             scheme_space = (
                 arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
             )
             category = "present" if scheme_space == "device" else "update"
+            # A device view already gets its own per-call copy region
+            # (_emit_constituent_view_copies): it only bounds host runs.
+            if category == "present" and is_constituent_view_arg(arg):
+                category = "device"
             is_direct = std_name.lower() in FRAMEWORK_STD_NAME_TO_CAP_VAR
             result[arg.name] = (category, cap_var, is_direct, std_name.lower(), arg_writes(arg))
         return result
@@ -510,11 +519,24 @@ class GPUDataPass(ModulePass):
         resolved: dict = {}
         for cap_var, touch_list in touches.items():
             ref = _ref((std for _, _, std, is_direct, _ in touch_list if is_direct), arg_by_std)
-            if ref is None:
-                ref = _ref((std for _, _, std, _, _ in touch_list), arg_by_std)
-            resolved[cap_var] = (
-                ref, [(call_op, category, writes) for call_op, category, _, _, writes in touch_list]
-            )
+            if ref is not None:
+                resolved[cap_var] = (
+                    ref, [(call_op, category, writes) for call_op, category, _, _, writes in touch_list]
+                )
+                continue
+            # No direct (whole-array) argument in this function: the touches
+            # are through slices (constituent views, tendency aliases) of
+            # different constituents, independent memory -- track each
+            # standard name on its own, syncing its own slice.
+            by_std: dict = {}
+            for touch in touch_list:
+                by_std.setdefault(touch[2], []).append(touch)
+            for std, std_touches in by_std.items():
+                key = cap_var if len(by_std) == 1 else f"{cap_var}:{std}"
+                resolved[key] = (
+                    _ref([std], arg_by_std),
+                    [(call_op, category, writes) for call_op, category, _, _, writes in std_touches],
+                )
         return resolved
 
     def _process_physics_fn(

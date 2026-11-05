@@ -472,6 +472,11 @@ class ArgumentOp(IRDLOperation):
     intent = opt_prop_def(StringAttr)
     units = opt_prop_def(StringAttr)
     memory_space = opt_prop_def(StringAttr)  # values: "host", "device", "unified"
+    # Set by derive_memory_space (--directive acc) on a scheme argument whose
+    # entry point's OpenACC classifies it "either" (present-or-copy) but which
+    # rule (a) left on the host: the scheme works with it on the device too.
+    # resolve-constituent-residency may still make it device.
+    device_capable = opt_prop_def(UnitAttr)
     model_var_name    = opt_prop_def(StringAttr)   # matched host model variable name
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model

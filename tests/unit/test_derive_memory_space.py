@@ -100,3 +100,21 @@ def test_either_is_device_with_directive_omp():
     assert _spaces(m) == {("a_run", "x"): "device", ("b_run", "y"): "host"}
     assert report == ["a_run: 'x' memory_space = device "
                       "(the scheme maps it to the device itself; --directive omp)"]
+
+
+def test_either_left_on_host_is_marked_device_capable():
+    # rule (a) leaves it host; resolve-constituent-residency may still
+    # make it device.
+    m = _module({"a_run": [_arg("x", "x_std")]})
+    apply_derived_memory_space(m, {"a_run": {"x": "either"}})
+    (arg,) = [a for t in m.walk() if isinstance(t, ArgumentTableOp) for a in t.body.block.ops]
+    assert arg.memory_space is None and arg.device_capable is not None
+
+
+def test_device_and_upgraded_either_not_marked():
+    m = _module({"a_run": [_arg("x", "x_std"), _arg("y", "y_std")],
+                 "b_run": [_arg("y", "y_std", "device")]})
+    apply_derived_memory_space(m, {"a_run": {"x": "device", "y": "either"}})
+    args = {a.arg_name.data: a for t in m.walk() if isinstance(t, ArgumentTableOp)
+            if t.table_name.data == "a_run" for a in t.body.block.ops}
+    assert args["x"].device_capable is None and args["y"].device_capable is None
