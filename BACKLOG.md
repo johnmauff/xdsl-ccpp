@@ -101,7 +101,6 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-constituent-index-table` | 1 day (capture the constituent standard-name table once, driver restores it in `ccpp_scheme_utils` before replay, unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (recapture `rrtmgp` with a run past `irad_always` so non-radiation steps are captured) | XS |
-| `scheme-io-capture-exact-compare` | 1-2 days (bitwise compare at zero tolerance and NaN-mismatch check in `ccpp_capture_mod.F90`, pytest for the generated compares; `unset CCPP_CAPTURE_TOLERANCE` in the user's build script) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -1256,30 +1255,7 @@ Wanted: the generated driver passes `output_unit` (iso_fortran_env) for
 any `log_output_unit` argument instead of the captured value, and does not
 compare it as an output.
 
-**ID: `scheme-io-capture-exact-compare`. Zero-tolerance replay compares
-are not strictly bit-for-bit.** Found 2026-11-05 reviewing the capture
-drivers. Every generated driver (82 across the c02 capture directories)
-sets `tolerance = ccpp_capture_tolerance_override(0.0_kind_phys)`, but in
-`xdsl_ccpp/framework_src/ccpp_capture_mod.F90`:
-- The real array compares (`ccpp_capture_compare_r8_{1,2,3}d`) flag a
-  mismatch only where `abs(actual - expected) > tolerance`. A NaN in
-  either side makes the difference NaN, the comparison false, and the
-  element **passes**: a GPU replay that writes NaN where the CPU capture
-  has a finite value is reported PASS. (The 0-d compare uses `<=`, so it
-  does fail on NaN.)
-- `-0.0` vs `+0.0` compares equal although the bits differ.
-- `CCPP_CAPTURE_TOLERANCE` in the environment silently loosens every
-  driver, which conflicts with the zero-tolerance rule for CPU-vs-GPU
-  comparisons.
-
-Wanted: when the tolerance is 0, compare bit patterns (`transfer` to a
-64-bit integer) instead of `abs(diff) <= 0`, catching NaN, signed zero and
-NaN payloads; for a nonzero tolerance, also flag a mismatch where
-`ieee_is_nan(actual) .neqv. ieee_is_nan(expected)`. Keep the max/mean diff
-diagnostics (NaN-aware). pytest coverage for the generated compares. In
-the user's `/glade/derecho/scratch/dennis/build_capture_tests.sh`,
-`unset CCPP_CAPTURE_TOLERANCE` so its runs are always exact (whether to
-drop the override from CPU-vs-GPU use entirely is the user's call).
+**ID: `scheme-io-capture-exact-compare`. Resolved (2026-11-05, PR #191).** CHANGELOG.md L13959.
 
 **ID: `scheme-io-capture-constituent-index-table`. Drivers lack the
 constituent-index table.** Found 2026-11-05 replaying c02i (`rrtmgp`):

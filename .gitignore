@@ -209,3 +209,9 @@ __marimo__/
 # Generated example output (each examples/*/Makefile regenerates these into
 # bindc/ via `make caps` / `make gen-chost`; not meant to be committed)
 bindc/
+
+# Outputs of the hand-run Fortran capture-runtime tests (tests/fortran)
+tests/fortran/*.mod
+tests/fortran/*.nc
+tests/fortran/test_ccpp_capture_mod
+tests/fortran/test_ccpp_capture_constituents
