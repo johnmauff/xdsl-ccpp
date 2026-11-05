@@ -52,7 +52,7 @@ program test_kessler
   character(len=64) :: scheme_name
   character(len=64) :: scheme_name_expected
 
-  tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)
+  tolerance = ccpp_capture_tolerance_override(0.0_kind_phys)
   n_failed = 0
 
   ! -- kessler_init --

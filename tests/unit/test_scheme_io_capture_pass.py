@@ -455,7 +455,7 @@ def test_default_tolerance_used_when_option_unset(run_host_match, ccpp_context, 
 
     driver_path = tmp_path / "test_test_io_capture_scheme.F90"
     driver_source = driver_path.read_text()
-    assert "tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)" in driver_source
+    assert "tolerance = ccpp_capture_tolerance_override(0.0_kind_phys)" in driver_source
 
 
 # scheme-io-capture-gpu-residency: a separate, dedicated fixture (not the
@@ -731,3 +731,28 @@ def test_phase_list_captures_each_listed_entry_point(run_host_match, ccpp_contex
     fortran = _fortran_output(run_host_match, ccpp_context,
                               scheme="test_io_capture_scheme", phase="run,finalize")
     assert "ccpp_capture_begin('test_io_capture_scheme_init'" not in fortran
+
+
+def test_driver_device_args_reach_only_the_driver(run_host_match, ccpp_context, tmp_path):
+    # Without --directive and with no memory_space in .meta, ccpp_dsl passes
+    # the source's device arguments for the driver alone: the driver gets
+    # enter/exit data, the cap gets no sync.
+    meta = _GPU_SCHEME_META.replace("  memory_space = device\n", "")
+    host = _GPU_HOST_META.replace("  memory_space = device\n", "")
+    module = run_host_match(scheme_metas=[meta], host_metas=[host], suite_xml=_GPU_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_gpu_scheme",
+        test_driver_dir=str(tmp_path),
+        driver_device_args="test_io_capture_gpu_scheme_run:IO_VAR,other_run:ncol",
+    ).apply(ccpp_context, module)
+
+    driver_source = (tmp_path / "test_test_io_capture_gpu_scheme.F90").read_text()
+    assert "!$acc enter data copyin(io_var)" in driver_source
+    assert "!$acc exit data copyout(io_var)" in driver_source
+    assert "copyin(ncol" not in driver_source  # another table's entry
+    from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp
+
+    assert not any(isinstance(o, AccUpdateSelfOp) for o in module.walk())
