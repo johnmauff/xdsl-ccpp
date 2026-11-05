@@ -403,3 +403,41 @@ def test_driver_uses_the_module_that_holds_the_scheme():
     )
     assert "  use state_converters, only: calc_dry_air_ideal_gas_density_run\n" in source
     assert "use calc_dry_air_ideal_gas_density," not in source
+
+
+def test_log_unit_argument_is_standard_output_never_the_captured_unit():
+    """scheme-io-capture-log-unit: the captured log unit is the host's own
+    (CAM's is a newunit= number such as -15) and is not open in the
+    driver, so the driver passes standard output and never reads or
+    compares it."""
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("iulog", "log_unit", "integer", None, 0),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "cloud_cover", [("cloud_cover_init", params, "cloud_cover")], _TOLERANCE,
+    )
+
+    assert ("use, intrinsic :: iso_fortran_env, only: "
+            "ccpp_driver_output_unit => output_unit") in source
+    assert "integer :: iulog" in source
+    assert "iulog = ccpp_driver_output_unit" in source
+    assert "iulog=iulog" in source
+    # Set before the call, never read from the capture or compared.
+    assert source.index("iulog = ccpp_driver_output_unit") < source.index("call cloud_cover_init(")
+    assert '"iulog"' not in source
+    assert "iulog_expected" not in source
+
+
+def test_no_iso_fortran_env_use_without_a_log_unit_argument():
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "s", [("s_run", params, "s")], _TOLERANCE,
+    )
+    assert "iso_fortran_env" not in source
