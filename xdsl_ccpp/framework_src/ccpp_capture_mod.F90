@@ -52,7 +52,8 @@
 ! ccpp_capture_tolerance_override: a generated driver bakes a default
 ! tolerance into its source; CCPP_CAPTURE_TOLERANCE (a real number)
 ! overrides it at run time, so one compiled driver can be rerun against
-! several tolerances (cross-compiler or GPU comparisons).
+! several tolerances (cross-compiler comparisons). A CPU-vs-GPU check
+! uses tolerance 0, which compares bit patterns (see r8_mismatch).
 module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
@@ -974,11 +975,13 @@ contains
 
   ! ---------------------------------------------------------------------
   ! Compare procedures -- one per (type, rank). Integer, logical and
-  ! character compares are exact; real compares take an absolute
-  ! tolerance. All return .true. when every element matches. Array
-  ! variants optionally report the 1-based linear (column-major) index of
-  ! the first mismatch (0 when all match); real arrays also report the
-  ! maximum and mean absolute difference over every element.
+  ! character compares are exact; real compares go element by element
+  ! through r8_mismatch: bit-for-bit at tolerance 0, otherwise an absolute
+  ! tolerance in which a NaN matches only a NaN. All return .true. when
+  ! every element matches. Array variants optionally report the 1-based
+  ! linear (column-major) index of the first mismatch (0 when all match);
+  ! real arrays also report the maximum and mean absolute difference over
+  ! every element (NaN when an element is NaN).
   ! ---------------------------------------------------------------------
 
 
@@ -1093,7 +1096,7 @@ contains
   function ccpp_capture_compare_r8_0d(actual, expected, tolerance) result(ok)
     real(kind=kind_phys), intent(in) :: actual, expected, tolerance
     logical :: ok
-    ok = (abs(actual - expected) <= tolerance)
+    ok = .not. r8_mismatch(actual, expected, tolerance)
   end function ccpp_capture_compare_r8_0d
 
   function ccpp_capture_compare_r8_1d( &
@@ -1105,7 +1108,7 @@ contains
     real(kind=kind_phys) :: diff(size(actual))
     logical :: mismatch(size(actual))
     diff = abs(actual - expected)
-    mismatch = (diff > tolerance)
+    mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
     if (present(max_abs_diff)) max_abs_diff = maxval(diff)
     if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
@@ -1127,7 +1130,7 @@ contains
     real(kind=kind_phys) :: diff(size(actual,1), size(actual,2))
     logical :: mismatch(size(actual,1), size(actual,2))
     diff = abs(actual - expected)
-    mismatch = (diff > tolerance)
+    mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
     if (present(max_abs_diff)) max_abs_diff = maxval(diff)
     if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
@@ -1149,7 +1152,7 @@ contains
     real(kind=kind_phys) :: diff(size(actual,1), size(actual,2), size(actual,3))
     logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
     diff = abs(actual - expected)
-    mismatch = (diff > tolerance)
+    mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
     if (present(max_abs_diff)) max_abs_diff = maxval(diff)
     if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
@@ -1215,6 +1218,27 @@ contains
       tolerance = default_tolerance
     end if
   end function ccpp_capture_tolerance_override
+
+  ! Does one real element differ? At tolerance 0 (or below): compare the
+  ! bit patterns, so -0.0 differs from +0.0, a NaN differs from every
+  ! number, and two NaNs match only with the same payload -- a bit-for-bit
+  ! check, as CPU-vs-GPU replays require. Otherwise an absolute tolerance,
+  ! with a NaN on one side only a mismatch (abs(NaN - x) > tolerance is
+  ! .false., so a plain tolerance test lets a NaN pass) and NaN vs NaN a
+  ! match. The bytes are compared through transfer, so any kind_phys works.
+  elemental function r8_mismatch(actual, expected, tolerance) result(differs)
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
+    use, intrinsic :: iso_fortran_env, only: int8
+    real(kind=kind_phys), intent(in) :: actual, expected, tolerance
+    logical :: differs
+    if (tolerance <= 0.0_kind_phys) then
+      differs = any(transfer(actual, [0_int8]) /= transfer(expected, [0_int8]))
+    else if (ieee_is_nan(actual) .or. ieee_is_nan(expected)) then
+      differs = ieee_is_nan(actual) .neqv. ieee_is_nan(expected)
+    else
+      differs = abs(actual - expected) > tolerance
+    end if
+  end function r8_mismatch
 
   ! Position of the first .true. in *mask* (0 if none): the compares'
   ! first-mismatch index, column-major for a flattened array. A loop, not
