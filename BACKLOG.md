@@ -96,7 +96,6 @@ measured data, and will drift as items are reassessed.
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
-| `scheme-io-capture-kinds-deps` | 0.5-1 day (add the sources the generated `ccpp_kinds.F90` uses to the support library, unit test) | XS |
 | `scheme-io-capture-constituent-index-table` | 1 day (capture the constituent standard-name table once, driver restores it in `ccpp_scheme_utils` before replay, unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (recapture `rrtmgp` with a run past `irad_always` so non-radiation steps are captured) | XS |
@@ -1227,20 +1226,7 @@ scheme reads module state another module sets up at run time (e.g. the
 `rrtmgp_sw_solar_var_setup`, filled by its init); that
 state is not a scheme argument and is not captured.
 
-**ID: `scheme-io-capture-kinds-deps`. Support library misses the kinds
-modules `ccpp_kinds` uses.** Found 2026-11-05 replaying c02j (CAM-SIMA
-`pumas` suite, `capture_pumas`): the generated `ccpp_kinds.F90` has
-`use pumas_kinds, only: pumas_r8 => kind_r8` (pumas declares its own kind),
-but the capture `CMakeLists.txt` builds `ccpp_capture_support` from
-`ccpp_kinds.F90` and the framework files only. The library fails to
-compile, so every driver in the directory fails, including trivial ones
-(0 of 6 built). Workaround: configure with
-`-DCCPP_CAPTURE_EXTRA_SOURCES=<atmospheric_physics>/schemes/pumas/pumas/pumas_kinds.F90`
-(`/glade/derecho/scratch/dennis/build_capture_tests.sh` does this for
-`capture_pumas`). Wanted: `support_sources` (tools/capture_cmake.py) adds
-the source files of the modules the generated `ccpp_kinds` uses (the
-kind-providing scheme files the cap generator already knows about) to the
-support library.
+**ID: `scheme-io-capture-kinds-deps`. Resolved (2026-11-05, PR #193).** CHANGELOG.md L14012.
 
 **ID: `scheme-io-capture-log-unit`. Resolved (2026-11-05, PR #192).** CHANGELOG.md L13987.
 

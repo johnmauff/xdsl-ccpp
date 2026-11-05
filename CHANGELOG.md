@@ -14008,3 +14008,34 @@ number`); 34 atmospheric_physics schemes take this argument.
 
 Verification: pytest 1376 passed; CI passed (PR #192). End-to-end check
 pending the post-Tier-1 rk_stratiform recapture.
+
+## `scheme-io-capture-kinds-deps`: the support library builds the kind modules `ccpp_kinds` uses (PR #193, 2026-11-05)
+
+Resolves `scheme-io-capture-kinds-deps`. A scheme's metadata `kind_spec`
+makes the generated `ccpp_kinds.F90` `use` the module it names (CAM-SIMA
+pumas: `use pumas_kinds, only: pumas_r8 => kind_r8`), but the capture
+`CMakeLists.txt` built `ccpp_capture_support` from `ccpp_kinds.F90` and the
+framework files only: the library failed to compile and no driver in the
+directory built (c02j `capture_pumas`: 0 of 6).
+
+- `xdsl_ccpp/tools/capture_cmake.py`: `kinds_sources(module)` finds the
+  source of every `kind_spec` module in that table's own `dependencies`
+  (the file named after the module, else the one with a `module <name>`
+  statement) and returns the modules it cannot find. `support_sources()`
+  takes those sources and compiles them before `ccpp_kinds.F90`.
+  `scheme_dependencies` shares the new `_table_dependency_paths` helper.
+- `xdsl_ccpp/tools/ccpp_dsl.py`: `_write_capture_cmake` adds them to the
+  support library, drops them from the per-driver sources (the drivers link
+  the library), and warns about a kind module no dependency provides
+  (pointing to `-DCCPP_CAPTURE_EXTRA_SOURCES`).
+- Tests (`tests/unit/test_capture_cmake.py`): lookup by file name and by
+  `module` statement, a missing module reported, compile order.
+- Outside this repo: after the pumas recapture, drop the `capture_pumas`
+  `EXTRA_SOURCES` workaround from
+  `/glade/derecho/scratch/dennis/build_capture_tests.sh` (the source would
+  otherwise be in the library twice).
+
+Verification: over all atmospheric_physics metadata the lookup finds
+`schemes/pumas/pumas/pumas_kinds.F90` only, nothing missing; pytest 1380
+passed; CI passed (PR #193). End-to-end check pending the post-Tier-1 pumas
+recapture.
