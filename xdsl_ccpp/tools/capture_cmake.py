@@ -9,6 +9,14 @@ scheme. This module writes, next to them:
   the capture runtime and xdsl_ccpp's framework sources), NetCDF from
   ``nf-config``, options, and an ``include()`` of every fragment.
 
+The scheme sources are written relative to the root of the repository
+that holds them (the nearest directory above the first scheme's ``.F90``
+with a ``.git``, e.g. an atmospheric_physics checkout), as
+``${CCPP_CAPTURE_SCHEME_ROOT}/schemes/kessler/kessler.F90``.
+``CCPP_CAPTURE_SCHEME_ROOT`` (``-D`` or the environment; default that
+checkout) builds the drivers against another checkout, e.g. a fork with
+optimized schemes; the drivers and the support library are unchanged.
+
 Usage::
 
     cmake -S <driver dir> -B build [-DCCPP_CAPTURE_DIR=<dir with the .nc files>]
@@ -63,10 +71,21 @@ _TOP_TEMPLATE = """\
 #
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
 # PATH, or -DNF_CONFIG=...). -DOPENACC=ON builds with OpenACC
-# (CCPP_CAPTURE_ACC_FLAGS, default -acc) for GPU replay of the same
-# captures: the drivers always carry their own enter/exit data directives
-# (comments in a CPU build). CCPP_CAPTURE_TOLERANCE in the environment overrides the
-# drivers' real-valued tolerance at run time.
+# (CCPP_CAPTURE_ACC_FLAGS, default -acc; with nvfortran
+# -gpu=nofma,math_uniform is added) for GPU replay of the same captures:
+# the drivers always carry their own enter/exit data directives (comments
+# in a CPU build). With nvfortran a CPU build gets -noacc -- nvfortran
+# otherwise compiles a scheme's !$acc directives and the "CPU" replay runs
+# them on the GPU -- and every build gets -Mnofma, as CAM-SIMA's nvhpc
+# builds do, so a replay can match a capture bit for bit.
+# CCPP_CAPTURE_TOLERANCE in the environment overrides the drivers'
+# real-valued tolerance at run time.
+#
+# The test_<scheme>.cmake files name the scheme sources under
+# CCPP_CAPTURE_SCHEME_ROOT, by default the checkout they were generated from.
+# To test another checkout (e.g. a fork with optimized schemes) against the
+# same captures, set CCPP_CAPTURE_SCHEME_ROOT (-D, or the environment when
+# CMake first configures) to its top-level directory.
 cmake_minimum_required(VERSION 3.19)
 project(ccpp_capture_tests LANGUAGES Fortran)
 
@@ -92,11 +111,29 @@ separate_arguments(_nf_flibs UNIX_COMMAND "${{_nf_flibs}}")
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-ffree-line-length-none)
 endif()
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  add_compile_options(-Mnofma)
+endif()
 if(OPENACC)
   separate_arguments(_acc_flags UNIX_COMMAND "${{CCPP_CAPTURE_ACC_FLAGS}}")
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    list(APPEND _acc_flags -gpu=nofma,math_uniform)
+  endif()
   add_compile_options(${{_acc_flags}})
   add_link_options(${{_acc_flags}})
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  add_compile_options(-noacc)
+  add_link_options(-noacc)
 endif()
+
+if(DEFINED ENV{{CCPP_CAPTURE_SCHEME_ROOT}})
+  set(_ccpp_capture_scheme_root "$ENV{{CCPP_CAPTURE_SCHEME_ROOT}}")
+else()
+  set(_ccpp_capture_scheme_root {scheme_root_arg})
+endif()
+set(CCPP_CAPTURE_SCHEME_ROOT "${{_ccpp_capture_scheme_root}}" CACHE PATH
+    "Top-level directory of the scheme sources (default: the generating checkout)")
+message(STATUS "Scheme sources from ${{CCPP_CAPTURE_SCHEME_ROOT}}")
 
 add_library(ccpp_capture_support STATIC
 {support_sources}
@@ -138,21 +175,54 @@ def _source_lines(paths) -> str:
     return "\n".join(f"  {_cmake_path(p)}" for p in paths)
 
 
-def render_capture_cmakelists(support_sources, data_dir: str) -> str:
+def _scheme_source_lines(paths, scheme_root) -> str:
+    """*paths* as CMake arguments, those under *scheme_root* as
+    "${CCPP_CAPTURE_SCHEME_ROOT}/<relative path>"."""
+    lines = []
+    for path in paths:
+        path = os.path.abspath(path)
+        if scheme_root and path.startswith(scheme_root + os.sep):
+            rel = os.path.relpath(path, scheme_root).replace("\\", "/")
+            lines.append(f'  "${{CCPP_CAPTURE_SCHEME_ROOT}}/{rel}"')
+        else:
+            lines.append(f"  {_cmake_path(path)}")
+    return "\n".join(lines)
+
+
+def scheme_source_root(path: str) -> "str | None":
+    """The nearest directory above *path* holding a ``.git`` (directory, or
+    file for a submodule), or None."""
+    directory = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(directory, ".git")):
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def render_capture_cmakelists(support_sources, data_dir: str,
+                              scheme_root: "str | None" = None) -> str:
     """CMakeLists.txt text: support library from *support_sources* (in
     compile order), NetCDF, options, the default capture directory
-    *data_dir*, include of every test fragment."""
+    *data_dir*, the default CCPP_CAPTURE_SCHEME_ROOT *scheme_root*, include
+    of every test fragment."""
     return _TOP_TEMPLATE.format(
         support_sources=_source_lines(support_sources),
         data_dir=os.path.abspath(data_dir),
         data_dir_arg=_cmake_path(data_dir),
+        scheme_root_arg=_cmake_path(scheme_root) if scheme_root else '""',
     )
 
 
-def render_capture_fragment(scheme: str, sources) -> str:
+def render_capture_fragment(scheme: str, sources,
+                            scheme_root: "str | None" = None) -> str:
     """test_<scheme>.cmake text: the driver plus *sources* (the scheme's
-    .F90 and its dependencies)."""
-    return _FRAGMENT_TEMPLATE.format(scheme=scheme, sources=_source_lines(sources))
+    .F90 and its dependencies), those under *scheme_root* relative to
+    CCPP_CAPTURE_SCHEME_ROOT."""
+    return _FRAGMENT_TEMPLATE.format(
+        scheme=scheme, sources=_scheme_source_lines(sources, scheme_root))
 
 
 def scheme_meta_files(meta_paths) -> dict:
@@ -214,16 +284,19 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
                         data_dir: str) -> list:
     """Write test_<scheme>.cmake for every {scheme: [sources]} entry and the
     CMakeLists.txt, whose tests run against *data_dir*; return the paths
-    written."""
+    written. The scheme sources are named relative to the repository root
+    of the first scheme's source (scheme_source_root)."""
     os.makedirs(driver_dir, exist_ok=True)
+    first = next((srcs[0] for srcs in scheme_sources.values() if srcs), None)
+    scheme_root = scheme_source_root(first) if first else None
     written = []
     for scheme, sources in scheme_sources.items():
         path = os.path.join(driver_dir, f"test_{scheme}.cmake")
         with open(path, "w") as f:
-            f.write(render_capture_fragment(scheme, sources))
+            f.write(render_capture_fragment(scheme, sources, scheme_root))
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:
-        f.write(render_capture_cmakelists(support_sources, data_dir))
+        f.write(render_capture_cmakelists(support_sources, data_dir, scheme_root))
     written.append(path)
     return written

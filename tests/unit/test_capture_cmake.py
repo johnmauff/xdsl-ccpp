@@ -10,6 +10,7 @@ from xdsl_ccpp.tools.capture_cmake import (
     render_capture_cmakelists,
     render_capture_fragment,
     scheme_meta_files,
+    scheme_source_root,
     support_sources,
 )
 from xdsl_ccpp.tools.ccpp_dsl import (
@@ -53,8 +54,35 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "GLOB _entries" not in text
     assert "FATAL_ERROR" not in text
     assert "option(OPENACC" in text
+    # nvfortran: no FMA (as CAM-SIMA builds), and a CPU build must not
+    # compile the schemes' !$acc directives (nvfortran does by default).
+    assert "add_compile_options(-Mnofma)" in text
+    assert "list(APPEND _acc_flags -gpu=nofma,math_uniform)" in text
+    assert "add_compile_options(-noacc)" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
+
+
+def test_scheme_sources_are_relative_to_a_selectable_root():
+    text = render_capture_fragment(
+        "kessler", ["/fork/schemes/kessler/kessler.F90", "/elsewhere/dep.F90"], "/fork")
+    assert '  "${CCPP_CAPTURE_SCHEME_ROOT}/schemes/kessler/kessler.F90"' in text
+    # A source outside the root keeps its absolute path.
+    assert '  "/elsewhere/dep.F90"' in text
+    top = render_capture_cmakelists(support_sources("/out/ccpp_kinds.F90"), "/d", "/fork")
+    assert 'set(_ccpp_capture_scheme_root "$ENV{CCPP_CAPTURE_SCHEME_ROOT}")' in top
+    assert 'set(_ccpp_capture_scheme_root "/fork")' in top
+    assert 'set(CCPP_CAPTURE_SCHEME_ROOT "${_ccpp_capture_scheme_root}" CACHE PATH' in top
+    assert top.index("CCPP_CAPTURE_SCHEME_ROOT") < top.index("include(${_test})")
+
+
+def test_scheme_source_root_is_the_nearest_git_checkout(tmp_path):
+    repo = tmp_path / "atmospheric_physics"
+    (repo / "schemes" / "kessler").mkdir(parents=True)
+    (repo / ".git").write_text("gitdir: ../.git/modules/x\n")  # a submodule
+    src = repo / "schemes" / "kessler" / "kessler.F90"
+    src.write_text("")
+    assert scheme_source_root(str(src)) == str(repo)
 
 
 def test_support_sources_exist():
@@ -95,8 +123,10 @@ def test_ccpp_dsl_writes_a_fragment_per_captured_scheme(tmp_path):
         "test_kessler_update.F90", "test_kessler_update.cmake",
     ]
     fragment = (drivers / "test_kessler.cmake").read_text()
-    assert os.path.abspath(f"{K}/scheme/kessler.F90") in fragment
+    # Relative to the checkout holding the scheme (here xdsl-ccpp itself).
+    assert f'"${{CCPP_CAPTURE_SCHEME_ROOT}}/{K}/scheme/kessler.F90"' in fragment
     top = (drivers / "CMakeLists.txt").read_text()
+    assert f'set(_ccpp_capture_scheme_root "{os.path.abspath(".")}")' in top
     assert str(tmp_path / "out" / "ccpp_kinds.F90") in top
     assert f'set(CCPP_CAPTURE_DIR "{drivers}")' in top  # no label: the driver dir
     # Two capture-pass instances share one set of declarations in the cap.
@@ -254,3 +284,66 @@ def test_ccpp_dsl_captures_only_the_listed_phases(tmp_path):
     driver = (drivers / "test_kessler.F90").read_text()
     assert "! -- kessler_run --" in driver
     assert "! -- kessler_init --" not in driver
+
+
+def _kessler_without_memory_space(tmp_path):
+    """examples/kessler's schemes with their memory_space lines removed,
+    as CAM-SIMA's are now: the device residency is only in the .F90's
+    own OpenACC (present clauses)."""
+    import shutil
+
+    scheme = tmp_path / "scheme"
+    shutil.copytree(f"{K}/scheme", scheme)
+    for meta in scheme.glob("*.meta"):
+        lines = meta.read_text().splitlines(keepends=True)
+        meta.write_text("".join(l for l in lines if "memory_space" not in l))
+    return scheme
+
+
+def _run_kessler_capture(tmp_path, scheme, extra=None):
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    drivers = tmp_path / "drivers"
+    options_db.update({
+        "host_files": [f"{K}/host_ftn/kessler_host_mod.meta", f"{K}/host_ftn/kessler_host_sub.meta"],
+        "scheme_files": [str(scheme / "kessler.meta"), str(scheme / "kessler_update.meta")],
+        "suites": [str(scheme / "kessler_suite.xml")],
+        "capture_scheme": ["kessler", "kessler_update"],
+        "capture_test_driver_dir": str(drivers),
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    options_db.update(extra or {})
+    tool.run(options_db)
+    return drivers, (tmp_path / "out" / "kessler_suite_cap.F90").read_text()
+
+
+def test_cpu_capture_drivers_get_device_data_from_the_source(tmp_path):
+    # No --directive and no memory_space in .meta: the drivers still put
+    # what the schemes' present clauses need on the device, so the CPU
+    # capture replays on a GPU.
+    pytest.importorskip("fparser")
+    drivers, cap = _run_kessler_capture(tmp_path, _kessler_without_memory_space(tmp_path))
+    update = (drivers / "test_kessler_update.F90").read_text()
+    enter = " ".join(l for l in update.splitlines() if "!$acc enter data" in l)
+    assert "theta" in enter and "exner" in enter, enter
+    assert "!$acc exit data" in update
+    assert "!$acc enter data" in (drivers / "test_kessler.F90").read_text()
+    # The caps are a CPU generation's: no directives at all.
+    assert "!$acc" not in cap and "!$omp" not in cap
+
+
+def test_cpu_capture_caps_unchanged_by_driver_device_data(tmp_path):
+    # The driver-only device list must not reach the cap: same cap as a
+    # generation that captures nothing of the device data (fparser absent
+    # would give it too) -- compare against a capture with the option
+    # forced empty.
+    pytest.importorskip("fparser")
+    scheme = _kessler_without_memory_space(tmp_path)
+    _, cap = _run_kessler_capture(tmp_path / "a", scheme)
+    from unittest import mock
+
+    with mock.patch.object(ccppMain, "_capture_driver_device_args",
+                           lambda self, handle: setattr(self, "_capture_device_args", {})):
+        drivers_b, cap_b = _run_kessler_capture(tmp_path / "b", scheme)
+    assert cap == cap_b.replace(str(tmp_path / "b" / "drivers"), str(tmp_path / "a" / "drivers"))
+    assert "!$acc enter data" not in (drivers_b / "test_kessler_update.F90").read_text()

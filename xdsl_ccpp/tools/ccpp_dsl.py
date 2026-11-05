@@ -382,7 +382,7 @@ class ccppMain:
             help="Only meaningful together with --capture-scheme: the "
                  "absolute tolerance the generated test driver's real-valued "
                  "comparisons use, overriding the built-in default "
-                 "(1.0e-10). Uniform across every real-valued comparison in "
+                 "(0: bit-for-bit). Uniform across every real-valued comparison in "
                  "the generated driver -- there is no per-variable override "
                  "in v1. Useful once this is applied beyond a scheme with "
                  "kessler-like deterministic math to a noisier one, where a "
@@ -918,6 +918,23 @@ class ccppMain:
             for line in derived:
                 print(f"  {line}", file=sys.stderr)
 
+    def _capture_driver_device_args(self, handle) -> None:
+        """--capture-scheme without --directive: the arguments the schemes'
+        own OpenACC requires on the device (present, default(present),
+        ...; the check's "device" category), per entry point, for the
+        generated test drivers only. A GPU replay of such a scheme needs
+        the driver's own enter/exit data; with --directive the derived
+        memory_space already says so. Nothing else uses this: the module
+        and the caps are not touched."""
+        pool, reports = handle
+        device: dict = {}
+        for report in reports:
+            for table, uses in (report if pool is None else report.result())[1].items():
+                names = sorted(a for a, category in uses.items() if category == "device")
+                if names:
+                    device[table] = names
+        self._capture_device_args = device
+
     @staticmethod
     def _cancel_fortran_check(handle) -> None:
         """Abandon _start_fortran_check's comparisons (run() failed)."""
@@ -1137,6 +1154,18 @@ class ccppMain:
                 # reading it for capture -- with no --directive, there's
                 # no GPU residency to sync in the first place.
                 capture_opts.append(f"directive={directive}")
+            else:
+                # The test drivers' own device data (see
+                # _capture_driver_device_args): "table:arg,...", only this
+                # scheme's entry points (the pass matches tables exactly).
+                device_args = ",".join(
+                    f"{table}:{arg}"
+                    for table, args in sorted(getattr(self, "_capture_device_args", {}).items())
+                    if table.startswith(f"{scheme_name.lower()}_")
+                    for arg in args
+                )
+                if device_args:
+                    capture_opts.append(f'driver_device_args="{device_args}"')
             test_driver_dir = self.options_db.get("capture_test_driver_dir")
             if test_driver_dir:
                 # Quoted, not bare: a real path routinely contains "-"/"/"
@@ -1630,6 +1659,8 @@ class ccppMain:
                 mlir_file = self.run_frontend(tmp_dir)
             if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
+            elif self.options_db.get("capture_scheme"):
+                self._capture_driver_device_args(fortran_check)
             wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
             target = "ftn_and_cpp_header" if wants_cpp else "ftn"
             opt = self._start_opt(tmp_dir, mlir_file, target=target)

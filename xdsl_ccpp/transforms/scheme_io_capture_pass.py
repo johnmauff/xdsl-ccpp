@@ -100,8 +100,12 @@ renderer wraps the real scheme call with its own `!$acc enter data`/
 `!$omp target enter data` beforehand and the matching exit-data after --
 without this, a real scheme's own `!$acc ... present(...)` checks (e.g.
 kessler_run's) would abort the moment the driver tries to call it under
-`-acc`. No --directive at generation time (the default) means no
-directive text in the driver at all, exactly as before this existed.
+`-acc`. Without --directive the driver still uses OpenACC data
+directives (comments in a CPU build), for the memory_space=device
+arguments and for `driver_device_args`: the arguments the scheme's own
+OpenACC requires on the device (present, default(present)), which
+ccpp_dsl reads from the .F90 when .meta says nothing. That list reaches
+only the driver; the cap gets no directives without --directive.
 
 The driver's own real-valued comparison tolerance defaults to
 `_TEST_DRIVER_TOLERANCE` but is overridable per invocation via
@@ -168,10 +172,11 @@ from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
 
 # Default absolute tolerance used by every generated driver's real-valued
 # comparisons, when --capture-tolerance isn't given (scheme-io-capture-
-# tolerance-config) -- a named Fortran PARAMETER in the generated source
-# (not baked into each call site), so a human can tighten/loosen it later
-# by editing one line of generated output without regenerating.
-_TEST_DRIVER_TOLERANCE = "1.0e-10_kind_phys"
+# tolerance-config): zero, so a replay is a bit-for-bit check (a ported
+# scheme is expected to reproduce its capture exactly). Set in one line of
+# the generated source; --capture-tolerance or CCPP_CAPTURE_TOLERANCE at
+# run time loosens it deliberately.
+_TEST_DRIVER_TOLERANCE = "0.0_kind_phys"
 
 # CCPP standard name for "is this the MPI root/master task" -- CAM-SIMA
 # exposes this via spmd_utils.F90's `masterproc`, already a widely-used
@@ -524,6 +529,19 @@ class SchemeIOCapturePass(ModulePass):
     # literal with no "." in it (e.g. "1e-08") -- re-parsed with float()
     # at the one place it's actually used (_maybe_emit_test_driver).
     tolerance: "str | None" = None
+    # "table:arg,..." -- without --directive, the arguments the scheme's own
+    # OpenACC requires on the device (ccpp_dsl, from the source check).
+    # Used only for the generated test driver's enter/exit data: the cap
+    # gets no directives without --directive.
+    driver_device_args: "str | None" = None
+
+    def _driver_device_names(self, table_name: str) -> "set[str]":
+        names = set()
+        for item in (self.driver_device_args or "").split(","):
+            table, _, arg = item.strip().partition(":")
+            if arg and table.lower() == table_name.lower():
+                names.add(arg.lower())
+        return names
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         if not self.scheme:
@@ -638,7 +656,10 @@ class SchemeIOCapturePass(ModulePass):
                     os.makedirs(data_dir, exist_ok=True)
 
             if self.test_driver_dir and table_name not in captured_tables:
-                params = _build_test_driver_params(param_names, args_by_name, device_names)
+                driver_device = device_names | {
+                    p for p in param_names if p.lower() in self._driver_device_names(table_name)
+                }
+                params = _build_test_driver_params(param_names, args_by_name, driver_device)
                 if params is None:
                     print(
                         f"generate-scheme-io-capture: skipping test-driver generation "
