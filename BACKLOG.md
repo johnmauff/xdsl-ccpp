@@ -97,7 +97,6 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
 | `scheme-io-capture-real-kinds` | 1-2 days (accept `real` of a `kind_spec` kind equal to `kind_phys` in capture and drivers, declare it from `ccpp_kinds`; unit tests; recapture pumas) | XS-S |
-| `scheme-io-capture-skip-message` | 0.5 day (driver-skip notes through `xdsl_ccpp.util.errors`, naming the argument; unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
@@ -1257,16 +1256,7 @@ generic call fails to compile; a `kind_phys`-equality check in the driver
 
 **ID: `scheme-io-capture-uncaptured-phases`. Resolved (2026-11-05, PR #196).** CHANGELOG.md L14129.
 
-**ID: `scheme-io-capture-skip-message`. A skipped test driver is
-silent in CAM-SIMA builds.** When `_build_test_driver_params` returns None,
-`SchemeIOCapturePass` prints `generate-scheme-io-capture: skipping
-test-driver generation for <table> -- ...` with a bare `print` to stderr.
-That never reaches the CAM-SIMA `atm.bldlog` (c03d, 2026-11-05:
-`micro_pumas_ccpp_dimensions_post` was captured but had no driver, with
-no message anywhere). Wanted: report it through `xdsl_ccpp.util.errors`
-(`warn_once`, so it carries the `xDSL-ccpp:` prefix and reaches the build
-log) and name the cause: which argument, and which dimension could not be
-resolved, or that nothing was captured.
+**ID: `scheme-io-capture-skip-message`. Resolved (2026-11-05, PR #197).** CHANGELOG.md L14160.
 
 **ID: `scheme-io-capture-kinds-deps`. Resolved (2026-11-05, PR #193).** CHANGELOG.md L14012.
 

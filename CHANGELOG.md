@@ -14156,3 +14156,29 @@ Verification: pytest 1389 passed; CI passed (PR #196); c03d pumas drivers
 regenerated (case rebuilt after removing `bld/atm/obj/cam_build_cache.xml`
 -- CAM-SIMA does not regenerate after an xdsl-ccpp-only change):
 `test_clamp_number_concentrations` passes (CPU), no recapture.
+
+## `scheme-io-capture-skip-message`: report skipped capture-driver phases and why (PR #197, 2026-11-05)
+
+Resolves `scheme-io-capture-skip-message`. A phase left out of a test
+driver was reported only by a generic `print` to stderr. In CAM-SIMA,
+generation runs in `buildnml`, so the `xDSL-ccpp:` lines appear only in the
+`case.build` output, never in `atm.bldlog` (`buildlib` then finds the
+cache up to date); c03d's `micro_pumas_ccpp_dimensions_post` got no driver
+with no visible reason.
+
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`:
+  `_build_test_driver_params` returns `(params, reason)`; the reason names
+  the argument, its type and the unresolved dimension, or the argument the
+  driver cannot supply (`_unresolved_dims_reason`, `_type_text`). New
+  `_report_skipped`: a `warn_once` warning per skipped phase (and when no
+  driver is written at all), and the same lines in `test_<scheme>.skipped`
+  next to the drivers, removed when nothing is skipped. Bare `print` and
+  `import sys` removed.
+- Tests: reason in warning and file; stale report removed; no-driver case;
+  unresolved-dimension reason text.
+
+Verification: pytest 1393 passed; c03d pumas generation rerun by hand:
+`test_micro_pumas_ccpp_dimensions_post.skipped` names
+`pumas_qcsinksum_rate1ord` (`real`, kind `pumas_r8`) and
+`microphysics_horizontal_loop_extent` (fix: `scheme-io-capture-real-kinds`).
+CI pending at the time of writing (PR #197).

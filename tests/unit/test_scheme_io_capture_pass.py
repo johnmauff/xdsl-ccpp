@@ -891,9 +891,9 @@ def test_uncaptured_init_is_called_once_before_the_run_replay(run_host_match, cc
     assert "use test_io_capture_scheme, only: test_io_capture_scheme_init" in driver
 
 
-def test_uncaptured_phase_needing_other_arguments_is_left_out(run_host_match, ccpp_context, tmp_path):
-    """An init with nothing captured but an argument the driver cannot
-    supply (here a real of another kind) is still skipped."""
+def _run_with_other_kind_init(run_host_match, ccpp_context, tmp_path):
+    """Generate with an init whose only non-error argument is a real of
+    another kind: nothing captured, and the driver cannot supply it."""
     other_kind = """[ other_var ]
   standard_name = test_capture_other_kind_var
   units = K
@@ -916,6 +916,12 @@ def test_uncaptured_phase_needing_other_arguments_is_left_out(run_host_match, cc
     SchemeIOCapturePass(
         scheme="test_io_capture_scheme", test_driver_dir=str(tmp_path),
     ).apply(ccpp_context, module)
+
+
+def test_uncaptured_phase_needing_other_arguments_is_left_out(run_host_match, ccpp_context, tmp_path):
+    """An init with nothing captured but an argument the driver cannot
+    supply (here a real of another kind) is still skipped."""
+    _run_with_other_kind_init(run_host_match, ccpp_context, tmp_path)
     driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
     assert "test_io_capture_scheme_init" not in driver
     assert 'ccpp_capture_open_call("test_io_capture_scheme_run"' in driver
@@ -927,3 +933,60 @@ def test_no_driver_with_only_a_call_only_phase(run_host_match, ccpp_context, tmp
     _fortran, driver = _driver_with_init(run_host_match, ccpp_context, tmp_path,
                                          CCPP_MANDATORY_ARGS, phase="initialize")
     assert driver is None
+
+
+# scheme-io-capture-skip-message: a phase left out of the driver is reported
+# as a warning and in test_<scheme>.skipped next to the drivers.
+_SKIP_FILE = "test_test_io_capture_scheme.skipped"
+
+
+def test_skipped_phase_reported_with_its_reason(run_host_match, ccpp_context, tmp_path, capsys):
+    from xdsl_ccpp.util import errors
+    errors._WARNED.clear()
+    _run_with_other_kind_init(run_host_match, ccpp_context, tmp_path)
+    reason = ("nothing in it is captured, and the driver cannot supply argument "
+              "'other_var' (real, kind kind_other)")
+    err = capsys.readouterr().err
+    assert ("Warning: scheme I/O capture: test_io_capture_scheme_init left out of "
+            f"the test driver: {reason}") in err
+    report = (tmp_path / _SKIP_FILE).read_text()
+    assert f"test_io_capture_scheme_init: {reason}\n" in report
+    assert "test_io_capture_scheme_run" not in report  # it has a driver
+
+
+def test_stale_skip_report_removed_when_nothing_is_skipped(run_host_match, ccpp_context, tmp_path):
+    (tmp_path / _SKIP_FILE).write_text("stale\n")
+    _driver_with_init(run_host_match, ccpp_context, tmp_path, CCPP_MANDATORY_ARGS)
+    assert (tmp_path / "test_test_io_capture_scheme.F90").exists()
+    assert not (tmp_path / _SKIP_FILE).exists()
+
+
+def test_no_driver_reported_when_no_phase_is_compared(run_host_match, ccpp_context, tmp_path):
+    """Only a call-only phase captured: no driver, and the report says why."""
+    _driver_with_init(run_host_match, ccpp_context, tmp_path,
+                      CCPP_MANDATORY_ARGS, phase="initialize")
+    report = (tmp_path / _SKIP_FILE).read_text()
+    assert ("test_io_capture_scheme: no test_test_io_capture_scheme.F90 written: its "
+            "phases have nothing captured, so there is nothing to compare") in report
+
+
+def test_unresolved_dimension_named_in_the_reason():
+    """The reason names the uncaptured array and its missing dimension."""
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _unresolved_dims_reason
+
+    class _Arg:
+        _attrs = {"type": "real", "kind": "pumas_r8", "dimensions": 2,
+                  "dim_names": ["horizontal_loop_extent", "microphysics_vertical_layer_dimension"]}
+
+        def hasAttr(self, name):
+            return name in self._attrs
+
+        def getAttr(self, name):
+            return self._attrs[name]
+
+    reason = _unresolved_dims_reason("pumas_x", _Arg(), {"horizontal_loop_extent": "ncol"})
+    assert reason == (
+        "argument 'pumas_x' (real, kind pumas_r8, rank 2) is outside the capture's type "
+        "scope, so the driver must size it from the other arguments, but its dimension "
+        "'microphysics_vertical_layer_dimension' is not an argument of the call"
+    )
