@@ -540,3 +540,86 @@ def test_module_state_sets_include_what_a_call_may_set(tmp_path):
     assert set(module_state_access(facts, "utils_init", "assigns")) == {("utils", "ml2")}
     assert set(module_state_access(facts, "utils_init", "sets")) == {
         ("utils", "ml2"), ("utils", "props")}
+
+
+# ── scheme-io-capture-ddt-args: derived-type definitions ───────────────────
+
+from xdsl_ccpp.transforms.module_dependency_resolver import (  # noqa: E402
+    capture_layout,
+    resolve_real_kind,
+)
+
+
+def _type_files(tmp_path):
+    kinds = _write(tmp_path / "kinds.F90", (
+        "module my_kinds\n"
+        "  integer,parameter :: dp = selected_real_kind(12)\n"
+        "  integer, parameter :: sp = selected_real_kind(6)\n"
+        "end module my_kinds\n"
+    ))
+    types = _write(tmp_path / "types.F90", (
+        "module my_types\n"
+        "  use my_kinds, only: r8 => dp, sp\n"
+        "  type, public :: flat_t\n"
+        "    integer :: n = 0\n"
+        "    real(r8), allocatable :: a(:,:)\n"
+        "    real(r8), dimension(:), allocatable :: b\n"
+        "    logical :: on(3)\n"
+        "  contains\n"
+        "    procedure :: reset\n"
+        "    final :: done\n"
+        "  end type flat_t\n"
+        "  type :: hidden_t\n"
+        "    private\n"
+        "    real(r8) :: x\n"
+        "  end type hidden_t\n"
+        "  type, extends(flat_t) :: child_t\n"
+        "    real(r8) :: y\n"
+        "  end type child_t\n"
+        "  type :: mixed_t\n"
+        "    real(sp) :: s\n"
+        "    real(r8), pointer :: p(:) => null()\n"
+        "  end type mixed_t\n"
+        "end module my_types\n"
+    ))
+    return [scan_fortran_source(kinds), scan_fortran_source(types)]
+
+
+def test_scan_records_derived_type_definitions(tmp_path):
+    facts = _type_files(tmp_path)
+    types = {t.name: t for t in facts[1].types}
+    assert set(types) == {"flat_t", "hidden_t", "child_t", "mixed_t"}
+    flat = types["flat_t"]
+    assert flat.module == "my_types" and flat.extends is None
+    # Components only: the type-bound procedures are not.
+    assert [(c.name, c.base, c.kind, c.rank, c.allocatable) for c in flat.components] == [
+        ("n", "integer", None, 0, False), ("a", "real", "r8", 2, True),
+        ("b", "real", "r8", 1, True), ("on", "logical", None, 1, False)]
+    assert not types["hidden_t"].components[0].public
+    assert types["child_t"].extends == "flat_t"
+    assert types["mixed_t"].components[1].pointer
+    # Type components are not module variables.
+    module_scope = next(s for s in facts[1].scopes if s.name is None)
+    assert "a" not in module_scope.variables and "n" not in module_scope.variables
+
+
+def test_real_kinds_resolve_through_renames_and_constants(tmp_path):
+    facts = _type_files(tmp_path)
+    assert resolve_real_kind("r8", "my_types", facts) == "double"
+    assert resolve_real_kind("sp", "my_types", facts) == "single"
+    assert resolve_real_kind("unknown", "my_types", facts) is None
+    assert resolve_real_kind("real64", None, facts) == "double"
+
+
+def test_capture_layout_of_flat_types_and_why_not(tmp_path):
+    facts = _type_files(tmp_path)
+    layout, why = capture_layout("flat_t", facts)
+    assert why == "" and layout.module == "my_types"
+    assert layout.components == (("n", "integer", 0, False), ("a", "real", 2, True),
+                                 ("b", "real", 1, True), ("on", "logical", 1, False))
+    assert capture_layout("hidden_t", facts)[1] == "component x of type hidden_t is private"
+    assert capture_layout("child_t", facts)[1] == "type child_t extends flat_t"
+    assert capture_layout("mixed_t", facts)[1] == \
+        "component s of type mixed_t has kind sp, not kind_phys"
+    assert capture_layout("other_t", facts)[1] == \
+        "no definition of type other_t in the scheme's sources"

@@ -1103,3 +1103,28 @@ def test_no_driver_removes_an_earlier_generations_driver(run_host_match, ccpp_co
     SchemeIOCapturePass(scheme="test_io_capture_scheme", phase="register",
                         test_driver_dir=str(tmp_path)).apply(ccpp_context, module)
     assert not stale.exists()
+
+
+# scheme-io-capture-ddt-args: derived types recorded component by component.
+
+def test_ddt_layouts_round_trip_and_reach_the_driver_params():
+    from xdsl_ccpp.transforms.module_dependency_resolver import CaptureLayout
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import (
+        _build_test_driver_params,
+        format_ddt_layouts,
+        parse_ddt_layouts,
+    )
+
+    text = format_ddt_layouts([CaptureLayout(
+        "coords1d", "coords_1d", (("n", "integer", 0, False), ("ifc", "real", 2, True)))])
+    assert text == "coords1d@coords_1d=n:integer:0:0,ifc:real:2:1"
+    layouts = parse_ddt_layouts(text)
+    assert layouts == {"coords1d": ("coords_1d", (("n", "integer", 0, False),
+                                                  ("ifc", "real", 2, True)))}
+    args = {"p": _MetaArg(standard_name="coords", type="coords1d", dimensions=0, intent="in")}
+    params, reason = _build_test_driver_params(["p"], args, set(), layouts=layouts)
+    assert reason == ""
+    assert params[0].category == "in" and params[0].type_module == "coords_1d"
+    assert params[0].components == layouts["coords1d"][1]
+    # Without a layout it is still left out (the stop-gap).
+    assert _build_test_driver_params(["p"], args, set())[0] is None

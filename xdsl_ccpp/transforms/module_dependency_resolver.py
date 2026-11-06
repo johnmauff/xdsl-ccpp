@@ -94,6 +94,37 @@ class ScopeFacts:
     refs: frozenset = frozenset()
     assigns: frozenset = frozenset()
     passes: frozenset = frozenset()
+    # A module's named constants: ((name, value text), ...).
+    parameters: tuple = ()
+
+
+@dataclass(frozen=True)
+class ComponentFacts:
+    """One component of a derived type (scheme-io-capture-ddt-args).
+    *base* is the declaration's type word ("real", "integer", "logical",
+    "character", "complex", "type", "class"); *kind* its kind name (None:
+    default); *type_name* the type of a "type"/"class" component; *rank*
+    0 for a scalar; *public* its accessibility."""
+
+    name: str
+    base: str
+    kind: "str | None"
+    type_name: "str | None"
+    rank: int
+    allocatable: bool
+    pointer: bool
+    public: bool
+
+
+@dataclass(frozen=True)
+class TypeFacts:
+    """A derived-type definition: its name, module, parent (EXTENDS) and
+    components, in order."""
+
+    name: str
+    module: "str | None"
+    extends: "str | None"
+    components: tuple
 
 
 @dataclass(frozen=True)
@@ -104,6 +135,7 @@ class FortranSourceFacts:
     modules: frozenset  # modules the file defines
     includes: frozenset  # files named by Fortran INCLUDE lines
     scopes: tuple = ()  # ScopeFacts per procedure and module specification part
+    types: tuple = ()  # TypeFacts per derived-type definition
 
 
 class _ScopeBuilder:
@@ -118,13 +150,15 @@ class _ScopeBuilder:
         self.refs: set = set()
         self.assigns: set = set()
         self.passes: set = set()
+        self.parameters: list = []
 
     def freeze(self) -> ScopeFacts:
         return ScopeFacts(self.name, self.module, frozenset(self.uses),
                           frozenset(self.includes), frozenset(self.calls),
                           tuple(self.use_only), frozenset(self.declared),
                           frozenset(self.variables), frozenset(self.refs),
-                          frozenset(self.assigns), frozenset(self.passes))
+                          frozenset(self.assigns), frozenset(self.passes),
+                          tuple(self.parameters))
 
 
 # Type declaration statements start with one of these words.
@@ -211,6 +245,50 @@ def _call_arguments(call) -> set:
     return {name for name in map(_base_name, items) if name}
 
 
+def _type_start(stmt) -> "tuple[str, str | None]":
+    """(name, parent) of a Derived_Type_Stmt."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    parent = None
+    for spec in walk(stmt.children[0], f03.Type_Attr_Spec) if stmt.children[0] else ():
+        if str(spec.children[0]).upper() == "EXTENDS":
+            parent = str(spec.children[1]).lower()
+    return str(stmt.children[1]).lower(), parent
+
+
+def _components(stmt, default_public: bool) -> list:
+    """ComponentFacts of a Data_Component_Def_Stmt."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    spec, attrs, decls = stmt.children[0], stmt.children[1], stmt.children[2]
+    base = str(spec.children[0]).lower()
+    kind = type_name = None
+    if isinstance(spec, f03.Intrinsic_Type_Spec):
+        selector = spec.children[1]
+        if isinstance(selector, f03.Kind_Selector):
+            kind = str(selector.children[1]).lower()
+    else:
+        type_name = str(spec.children[1]).lower()
+    attr_text = str(attrs).upper() if attrs is not None else ""
+    allocatable = "ALLOCATABLE" in attr_text
+    pointer = "POINTER" in attr_text
+    public = default_public
+    for access in walk(attrs, f03.Access_Spec) if attrs is not None else ():
+        public = str(access).upper() == "PUBLIC"
+    dim_rank = 0
+    for dim in walk(attrs, f03.Dimension_Component_Attr_Spec) if attrs is not None else ():
+        dim_rank = len(dim.children[1].children)
+    result = []
+    for decl in walk(decls, f03.Component_Decl):
+        shape = decl.children[1]
+        rank = len(shape.children) if shape is not None else dim_rank
+        result.append(ComponentFacts(str(decl.children[0]).lower(), base, kind, type_name,
+                                     rank, allocatable, pointer, public))
+    return result
+
+
 def _use_only(use) -> tuple:
     """(module, None | frozenset of (local, remote)) for a Use_Stmt."""
     import fparser.two.Fortran2003 as f03
@@ -263,6 +341,8 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     interface_depth = 0  # interface bodies declare, they do not define
     generic = None  # scope of the open named interface: it "calls" its procedures
     type_depth = 0  # inside a derived-type definition: components, not variables
+    type_def = None  # the definition being read (see below)
+    types: list = []
 
     def current():
         return procedures[-1] if procedures else module_scope
@@ -286,12 +366,35 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
         words = lower.replace("(", " ").split()
         first = words[0] if words else ""
         if type_depth:
-            if re.match(r"end\s*type\b", lower.strip()):
+            # Inside a derived-type definition: its components.
+            text = lower.strip()
+            if re.match(r"end\s*type\b", text):
                 type_depth -= 1
+                if type_def is not None:
+                    types.append(TypeFacts(type_def[0], module, type_def[1],
+                                           tuple(type_def[2])))
+                type_def = None
+            elif type_def is not None and not type_def[4]:
+                if text == "contains":
+                    type_def[4] = True  # type-bound procedures follow
+                elif text == "private":
+                    type_def[3] = False
+                elif text != "sequence":
+                    try:
+                        type_def[2].extend(_components(
+                            f03.Data_Component_Def_Stmt(line), type_def[3]))
+                    except Exception:  # noqa: BLE001 -- not a component
+                        pass
             continue
-        if (first == "type" and not re.match(r"type\s*\(", lower.strip())
-                and (len(words) < 2 or words[1] != "is")):
-            type_depth += 1  # a derived-type definition ("type :: t")
+        if (re.match(r"type\s*(,|::|[a-z])", lower.strip())
+                and not re.match(r"type\s+is\b", lower.strip())):
+            type_depth += 1  # a derived-type definition ("type, public :: t")
+            try:
+                name, parent = _type_start(f03.Derived_Type_Stmt(line))
+                # [name, parent, components, default public, in contains]
+                type_def = [name, parent, [], True, False]
+            except Exception:  # noqa: BLE001
+                type_def = None
             continue
         if procedures and not interface_depth:
             # Module state (scheme-io-capture-module-state-setup).
@@ -350,7 +453,8 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
                 module = str(f03.Module_Stmt(line).children[1]).lower()
                 modules.add(module)
                 module_scope = _ScopeBuilder(None, module)
-            elif (not interface_depth and first in _DECLARATION_WORDS
+            elif (not interface_depth
+                    and re.match(r"[a-z]*", first).group(0) in _DECLARATION_WORDS
                     and "function" not in words and "subroutine" not in words):
                 decl = f03.Type_Declaration_Stmt(line)
                 names = {str(e.children[0]).lower()
@@ -358,6 +462,13 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
                 current().declared.update(names)
                 if not procedures and "parameter" not in str(decl.children[1] or "").lower():
                     module_scope.variables.update(names)
+                elif not procedures:
+                    for entity in walk(decl.children[2], f03.Entity_Decl):
+                        init = entity.children[3]
+                        if init is not None:
+                            module_scope.parameters.append(
+                                (str(entity.children[0]).lower(),
+                                 str(init).lstrip("= ").strip().lower()))
             elif not interface_depth and ("subroutine" in words or "function" in words):
                 stmt_cls = f03.Subroutine_Stmt if "subroutine" in words else f03.Function_Stmt
                 name = str(stmt_cls(line).children[1]).lower()
@@ -369,7 +480,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     if module_scope.module or module_scope.uses or module_scope.includes:
         scopes.append(module_scope.freeze())
     return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes),
-                              tuple(scopes))
+                              tuple(scopes), tuple(types))
 
 
 def scan_fortran_source(
@@ -667,6 +778,98 @@ def module_state_access(file_facts, entry: str, kind: str = "reads") -> dict:
                     found.setdefault(visible[local], scope.name)
             queue.extend(sorted(scope.calls | (scope.refs & by_name.keys())))
     return found
+
+
+def resolve_real_kind(kind: "str | None", module: "str | None", file_facts) -> "str | None":
+    """"kind_phys" (CCPP's own kind, from the generated ccpp_kinds),
+    "double", "single" or None (unknown) for real kind name *kind* as
+    module *module* sees it, through its named constants and USE
+    renames over *file_facts* (e.g. coords_1d's r8 => shr_kind_r8 =
+    selected_real_kind(12)). scheme-io-capture-ddt-args."""
+    scopes = {}
+    for facts in file_facts:
+        for scope in facts.scopes:
+            if scope.name is None and scope.module:
+                scopes[scope.module] = scope
+    name = (kind or "").lower()
+    for _ in range(12):
+        literal = name.replace(" ", "")
+        if literal == "kind_phys":
+            return "kind_phys"
+        if literal in ("8", "real64", "c_double") or re.fullmatch(r"kind\(1(\.0*)?d0\)", literal):
+            return "double"
+        if literal in ("4", "real32", "c_float") or re.fullmatch(r"kind\(1(\.0*)?(e0)?\)", literal):
+            return "single"
+        match = re.fullmatch(r"selected_real_kind\((?:p=)?(\d+)", literal.split(",")[0].rstrip(")"))
+        if match:
+            return "double" if 7 <= int(match.group(1)) <= 15 else (
+                "single" if int(match.group(1)) <= 6 else None)
+        scope = scopes.get(module)
+        if scope is None:
+            return None
+        value = dict(scope.parameters).get(name)
+        if value is not None:
+            name = value
+            continue
+        for used, only in scope.use_only:
+            if only is None:
+                other = scopes.get(used)
+                if other is not None and name in dict(other.parameters):
+                    module = used
+                    break
+            else:
+                remote = dict(only).get(name)
+                if remote is not None:
+                    module, name = used, remote
+                    break
+        else:
+            return None
+    return None
+
+
+@dataclass(frozen=True)
+class CaptureLayout:
+    """How the capture records a derived type, component by component
+    (scheme-io-capture-ddt-args): its defining module and its components
+    as (name, base type, rank, allocatable)."""
+
+    type_name: str
+    module: str
+    components: tuple
+
+
+def capture_layout(type_name: str, file_facts) -> "tuple[CaptureLayout | None, str]":
+    """(CaptureLayout, "") for derived type *type_name* defined in
+    *file_facts* when the capture can record it, else (None, why): every
+    component public, not a pointer, integer, logical or real of a
+    double-precision kind (kind_phys), rank at most 3; no parent type
+    (EXTENDS), no derived-type, character or complex components."""
+    type_name = type_name.lower()
+    found = next((t for f in file_facts for t in f.types if t.name == type_name), None)
+    if found is None:
+        return None, f"no definition of type {type_name} in the scheme's sources"
+    if found.extends:
+        return None, f"type {type_name} extends {found.extends}"
+    components = []
+    for comp in found.components:
+        what = f"component {comp.name} of type {type_name}"
+        if not comp.public:
+            return None, f"{what} is private"
+        if comp.pointer:
+            return None, f"{what} is a pointer"
+        if comp.base not in ("real", "integer", "logical"):
+            return None, f"{what} is {comp.type_name or comp.base}"
+        if comp.rank > 3:
+            return None, f"{what} has rank {comp.rank}"
+        if comp.base == "real":
+            if resolve_real_kind(comp.kind, found.module, file_facts) not in ("kind_phys", "double"):
+                return None, f"{what} has kind {comp.kind or 'default'}, not kind_phys"
+        elif comp.kind is not None:
+            return None, f"{what} has kind {comp.kind}"
+        components.append((comp.name, comp.base, comp.rank, comp.allocatable))
+    if not components:
+        return None, f"type {type_name} has no components"
+    return CaptureLayout(type_name, found.module, tuple(components)), ""
 
 
 def _is_ddt_or_host_table(f90_path: str) -> bool:

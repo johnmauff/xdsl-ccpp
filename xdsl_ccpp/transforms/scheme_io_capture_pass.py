@@ -146,6 +146,7 @@ from xdsl_ccpp.transforms.capture_driver_ir import (
 )
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    CallExprOp,
     AccUpdateSelfOp,
     AssignOp,
     CallStatementOp,
@@ -247,6 +248,50 @@ _DDT_CAPTURES = {
         type_module="ccpp_constituent_prop_mod",
     ),
 }
+
+
+@functools.lru_cache(maxsize=None)
+def parse_ddt_layouts(text: "str | None") -> dict:
+    """The `ddt_layouts` option: "type@module=comp:base:rank:alloc,...;..."
+    (ccpp_dsl, module_dependency_resolver.capture_layout) as {type:
+    (module, ((comp, base, rank, allocatable), ...))}."""
+    layouts: dict = {}
+    for item in (text or "").split(";"):
+        head, _, comps = item.strip().partition("=")
+        type_name, _, module = head.partition("@")
+        if not type_name or not module:
+            continue
+        components = []
+        for comp in comps.split(","):
+            name, base, rank, alloc = comp.split(":")
+            components.append((name, base, int(rank), alloc == "1"))
+        layouts[type_name.lower()] = (module, tuple(components))
+    return layouts
+
+
+def format_ddt_layouts(layouts) -> str:
+    """parse_ddt_layouts' inverse, for CaptureLayouts."""
+    return ";".join(
+        f"{layout.type_name}@{layout.module}=" + ",".join(
+            f"{name}:{base}:{rank}:{int(alloc)}" for name, base, rank, alloc in layout.components)
+        for layout in layouts)
+
+
+def _ddt_layout(arg, layouts: "dict | None") -> "tuple | None":
+    """The (module, components) layout recording a derived-type argument
+    component by component (scheme-io-capture-ddt-args): its type is in
+    *layouts*, it is a scalar and has an intent."""
+    if not layouts:
+        return None
+    arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
+    layout = layouts.get((arg_type or "").lower())
+    if layout is None:
+        return None
+    rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+    intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
+    if rank != 0 or intent not in ("in", "out", "inout"):
+        return None
+    return layout
 
 
 def _ddt_capture(arg) -> "_DdtCapture | None":
@@ -364,7 +409,8 @@ def _is_capture_supported(
 _INTRINSIC_TYPES = frozenset({"integer", "real", "logical", "character", "complex"})
 
 
-def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS) -> str:
+def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
+                           layouts: "dict | None" = None) -> str:
     """Classify one real call argument for test-driver generation:
     "optional" (omit from the generated call entirely), "error_arg"
     (errmsg/errflg -- always declared and passed, never compared),
@@ -387,7 +433,8 @@ def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS)
     arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
     kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-    if not _is_capture_supported(arg_type, kind, rank, real_kinds) and _ddt_capture(arg) is None:
+    if (not _is_capture_supported(arg_type, kind, rank, real_kinds)
+            and _ddt_capture(arg) is None and _ddt_layout(arg, layouts) is None):
         return "unverified"
     return intent
 
@@ -519,6 +566,7 @@ def _enclosing_module(op) -> "builtin.ModuleOp | None":
 def _build_test_driver_params(
     param_names: list, args_by_name: dict, device_names: "set[str]",
     real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
+    layouts: "dict | None" = None,
 ) -> "tuple[list[TestDriverParam] | None, str]":
     """Resolve CCPP metadata for one real scheme call site into the
     TestDriverParam list capture_driver_ir.build_test_driver needs -- all CCPP-specific
@@ -553,7 +601,7 @@ def _build_test_driver_params(
         arg = args_by_name.get(pname)
         if arg is None:
             return None, f"argument '{pname}' has no metadata"
-        category = _driver_param_category(arg, real_kinds)
+        category = _driver_param_category(arg, real_kinds, layouts)
         if category == "optional":
             continue
 
@@ -570,7 +618,8 @@ def _build_test_driver_params(
             if dims is None:
                 return None, _unresolved_dims_reason(pname, arg, std_name_to_param)
         handler = _ddt_capture(arg)
-        if (handler is None and arg_type is not None
+        layout = _ddt_layout(arg, layouts)
+        if (handler is None and layout is None and arg_type is not None
                 and arg_type.lower() not in _INTRINSIC_TYPES):
             # The capture does not record it, so the driver could only pass
             # an undefined object (scheme-io-capture-ddt-args).
@@ -584,10 +633,12 @@ def _build_test_driver_params(
 
         params.append(TestDriverParam(
             pname, category, arg_type, kind, rank, dims,
-            pname in device_names and handler is None,
+            pname in device_names and handler is None and layout is None,
             ddt_read=handler.read if handler else None,
             ddt_read_module=handler.module if handler else None,
-            type_module=handler.type_module if handler else None,
+            type_module=(handler.type_module if handler else
+                         layout[0] if layout else None),
+            components=layout[1] if layout else (),
         ))
 
     if not any_captured and not is_call_only_phase(params):
@@ -669,6 +720,10 @@ class SchemeIOCapturePass(ModulePass):
     # "setup": an instance capturing a phase only for other schemes'
     # drivers -- no driver, no report of its own.
     role: str = ""
+    # scheme-io-capture-ddt-args: derived types recorded component by
+    # component (parse_ddt_layouts), from ccpp_dsl's reading of their
+    # Fortran definitions.
+    ddt_layouts: "str | None" = None
 
     def _setup_phases(self) -> "set[tuple[str, str]]":
         pairs = set()
@@ -736,6 +791,7 @@ class SchemeIOCapturePass(ModulePass):
         skipped: dict = {}
         captured_any = False
         setup_phases = self._setup_phases()
+        layouts = parse_ddt_layouts(self.ddt_layouts)
         setup_tables: dict = {}  # in suite order: {table_name: (params, module)}
 
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
@@ -776,7 +832,9 @@ class SchemeIOCapturePass(ModulePass):
                 kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                 handler = _ddt_capture(arg)
-                if not _is_capture_supported(arg_type, kind, rank, real_kinds) and handler is None:
+                layout = _ddt_layout(arg, layouts)
+                if (not _is_capture_supported(arg_type, kind, rank, real_kinds)
+                        and handler is None and layout is None):
                     continue
                 # A character(len=*) argument arrives through a cast of the
                 # fixed-length variable; capture that variable.
@@ -786,9 +844,13 @@ class SchemeIOCapturePass(ModulePass):
                     continue
                 if handler is not None:
                     self._ensure_decl(call_op, handler.write, handler.module, declared_decls)
+                if layout is not None:
+                    for procedure in ("ccpp_capture_begin_ddt", "ccpp_capture_end_ddt"):
+                        self._ensure_decl(call_op, procedure, "ccpp_capture_mod", declared_decls)
 
                 # A derived type lives on the host: no device sync.
-                entry = (value, param_name, arg, param_name in device_names and handler is None)
+                entry = (value, param_name, arg,
+                         param_name in device_names and handler is None and layout is None)
                 if intent in ("in", "inout"):
                     before.append(entry)
                 if intent in ("out", "inout"):
@@ -814,7 +876,7 @@ class SchemeIOCapturePass(ModulePass):
                     p for p in param_names if p.lower() in self._driver_device_names(table_name)
                 }
                 params, reason = _build_test_driver_params(
-                    param_names, args_by_name, driver_device, real_kinds,
+                    param_names, args_by_name, driver_device, real_kinds, layouts,
                 )
                 if params is None:
                     skipped[table_name] = reason
@@ -1031,7 +1093,8 @@ class SchemeIOCapturePass(ModulePass):
         device = _device_arg_names(scheme_name, table_name, meta_data) | {
             p for p in param_names if p.lower() in self._driver_device_names(table_name)
         }
-        params, reason = _build_test_driver_params(param_names, args_by_name, device, real_kinds)
+        params, reason = _build_test_driver_params(param_names, args_by_name, device, real_kinds,
+                                                   parse_ddt_layouts(self.ddt_layouts))
         if params is None:
             skipped[table_name] = (
                 f"not replayed before the scheme's phases, so module state it sets "
@@ -1081,6 +1144,29 @@ class SchemeIOCapturePass(ModulePass):
         with open(out_path, "w") as f:
             print_fortran_unit(program, f)
 
+    @staticmethod
+    def _component_captures(value, param_name, arg, components) -> list:
+        """A derived-type argument recorded component by component
+        (scheme-io-capture-ddt-args): its components in sub-group
+        <param_name>, an allocatable one only when allocated."""
+        ops = [CallStatementOp("ccpp_capture_begin_ddt",
+                               arg_ops=[StringLiteralExprOp(param_name)])]
+        for comp, _base, _rank, allocatable in components:
+            member = lambda c=comp: MemberAccessExprOp(ValueExprOp(value), c)
+            capture = CallStatementOp("ccpp_capture", arg_ops=[
+                StringLiteralExprOp(comp),
+                member(),
+                StringLiteralExprOp(_attr_text(arg, "standard_name")),
+                StringLiteralExprOp(""),
+                StringLiteralExprOp(""),
+            ])
+            if allocatable:
+                ops += _scf_if(CallExprOp("allocated", [member()], result_type=i1), [capture])
+            else:
+                ops.append(capture)
+        ops.append(CallStatementOp("ccpp_capture_end_ddt", arg_ops=[]))
+        return ops
+
     def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var, step_var=None) -> None:
         """Insert one file's worth of capture calls immediately before
         (timing="before") or after (timing="after") call_op:
@@ -1129,6 +1215,10 @@ class SchemeIOCapturePass(ModulePass):
                 writes.append(CallStatementOp(handler.write, arg_ops=[
                     StringLiteralExprOp(param_name), ValueExprOp(value),
                 ]))
+                continue
+            layout = _ddt_layout(arg, parse_ddt_layouts(self.ddt_layouts))
+            if layout is not None:
+                writes += self._component_captures(value, param_name, arg, layout[1])
                 continue
             writes.append(CallStatementOp("ccpp_capture", arg_ops=[
                 StringLiteralExprOp(param_name),

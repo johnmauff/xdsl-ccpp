@@ -44,6 +44,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     DoLoopOp,
     IndexExprOp,
     KeywordArgExprOp,
+    MemberAccessExprOp,
     OmpTargetEnterDataOp,
     OmpTargetExitDataOp,
     PrintStmtOp,
@@ -71,7 +72,10 @@ class TestDriverParam:
     copy around the call (scheme-io-capture-gpu-residency). A captured
     derived-type argument (scheme-io-capture-ddt-args) has `ddt_read`, the
     procedure (in module `ddt_read_module`) that rebuilds it, and
-    `type_module`, the module declaring its type `arg_type`.
+    `type_module`, the module declaring its type `arg_type`; or, captured
+    component by component, `components` ((name, base type, rank,
+    allocatable), ...), read from and compared in the sub-group
+    in/<name> and out/<name>.
     """
 
     name: str
@@ -84,6 +88,7 @@ class TestDriverParam:
     ddt_read: "str | None" = None
     ddt_read_module: "str | None" = None
     type_module: "str | None" = None
+    components: tuple = ()
 
 
 # Categories of the arguments a test driver supplies itself, with nothing
@@ -177,7 +182,7 @@ class _DriverBuilder:
         return name
 
     def element_type(self, p: TestDriverParam):
-        if p.ddt_read is not None:
+        if p.ddt_read is not None or p.components:
             self.use_symbol(p.arg_type, p.type_module)
             return DerivedType(p.arg_type)
         if p.arg_type == "real":
@@ -244,14 +249,20 @@ class _DriverBuilder:
 
     def compare(self, p: TestDriverParam) -> list:
         """ok = ccpp_capture_compare(...); report; diagnostics on failure."""
-        compare = self.use("ccpp_capture_compare", _CAPTURE_MOD)
         expected = f"{p.name}_expected"
-        args = [_var(p.name), _var(expected)]
-        if p.rank == 0:
-            if p.arg_type == "real":
+        return self.compare_values(p.name, lambda: _var(p.name), lambda: _var(expected),
+                                   p.rank, p.arg_type)
+
+    def compare_values(self, label: str, actual, expected, rank: int, arg_type) -> list:
+        """compare() of the values *actual()* and *expected()* build (fresh
+        expression ops each call), reported as *label*."""
+        compare = self.use("ccpp_capture_compare", _CAPTURE_MOD)
+        args = [actual(), expected()]
+        if rank == 0:
+            if arg_type == "real":
                 args.append(_var("tolerance"))
-            diagnostics = [_str("  actual="), _var(p.name), _str(" expected="), _var(expected)]
-        elif p.arg_type == "real":
+            diagnostics = [_str("  actual="), actual(), _str(" expected="), expected()]
+        elif arg_type == "real":
             for name, elem in (("diag_max_abs_diff", RealKindType(CCPP_KIND_PHYS)),
                                ("diag_mean_abs_diff", RealKindType(CCPP_KIND_PHYS)),
                                ("diag_first_mismatch_index", i32)):
@@ -269,9 +280,61 @@ class _DriverBuilder:
                            _var("diag_first_mismatch_index")]
         return [
             _assign("ok", CallExprOp(compare, args, result_type=i1), i1),
-            self.report(p.name),
+            self.report(label),
             *_scf_if(_not("ok"), [PrintStmtOp(diagnostics)]),
         ]
+
+    # -- derived types recorded component by component -----------------
+
+    def read_components(self, p: TestDriverParam, group: str, target: str) -> list:
+        """Read each recorded component of `p` from sub-group
+        <group>/<p.name> into local `target`'s components; an allocatable
+        one is (re)allocated to the captured shape first, and left
+        unallocated when it was not captured (it was not allocated)."""
+        sub = f"{group}/{p.name}"
+        ops = []
+        for comp, _base, rank, allocatable in p.components:
+            member = lambda c=comp: MemberAccessExprOp(_var(target), c)
+            read = _call(self.use("ccpp_capture_read", _CAPTURE_MOD),
+                         _str(sub), _str(comp), member())
+            if not allocatable:
+                ops.append(read)
+                continue
+            ext = f"extents{rank}"
+            self.local(ext, i32, shape=[rank])
+            self.local("extents_found", i1)
+            dims = [IndexExprOp(_var(ext), [_int(i)]) for i in range(1, rank + 1)]
+            ops += [
+                SafeDeallocOp(target_op=member()),
+                _call(self.use("ccpp_capture_extents", _CAPTURE_MOD),
+                      _str(sub), _str(comp), _var(ext), _var("extents_found")),
+                *_scf_if(_var("extents_found", i1),
+                         [AllocateOp(target_op=member(), dim_ops=dims), read]),
+            ]
+        return ops
+
+    def compare_components(self, p: TestDriverParam) -> list:
+        """Compare each recorded component of `p` with `<p.name>_expected`'s
+        (read from out/<p.name>); an allocatable one only when it was
+        captured, failing when the call did not allocate it."""
+        expected = f"{p.name}_expected"
+        ops = []
+        for comp, base, rank, allocatable in p.components:
+            actual_op = lambda c=comp: MemberAccessExprOp(_var(p.name), c)
+            expected_op = lambda c=comp: MemberAccessExprOp(_var(expected), c)
+            label = f"{p.name}%{comp}"
+            compare = self.compare_values(label, actual_op, expected_op, rank, base)
+            if not allocatable:
+                ops += compare
+                continue
+            allocated = lambda op: CallExprOp("allocated", [op], result_type=i1)
+            ops += _scf_if(
+                allocated(expected_op()),
+                _scf_if(allocated(actual_op()), compare,
+                        self.fail(_str(f"FAIL: {label} not allocated by the call (call "),
+                                  _var("call_count"), _str(")"))),
+            )
+        return ops
 
     def errflg_check(self, table: str, errmsg: "str | None", errflg: "str | None") -> list:
         if errflg is None:
@@ -329,6 +392,17 @@ class _DriverBuilder:
                 # allocates it), never compared.
                 array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
                                          _str("in"), _str(p.name), _var(name)))
+                continue
+            if p.components:
+                # A derived type recorded component by component
+                # (scheme-io-capture-ddt-args): on the host only.
+                if p.category in ("in", "inout"):
+                    array_reads += self.read_components(p, "in", name)
+                if p.category in ("out", "inout") and not setup:
+                    expected = f"{p.name}_expected"
+                    self.declare_param(p, expected)
+                    after_reads += self.read_components(p, "out", expected)
+                    compares += self.compare_components(p)
                 continue
             if p.category == "error_arg":
                 if p.arg_type == "character":
