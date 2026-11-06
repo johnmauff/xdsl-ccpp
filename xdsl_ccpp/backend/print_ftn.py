@@ -117,6 +117,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
 from xdsl_ccpp.dialects.ccpp_utils import PrintStmtOp as CCPPPrintStmtOp
+from xdsl_ccpp.dialects.ccpp_utils import ProgramOp as CCPPProgramOp
+from xdsl_ccpp.dialects.ccpp_utils import CommentOp as CCPPCommentOp
+from xdsl_ccpp.dialects.ccpp_utils import BlankLineOp as CCPPBlankLineOp
 from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.util.ccpp_conventions import (
     FN_FIXED_INTERFACE,
@@ -1665,6 +1668,15 @@ class ftnPrintContext:
         match op:
             case builtin.ModuleOp(sym_name=name, body=bdy):
                 self._print_module(name, bdy)
+            case CCPPProgramOp():
+                self._print_program(op)
+            case CCPPCommentOp():
+                # Written whole: the long-line splitter breaks at commas,
+                # which would turn the rest of a comment into code.
+                for text in op.lines.data:
+                    print(f"{self._prefix}! {text.data}".rstrip(), file=self.output)
+            case CCPPBlankLineOp():
+                print("", file=self.output)
             case memref.AllocaOp():
                 pass  # Variable registration is handled up-front in _print_fn
             case llvm.GlobalOp():
@@ -2290,6 +2302,77 @@ class ftnPrintContext:
         }
     )
 
+    def _print_use_statements(self, body):
+        """The `use <module>, only: <name>` lines of a module or program
+        unit, from its external declarations and use stubs, and the
+        BIND(C) interface blocks of its C++ callees."""
+        # Emit 'use <module>, only: <name>' lines.  Two sources:
+        #   1. External FuncOps with a 'module' attribute (suite cap callees).
+        #   2. llvm.GlobalOp stubs with a 'module' attribute (host model vars).
+        use_map: dict[str, list[str]] = {}
+        for op in body.ops:
+            if isa(op, func.FuncOp) and op.is_declaration and "module" in op.attributes:
+                if "language" in op.attributes:
+                    continue  # C++ scheme — emitted as BIND(C) interface block, not use
+                mod = op.attributes["module"].data
+                use_map.setdefault(mod, []).append(op.sym_name.data)
+            elif isa(op, llvm.GlobalOp) and "module" in op.attributes:
+                mod = op.attributes["module"].data
+                use_map.setdefault(mod, []).append(op.sym_name.data)
+        # Also emit USE statements for CCPP framework DDT types used as
+        # function argument types — e.g. ccpp_constituent_properties_t.
+        _CCPP_DDT_MODULES = {
+            "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
+            "ccpp_constituent_prop_ptr_t":   "ccpp_constituent_prop_mod",
+            "ccpp_t":                        "ccpp_types",
+        }
+        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
+        for op in body.ops:
+            if not isa(op, func.FuncOp):
+                continue
+            for blk in op.body.blocks:
+                for arg in blk.args:
+                    if not isa(arg.type, MemRefType):
+                        continue
+                    elem = cast(MemRefType, arg.type).element_type
+                    if not isa(elem, _DerivedType):
+                        continue
+                    ddt_mod = _CCPP_DDT_MODULES.get(
+                        cast(_DerivedType, elem).type_name.data
+                    )
+                    if ddt_mod:
+                        use_map.setdefault(ddt_mod, [])
+                        if cast(_DerivedType, elem).type_name.data \
+                                not in use_map[ddt_mod]:
+                            use_map[ddt_mod].append(
+                                cast(_DerivedType, elem).type_name.data
+                            )
+
+        for mod, procs in sorted(use_map.items()):
+            for proc in sorted(procs):
+                self.print(f"use {mod}, only: {proc}", prefix="  ")
+
+        # Emit BIND(C) interface blocks for C++ scheme entry points.
+        cxx_fns = [op for op in body.ops
+                   if isa(op, func.FuncOp) and op.is_declaration
+                   and "language" in op.attributes]
+        if cxx_fns:
+            self._print_cxx_interface_blocks(cxx_fns)
+
+    def _print_program(self, op):
+        """Print a ProgramOp: ``program`` with the shared use statements, a
+        call of its main procedure, and its procedures after CONTAINS."""
+        name = op.sym_name.data
+        self.print(f"program {name}")
+        self._print_use_statements(op.body.block)
+        self.print("\nimplicit none", prefix="  ")
+        self.print("")
+        self.print(f"call {op.main.data}()", prefix="  ")
+        self.print("\nCONTAINS")
+        with self.descend() as inner:
+            inner.print_block(op.body.block)
+        self.print(f"end program {name}")
+
     def _print_module(self, module_name, body):
         """Print a builtin.ModuleOp as a Fortran module block.
 
@@ -2361,58 +2444,7 @@ class ftnPrintContext:
                 renames = ", ".join(sorted(non_iso_by_module[mod]))
                 self.print(f"use {mod}, only: {renames}", prefix="  ")
 
-        # Emit 'use <module>, only: <name>' lines.  Two sources:
-        #   1. External FuncOps with a 'module' attribute (suite cap callees).
-        #   2. llvm.GlobalOp stubs with a 'module' attribute (host model vars).
-        use_map: dict[str, list[str]] = {}
-        for op in body.ops:
-            if isa(op, func.FuncOp) and op.is_declaration and "module" in op.attributes:
-                if "language" in op.attributes:
-                    continue  # C++ scheme — emitted as BIND(C) interface block, not use
-                mod = op.attributes["module"].data
-                use_map.setdefault(mod, []).append(op.sym_name.data)
-            elif isa(op, llvm.GlobalOp) and "module" in op.attributes:
-                mod = op.attributes["module"].data
-                use_map.setdefault(mod, []).append(op.sym_name.data)
-        # Also emit USE statements for CCPP framework DDT types used as
-        # function argument types — e.g. ccpp_constituent_properties_t.
-        _CCPP_DDT_MODULES = {
-            "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
-            "ccpp_constituent_prop_ptr_t":   "ccpp_constituent_prop_mod",
-            "ccpp_t":                        "ccpp_types",
-        }
-        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
-        for op in body.ops:
-            if not isa(op, func.FuncOp):
-                continue
-            for blk in op.body.blocks:
-                for arg in blk.args:
-                    if not isa(arg.type, MemRefType):
-                        continue
-                    elem = cast(MemRefType, arg.type).element_type
-                    if not isa(elem, _DerivedType):
-                        continue
-                    ddt_mod = _CCPP_DDT_MODULES.get(
-                        cast(_DerivedType, elem).type_name.data
-                    )
-                    if ddt_mod:
-                        use_map.setdefault(ddt_mod, [])
-                        if cast(_DerivedType, elem).type_name.data \
-                                not in use_map[ddt_mod]:
-                            use_map[ddt_mod].append(
-                                cast(_DerivedType, elem).type_name.data
-                            )
-
-        for mod, procs in sorted(use_map.items()):
-            for proc in sorted(procs):
-                self.print(f"use {mod}, only: {proc}", prefix="  ")
-
-        # Emit BIND(C) interface blocks for C++ scheme entry points.
-        cxx_fns = [op for op in body.ops
-                   if isa(op, func.FuncOp) and op.is_declaration
-                   and "language" in op.attributes]
-        if cxx_fns:
-            self._print_cxx_interface_blocks(cxx_fns)
+        self._print_use_statements(body)
 
         self.print("\nimplicit none", prefix="  ")
         self.print("private", prefix="  ")
@@ -3069,6 +3101,14 @@ class ftnPrintContext:
                 type_str = inner.mlir_type_to_ftn_type(memref_type.element_type)
                 dims = "(" + ", ".join(":" for _ in range(rank)) + ")" if rank else ""
                 return f"{type_str}, {attr} :: {ftn_name}{dims}"
+        # A static-shape (non-character) array, e.g. `integer :: extents(2)`:
+        # the shape goes on the name.
+        shape = [d.data for d in memref_type.shape.data]
+        elem = memref_type.element_type
+        is_char = isa(elem, IntegerType) and cast(IntegerType, elem).width.data == 8
+        if shape and DYNAMIC_INDEX not in shape and not is_char:
+            type_str = inner.mlir_type_to_ftn_type(memref_type.element_type)
+            return f"{type_str} :: {ftn_name}({', '.join(str(d) for d in shape)})"
         return f"{inner.mlir_type_to_ftn_type(memref_type)} :: {ftn_name}"
 
     def _declare_fn_locals(
@@ -3486,9 +3526,25 @@ def print_to_ftn(
             divider = True
             ctx.print("// FILE: " + op.sym_name.data + ".F90")
             ctx.print_op(op)
+        elif isinstance(op, CCPPProgramOp):
+            if divider:
+                ctx.print("// -----")
+            divider = True
+            ctx.print("// FILE: " + op.sym_name.data + ".F90")
+            ctx.print_op(op)
         elif isinstance(op, CCPPCHostCapOp):
             if divider:
                 ctx.print("// -----")
             divider = True
             ctx.print("// FILE: " + op.mod_name.data + ".F90")
             ctx.print_block(op.ftn_body.block)
+
+
+def print_fortran_unit(unit, output: IO[str]) -> None:
+    """Print one Fortran unit -- a builtin.ModuleOp or a ProgramOp -- to
+    output, without print_to_ftn's FILE header: for a unit written to its
+    own file, e.g. a scheme I/O capture test driver."""
+    ctx = ftnPrintContext(output)
+    ctx.register_binops()
+    ctx.has_kinds_module = False
+    ctx.print_op(unit)

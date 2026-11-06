@@ -7,7 +7,9 @@
 ! variables, a shape mismatch, mismatch detection and diagnostics, exact
 ! (bit-for-bit) real compares at tolerance 0 and NaN handling, the
 ! tolerance override default, the global attributes (ccpp_capture_set_info,
-! ccpp_capture_attribute, ccpp_capture_date) and ccpp_capture_set_dir.
+! ccpp_capture_attribute, ccpp_capture_date), ccpp_capture_set_dir, and the
+! test-driver helpers (ccpp_capture_call_count, ccpp_capture_report,
+! ccpp_capture_output_unit).
 !
 ! Run from this directory, with netcdf-fortran built by the same compiler
 ! (on Derecho load the compiler first: `module load gcc netcdf`, or
@@ -29,7 +31,10 @@ program test_ccpp_capture_mod
                               ccpp_capture_attribute, &
                               ccpp_capture_open_call, ccpp_capture_close, &
                               ccpp_capture_read, ccpp_capture_compare, &
-                              ccpp_capture_tolerance_override
+                              ccpp_capture_tolerance_override, &
+                              ccpp_capture_call_count, ccpp_capture_report, &
+                              ccpp_capture_output_unit
+  use, intrinsic :: iso_fortran_env, only: output_unit
 
   implicit none
 
@@ -57,6 +62,7 @@ program test_ccpp_capture_mod
   call test_exact_real_compare(n_failed)
   call test_tolerance_override_default_when_unset(n_failed)
   call test_global_attributes(n_failed)
+  call test_driver_helpers(n_failed)
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
@@ -181,6 +187,25 @@ contains
     call report('char_0d round-trip', ccpp_capture_compare(rc0, c0), n_failed)
     call report('char_1d round-trip', ccpp_capture_compare(rc1, c1), n_failed)
   end subroutine test_round_trip
+
+  subroutine test_driver_helpers(n_failed)
+    ! What a generated test driver uses instead of its own loop exit,
+    ! report subroutine and iso_fortran_env rename.
+    integer, intent(inout) :: n_failed
+    integer :: counted
+
+    call report('call count: two captured calls', &
+                ccpp_capture_call_count('test_table') == 2, n_failed)
+    call report('call count: zero for a table never captured', &
+                ccpp_capture_call_count('never_captured_table') == 0, n_failed)
+    counted = 0
+    call ccpp_capture_report('helper pass', 1, .true., counted)
+    call report('ccpp_capture_report: a pass is not counted', counted == 0, n_failed)
+    call ccpp_capture_report('helper fail (expected FAIL line)', 1, .false., counted)
+    call report('ccpp_capture_report: a failure is counted', counted == 1, n_failed)
+    call report('ccpp_capture_output_unit is standard output', &
+                ccpp_capture_output_unit == output_unit, n_failed)
+  end subroutine test_driver_helpers
 
   subroutine test_out_group(n_failed)
     integer, intent(inout) :: n_failed

@@ -14181,4 +14181,41 @@ Verification: pytest 1393 passed; c03d pumas generation rerun by hand:
 `test_micro_pumas_ccpp_dimensions_post.skipped` names
 `pumas_qcsinksum_rate1ord` (`real`, kind `pumas_r8`) and
 `microphysics_horizontal_loop_extent` (fix: `scheme-io-capture-real-kinds`).
-CI pending at the time of writing (PR #197).
+CI passed (PR #197).
+
+## `scheme-io-capture-real-kinds`: capture reals of kinds equal to kind_phys (PR #198, 2026-11-05)
+
+Resolves `scheme-io-capture-real-kinds`. Only `real(kind_phys)` was
+captured; any other real was "unverified" -- not captured, passed through
+the driver uncompared and sized from the call's other arguments. PUMAS's
+glue schemes pass `real(pumas_r8)` arrays (metadata `kind_spec =
+pumas_kinds:pumas_r8=>kind_r8`) dimensioned by `microphysics_*` extents
+that are not arguments of the call, so `micro_pumas_ccpp_dimensions_post`
+got no driver and `micro_pumas_ccpp_dimensions_pre`'s run phase was left
+out (its "pass" replayed init only) -- both reported by
+`test_<scheme>.skipped` since PR #197.
+
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: `_phys_real_kinds`
+  (from the IR's `ccpp.kinds`): `kind_phys`, `iso_fortran_env` kinds with
+  its value (e.g. `r8 => REAL64`), and `kind_spec` kinds from a module.
+  `_is_capture_supported`, `_driver_param_category` and
+  `_build_test_driver_params` take the set, so these reals are captured in
+  the cap and compared in the driver. The capture calls stay generic over
+  `kind_phys`: a `kind_spec` kind that differed would fail to compile only
+  in an opt-in capture build.
+- `xdsl_ccpp/backend/print_ftn.py`: the driver imports every real kind it
+  declares from `ccpp_kinds`; the driver text goes through
+  `ftnPrintContext`'s long-line splitter (`_continue_long_lines`) --
+  `dimensions_post`'s scheme call was one 3955-character line nvfortran
+  rejected. A stopgap: the driver is still a string template, see the new
+  `scheme-io-capture-driver-as-ir`.
+- Tests: the kind-set rule; scope check with extra kinds; a `kind_spec`
+  real captured and compared end to end; the driver's `use ccpp_kinds`
+  line; a long scheme call continued under 99 characters (one existing
+  test now joins continuation lines before matching).
+
+Verification: pytest 1398 passed; CI passed (PR #198); c03d pumas
+recaptured and drivers regenerated: `test_micro_pumas_ccpp_dimensions_post`
+(71 compares) and `test_micro_pumas_ccpp_dimensions_pre` (run phase, 36
+compares) pass (CPU). `pumas_post_main` still needs `pumas_gamma_function`
+(`scheme-io-capture-host-module-schemes`).
