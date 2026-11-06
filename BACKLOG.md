@@ -91,12 +91,12 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
+| `scheme-io-capture-driver-as-ir` | 3-5 days (driver program built from existing IR ops in the pass, printed by `print_to_ftn`; new ops only where none fits; existing driver tests as the equivalence check; delete the string renderer) | S |
 | `scheme-io-capture-ddt-args` | 4-8 days (generic: component discovery, recursive capture/restore of allocatable and fixed-size numeric components; the constituent-properties case is done) | S-M |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
-| `scheme-io-capture-real-kinds` | 1-2 days (accept `real` of a `kind_spec` kind equal to `kind_phys` in capture and drivers, declare it from `ccpp_kinds`; unit tests; recapture pumas) | XS-S |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
@@ -1227,32 +1227,40 @@ scheme reads module state another module sets up at run time (e.g. the
 `rrtmgp_sw_solar_var_setup`, filled by its init); that
 state is not a scheme argument and is not captured.
 
-**ID: `scheme-io-capture-real-kinds`. Reals of a scheme-specific kind
-are neither captured nor compared.** `_is_capture_supported`
-(`scheme_io_capture_pass.py`) accepts `real` only with `kind = kind_phys`.
-Any other real -- e.g. PUMAS's `real(pumas_r8)`, declared through
-`kind_spec = pumas_kinds:pumas_r8` -- is "unverified": not captured, and in
-the driver passed through uncompared, sized from the scheme's other
-arguments. Found 2026-11-05 on the c03d pumas capture:
+**ID: `scheme-io-capture-driver-as-ir`. The capture test driver is a
+Fortran string template, not IR.** `render_scheme_io_capture_test_driver`
+and `_render_test_driver_phase_block` (`backend/print_ftn.py`) assemble the
+whole `test_<scheme>.F90` program from hand-written Fortran strings
+(declarations, `use` lines, loops, calls, compares, the `report`
+subroutine), outside the IR -> `print_to_ftn` path the caps use. So every
+Fortran rule the IR printer already gets right has to be re-learned by the
+template, and the driver bugs of 2026-11-05 were exactly that: a
+3955-character scheme call nvfortran rejected
+(`micro_pumas_ccpp_dimensions_post`; patched by passing the text through
+`ftnPrintContext`'s splitter, `_continue_long_lines`), a real kind
+declared but not imported (`pumas_r8`), the log unit's `use` line, and
+hand-deduplicated errmsg/errflg declarations. It also breaks the repo rule
+(CLAUDE.md): the generator builds IR, and a printer prints ops -- it should
+not compose programs; the driver also cannot be printed to another
+language.
 
-- `micro_pumas_ccpp_dimensions_post`: 71 `pumas_r8` inputs dimensioned
-  `(microphysics_horizontal_loop_extent,
-  microphysics_vertical_layer_dimension)`; neither dimension is an
-  argument, so `_build_test_driver_params` returns None and no driver is
-  written (the scheme's `kind_phys` outputs are captured anyway).
-- `micro_pumas_ccpp_dimensions_pre`: its 32 `pumas_r8` outputs (the
-  scheme's whole purpose) are passed but never compared, so its driver
-  passing says little.
-- `pumas_post_main`: one `pumas_r8` argument.
+Wanted: `SchemeIOCapturePass` builds the driver as its own IR module -- a
+program `func.FuncOp` with `LocalVarOp` declarations, `func.FuncOp.external`
++ `module` attributes for the `use` lines (scheme entry points,
+`ccpp_kinds` kinds, `ccpp_capture_mod`/`ccpp_capture_replay_mod`
+procedures, DDT readers), `CallStatementOp` for the scheme call and
+`ccpp_capture_*` calls, `scf.if`/loop ops for the replay loop and errflg
+check, the `Acc*`/`Omp*` data ops for device residency -- and prints it with
+`print_to_ftn` to `test_<scheme>.F90`. Add a small reusable op only where
+none fits (e.g. a `do ... exit` loop, a program unit, list-directed
+`write`), with its printer case. The `TestDriverParam` classification stays
+in the pass. Equivalence check: the existing driver tests
+(`tests/unit/test_print_ftn_scheme_io_capture_driver.py` and the pass's
+driver tests), asserting on statements rather than exact text, plus a
+replay of the c03 capture directories. Then delete the string renderer and
+`_continue_long_lines`.
 
-`pumas_r8` is `selected_real_kind(12)`, the same kind as `kind_phys` in
-CAM-SIMA, so `ccpp_capture_mod`'s `real(kind_phys)` procedures already
-match it. Wanted: treat a real whose kind is one of the table's
-`kind_spec` kinds as supported (capture, read and compare as `kind_phys`),
-and declare it in the driver through `ccpp_kinds`, which `use`s the kind
-module since `scheme-io-capture-kinds-deps`. If the kinds differ, the
-generic call fails to compile; a `kind_phys`-equality check in the driver
-(or separate procedures) would make that explicit. Then recapture pumas.
+**ID: `scheme-io-capture-real-kinds`. Resolved (2026-11-05, PR #198).** CHANGELOG.md L14186.
 
 **ID: `scheme-io-capture-uncaptured-phases`. Resolved (2026-11-05, PR #196).** CHANGELOG.md L14129.
 
