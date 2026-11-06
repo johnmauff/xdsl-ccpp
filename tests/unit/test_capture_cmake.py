@@ -81,6 +81,22 @@ def test_scheme_sources_are_relative_to_a_selectable_root():
     assert top.index("CCPP_CAPTURE_SCHEME_ROOT") < top.index("include(${_test})")
 
 
+def test_fragment_builds_one_version_of_each_cpu_gpu_variant():
+    text = render_capture_fragment(
+        "rrtmgp_lw_rte", ["/fork/schemes/rrtmgp_lw_rte.F90"], "/fork",
+        [("/fork/k/mo_k.F90", "/fork/k/accel/mo_k.F90")])
+    assert ("if(OPENACC)\n"
+            "  target_sources(test_rrtmgp_lw_rte PRIVATE\n"
+            '  "${CCPP_CAPTURE_SCHEME_ROOT}/k/accel/mo_k.F90")\n'
+            "else()\n"
+            "  target_sources(test_rrtmgp_lw_rte PRIVATE\n"
+            '  "${CCPP_CAPTURE_SCHEME_ROOT}/k/mo_k.F90")\n'
+            "endif()\n") in text
+    add_executable = text[:text.index("set_target_properties")]
+    assert "mo_k.F90" not in add_executable
+    assert "if(OPENACC)" not in render_capture_fragment("kessler", ["/src/kessler.F90"])
+
+
 def test_scheme_source_root_is_the_nearest_git_checkout(tmp_path):
     repo = tmp_path / "atmospheric_physics"
     (repo / "schemes" / "kessler").mkdir(parents=True)

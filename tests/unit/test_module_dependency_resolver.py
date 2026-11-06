@@ -353,3 +353,73 @@ def test_mpi_reach_follows_calls_generics_and_module_scope(tmp_path):
                               "reduce, which has include 'mpif.h' (util_mpi.F90)")
     assert reach["s_final"] == ("s_final calls helper, which is in module h_mod, "
                                 "which has use mpi_f08 (h.F90)")
+
+
+# ── scheme-io-capture-rte-kernel-variants: modules in several files ────────
+
+from xdsl_ccpp.transforms.module_dependency_resolver import (  # noqa: E402
+    accel_variant_pair,
+)
+
+
+def _kernels_repo(tmp_path):
+    """RTE-RRTMGP's layout: a kernel module with a CPU version, an OpenACC
+    version in accel/, and an API copy no build compiles; the OpenACC
+    version alone uses a helper module."""
+    root = tmp_path / "repo"
+    scheme = _write(root / "schemes" / "s.F90", "module s\n  use mo_k\nend module\n")
+    cpu = _write(root / "kernels" / "mo_k.F90", "module mo_k\nend module\n")
+    gpu = _write(root / "kernels" / "accel" / "mo_k.F90",
+                 "module mo_k\n  use mo_acc_util\nend module\n")
+    api = _write(root / "kernels" / "api" / "mo_k.F90", "module mo_k\nend module\n")
+    util = _write(root / "kernels" / "mo_acc_util.F90", "module mo_acc_util\nend module\n")
+    return str(root), scheme, cpu, gpu, api, util
+
+
+def test_accel_variant_pair_is_a_file_and_its_accel_copy():
+    assert accel_variant_pair(["/k/accel/m.F90", "/k/m.F90"]) == ("/k/m.F90", "/k/accel/m.F90")
+    assert accel_variant_pair(["/k/m.F90", "/k/api/m.F90"]) is None
+    assert accel_variant_pair(["/k/m.F90", "/other/accel/m.F90"]) is None
+    assert accel_variant_pair(["/k/m.F90", "/k/accel/n.F90"]) is None
+    assert accel_variant_pair(["/k/m.F90", "/k/accel/m.F90", "/k/api/m.F90"]) is None
+
+
+def test_closure_without_listed_files_leaves_three_copies_unresolved(tmp_path):
+    root, scheme, *_ = _kernels_repo(tmp_path)
+    closure = source_closure([scheme], root)
+    assert "defined in 3 files" in closure.unresolved["mo_k"]
+    assert closure.variants == {}
+
+
+def test_closure_takes_the_listed_copy_of_a_module(tmp_path):
+    root, scheme, cpu, _gpu, _api, _util = _kernels_repo(tmp_path)
+    closure = source_closure([scheme], root, listed={cpu})
+    assert closure.unresolved == {}
+    assert closure.sources == [scheme, cpu]
+    assert closure.variants == {}
+
+
+def test_closure_turns_a_listed_cpu_gpu_pair_into_a_variant(tmp_path):
+    root, scheme, cpu, gpu, _api, util = _kernels_repo(tmp_path)
+    closure = source_closure([scheme], root, listed={cpu, gpu})
+    assert closure.unresolved == {}
+    assert closure.variants == {"mo_k": (cpu, gpu)}
+    # Neither version is a common source; what the GPU version alone uses is.
+    assert closure.sources == [scheme, util]
+
+
+def test_closure_turns_a_pair_among_the_start_files_into_a_variant(tmp_path):
+    # The metadata `dependencies` (start files) can name both versions.
+    root, scheme, cpu, gpu, _api, util = _kernels_repo(tmp_path)
+    closure = source_closure([scheme, cpu, gpu], root)
+    assert closure.unresolved == {}
+    assert closure.variants == {"mo_k": (cpu, gpu)}
+    assert closure.sources == [scheme, util]
+
+
+def test_closure_reports_two_needed_files_defining_one_module(tmp_path):
+    root, scheme, cpu, _gpu, api, _util = _kernels_repo(tmp_path)
+    closure = source_closure([scheme, cpu, api], root)
+    assert closure.unresolved == {
+        "mo_k": "defined in kernels/mo_k.F90, kernels/api/mo_k.F90, all needed by the scheme"
+    }

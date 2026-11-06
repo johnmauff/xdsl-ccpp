@@ -175,6 +175,18 @@ set_target_properties(test_{scheme} PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/test_{scheme})
 target_link_libraries(test_{scheme} PRIVATE ccpp_capture_support)
 add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
+{variants}"""
+
+_VARIANTS_TEMPLATE = """# Modules with a CPU and an OpenACC version (the latter in accel/), of which
+# a build compiles one, as CAM-SIMA does (cime_config/cam_autogen.py,
+# _set_rrtmgp_dependencies).
+if(OPENACC)
+  target_sources(test_{scheme} PRIVATE
+{gpu})
+else()
+  target_sources(test_{scheme} PRIVATE
+{cpu})
+endif()
 """
 
 
@@ -229,12 +241,23 @@ def render_capture_cmakelists(support_sources, data_dir: str,
 
 
 def render_capture_fragment(scheme: str, sources,
-                            scheme_root: "str | None" = None) -> str:
+                            scheme_root: "str | None" = None,
+                            variants=()) -> str:
     """test_<scheme>.cmake text: the driver plus *sources* (the scheme's
     .F90 and its dependencies), those under *scheme_root* relative to
-    CCPP_CAPTURE_SCHEME_ROOT."""
+    CCPP_CAPTURE_SCHEME_ROOT, and the (CPU file, GPU file) *variants*
+    (SourceClosure.variants): the GPU files with -DOPENACC=ON, else the
+    CPU files."""
+    variant_text = ""
+    if variants:
+        variant_text = _VARIANTS_TEMPLATE.format(
+            scheme=scheme,
+            cpu=_scheme_source_lines([cpu for cpu, _gpu in variants], scheme_root),
+            gpu=_scheme_source_lines([gpu for _cpu, gpu in variants], scheme_root),
+        )
     return _FRAGMENT_TEMPLATE.format(
-        scheme=scheme, sources=_scheme_source_lines(sources, scheme_root))
+        scheme=scheme, sources=_scheme_source_lines(sources, scheme_root),
+        variants=variant_text)
 
 
 def scheme_meta_files(meta_paths) -> dict:
@@ -278,6 +301,17 @@ def scheme_dependencies(module, scheme: str) -> list:
             if path not in deps:
                 deps.append(path)
     return deps
+
+
+def listed_dependency_paths(module) -> frozenset:
+    """Absolute paths of every table's `dependencies` in the frontend
+    *module*: the files the host build compiles for the suite's schemes
+    (source_closure's *listed*)."""
+    return frozenset(
+        os.path.abspath(path)
+        for op in module.walk() if isa(op, TablePropertiesOp)
+        for path in _table_dependency_paths(op)
+    )
 
 
 def _table_dependency_paths(op) -> list:
@@ -373,11 +407,13 @@ def capture_provided_modules(support) -> frozenset:
 
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
-                        data_dir: str) -> list:
-    """Write test_<scheme>.cmake for every {scheme: [sources]} entry and the
-    CMakeLists.txt, whose tests run against *data_dir*; return the paths
-    written. The scheme sources are named relative to the repository root
-    of the first scheme's source (scheme_source_root)."""
+                        data_dir: str, scheme_variants=None) -> list:
+    """Write test_<scheme>.cmake for every {scheme: [sources]} entry (with
+    its (CPU file, GPU file) pairs from *scheme_variants*, {scheme: [pairs]})
+    and the CMakeLists.txt, whose tests run against *data_dir*; return the
+    paths written. The scheme sources are named relative to the repository
+    root of the first scheme's source (scheme_source_root)."""
+    scheme_variants = scheme_variants or {}
     os.makedirs(driver_dir, exist_ok=True)
     first = next((srcs[0] for srcs in scheme_sources.values() if srcs), None)
     scheme_root = scheme_source_root(first) if first else None
@@ -385,7 +421,8 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
     for scheme, sources in scheme_sources.items():
         path = os.path.join(driver_dir, f"test_{scheme}.cmake")
         with open(path, "w") as f:
-            f.write(render_capture_fragment(scheme, sources, scheme_root))
+            f.write(render_capture_fragment(scheme, sources, scheme_root,
+                                            scheme_variants.get(scheme, ())))
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:

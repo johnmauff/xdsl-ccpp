@@ -1544,17 +1544,21 @@ class ccppMain:
             return None
         return [f90_path] + scheme_dependencies(module, scheme)
 
-    def _capture_closure(self, files: list, provided):
+    def _capture_closure(self, module, files: list, provided):
         """module_dependency_resolver.source_closure of a captured scheme's
         *files* (_capture_scheme_files) through its repository
         (scheme_source_root), preprocessed with --preproc-defs (none: what
-        a compile without -D sees, so `#if 0` code never counts)."""
-        from xdsl_ccpp.tools.capture_cmake import scheme_source_root
+        a compile without -D sees, so `#if 0` code never counts). A module
+        defined in several files there is looked for among the files the
+        build compiles: every table's metadata `dependencies` in the
+        frontend *module* (scheme-io-capture-rte-kernel-variants)."""
+        from xdsl_ccpp.tools.capture_cmake import listed_dependency_paths, scheme_source_root
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
         from xdsl_ccpp.transforms.module_dependency_resolver import source_closure
 
         preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
-        return source_closure(files, scheme_source_root(files[0]), provided, preproc_defs)
+        return source_closure(files, scheme_source_root(files[0]), provided, preproc_defs,
+                              listed=listed_dependency_paths(module))
 
     def _drop_mpi_capture_phases(self, mlir_file: str) -> None:
         """scheme-io-capture-host-module-schemes: a phase whose entry point
@@ -1586,7 +1590,7 @@ class ccppMain:
             if not files:
                 kept.append(spec)
                 continue
-            closure = self._capture_closure(files, FRAMEWORK_MODULES)
+            closure = self._capture_closure(module, files, FRAMEWORK_MODULES)
             entries = {}  # phase -> entry point (the arg table's name)
             for scope in scan_fortran_source(files[0], preproc_defs).scopes:
                 split = split_scheme_table_name(scope.name or "")
@@ -1685,6 +1689,7 @@ class ccppMain:
         in_support = {os.path.abspath(p) for p in kind_srcs}
         meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
         scheme_sources: dict = {}
+        scheme_variants: dict = {}  # scheme -> [(CPU file, GPU file)]
         for spec in self.options_db.get("capture_scheme") or []:
             scheme = _capture_spec(spec)[0]
             if scheme in scheme_sources:
@@ -1700,7 +1705,7 @@ class ccppMain:
                 )
                 self.remove_file_if_exists(fragment)
                 continue
-            closure = self._capture_closure(files, provided)
+            closure = self._capture_closure(module, files, provided)
             if closure.unresolved:
                 self._report_driver_not_built(driver_dir, scheme, closure.unresolved)
                 self.remove_file_if_exists(fragment)
@@ -1708,6 +1713,7 @@ class ccppMain:
             scheme_sources[scheme] = [
                 p for p in closure.sources if os.path.abspath(p) not in in_support
             ]
+            scheme_variants[scheme] = list(closure.variants.values())
         if not scheme_sources:
             return
         for name in kind_missing:
@@ -1718,7 +1724,8 @@ class ccppMain:
             )
         label = self.options_db.get("capture_label")
         data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
-        for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir):
+        for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir,
+                                        scheme_variants):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):
