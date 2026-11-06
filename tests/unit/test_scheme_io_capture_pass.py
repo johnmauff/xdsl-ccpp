@@ -1055,3 +1055,36 @@ def test_kind_spec_real_captured_and_compared(run_host_match, ccpp_context, tmp_
     assert "  use ccpp_kinds, only: my_r8\n" in driver
     assert "real(kind=my_r8) :: in_var" in driver
     assert "ccpp_capture_read('in', 'in_var', in_var)" in driver
+
+
+# scheme-io-capture-ddt-args (stop-gap): a phase with a derived-type
+# argument the capture does not record is left out of the driver, which
+# could only pass an undefined object (and would not compile without the
+# type's module).
+
+class _MetaArg:
+    def __init__(self, **attrs):
+        self._attrs = attrs
+
+    def hasAttr(self, name):
+        return name in self._attrs
+
+    def getAttr(self, name):
+        return self._attrs[name]
+
+
+def test_phase_with_an_unrecorded_derived_type_argument_is_left_out():
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _build_test_driver_params
+
+    args = {
+        "t": _MetaArg(standard_name="air_temperature", type="real", kind="kind_phys",
+                      dimensions=0, intent="in"),
+        "aer_sw": _MetaArg(standard_name="sw_aerosol_optics", type="ty_optical_props_2str_ccpp",
+                           dimensions=0, intent="inout"),
+    }
+    params, reason = _build_test_driver_params(["t", "aer_sw"], args, set())
+    assert params is None
+    assert reason == ("argument 'aer_sw' is of derived type ty_optical_props_2str_ccpp, "
+                      "which the capture does not record (scheme-io-capture-ddt-args)")
+    params, reason = _build_test_driver_params(["t"], args, set())
+    assert [p.name for p in params] == ["t"] and reason == ""

@@ -360,6 +360,10 @@ def _is_capture_supported(
     return arg_type in _TYPE_CODE
 
 
+# Fortran's intrinsic types; any other metadata `type` is a derived type.
+_INTRINSIC_TYPES = frozenset({"integer", "real", "logical", "character", "complex"})
+
+
 def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS) -> str:
     """Classify one real call argument for test-driver generation:
     "optional" (omit from the generated call entirely), "error_arg"
@@ -566,6 +570,14 @@ def _build_test_driver_params(
             if dims is None:
                 return None, _unresolved_dims_reason(pname, arg, std_name_to_param)
         handler = _ddt_capture(arg)
+        if (handler is None and arg_type is not None
+                and arg_type.lower() not in _INTRINSIC_TYPES):
+            # The capture does not record it, so the driver could only pass
+            # an undefined object (scheme-io-capture-ddt-args).
+            return None, (
+                f"argument '{pname}' is of derived type {arg_type}, which the "
+                f"capture does not record (scheme-io-capture-ddt-args)"
+            )
 
         if category in ("in", "out", "inout"):
             any_captured = True
