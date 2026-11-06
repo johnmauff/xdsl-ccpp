@@ -95,8 +95,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
-| `scheme-io-capture-rte-kernel-variants` | 1 day (CPU/`accel` kernel choice in the capture CMake, tests; the replays also need `scheme-io-capture-ddt-args`) | XS |
-| `scheme-io-capture-share-code` | 0.5-1 day (share/src as a second closure root for self-contained share modules, tests) | XS |
+| `scheme-io-capture-generated-stubs` | 2-3 days (imported procedures' interfaces from their source, stub module as IR with error-exit bodies, kinds through the closure, tests) | XS-S |
 | `scheme-io-capture-module-state-setup` | 3-6 days (detection 1-2; replaying another scheme's captured init before the scheme 2-4) | S |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
@@ -1168,37 +1167,28 @@ applying this to a busier suite.
 
 **ID: `scheme-io-capture-host-module-schemes`. Resolved (2026-11-06, PR #200).** CHANGELOG.md L14272.
 
-**ID: `scheme-io-capture-rte-kernel-variants`. Capture drivers of the
-RRTMGP schemes do not build: the RTE kernel modules are ambiguous.**
-Added 2026-11-06 (from `scheme-io-capture-host-module-schemes`). The
-rte-rrtmgp kernel modules (`mo_optical_props_kernels`,
-`mo_gas_optics_rrtmgp_kernels`, `mo_rte_util_array`,
-`mo_fluxes_broadband_kernels`, `mo_rte_solver_kernels`) are each defined
-in 2-3 files under `schemes/rrtmgp/ext/` (`rte-kernels/`, `accel/`,
-`api/`), so `source_closure` leaves them unresolved and 11 rrtmgp
-schemes get no driver build for that reason alone (`rrtmgp_pre`,
-`rrtmgp_inputs`, `rrtmgp_post`, `rrtmgp_{sw,lw}_gas_optics`,
-`_aerosols`, `_rte`, `_calculate_fluxes`). CAM-SIMA picks the CPU files,
-or the `accel/` ones in a GPU build, in `cime_config/cam_autogen.py`
-(`rrtmgp_subdirs`/`rrtmgp_files`, a host-side rule). Wanted: the
-capture CMake makes the same choice (CPU sources by default, `accel/`
-under `if(OPENACC)`), without hard-coding RRTMGP in xdsl-ccpp if the
-metadata `dependencies` can say it. Many of these schemes then still
-need `scheme-io-capture-ddt-args` to replay.
+**ID: `scheme-io-capture-rte-kernel-variants`. Resolved (2026-11-06, PR #201).** CHANGELOG.md L14333.
 
-**ID: `scheme-io-capture-share-code`. Capture drivers cannot use CESM
-share code.** Added 2026-11-06 (from
-`scheme-io-capture-host-module-schemes`). `shr_kind_mod` blocks 29 of
-the 112 schemes on the capture lists, and is the only missing module for
-4 (`vertical_diffusion_prepare_inputs`,
-`vertical_diffusion_set_total_surface_stress`,
-`compute_kinematic_fluxes_and_obklen`,
-`gravity_wave_drag_prepare_profiles`). Wanted: CAM-SIMA's `share/src`
-as a second source root for the closure, limited to share modules whose
-own closure stays inside it (`shr_kind_mod`, `shr_const_mod`);
-`shr_log_mod` (ESMF) and `shr_sys_mod` (`shr_abort_mod`) stay
-unresolved, so the cam4 vertical-diffusion solver schemes
-(`linear_1d_operators`, `vertical_diffusion_solver`) remain unbuilt.
+**ID: `scheme-io-capture-share-code`. Resolved (2026-11-06, PR #201).** CHANGELOG.md L14333.
+
+**ID: `scheme-io-capture-generated-stubs`. Generate interface stubs for
+modules a capture driver cannot build.** Added 2026-11-06 (from
+`scheme-io-capture-share-code`). Utility modules that do nothing a replay
+needs (logging, abort, I/O) block drivers when they cannot be built
+standalone: CESM's `shr_log_mod`/`shr_sys_mod` need ESMF. For now the
+capture support library has hand-written stand-ins
+(`framework_src/capture_stubs/`) for the two procedures the physics
+uses (`shr_log_errMsg`, `shr_sys_abort`, both only from
+`to_be_ccppized/linear_1d_operators.F90`). Revisit if more such modules
+block drivers: generate a stub module from the real source, holding
+only the names the scheme's files import, with their real interfaces
+(dummy-argument declarations), each procedure ending the replay with a
+message; built as IR (functions with typed arguments and an error-exit
+body) and printed by the Fortran printer. Runs only at generation and
+reads a few declarations, so it costs no build time. Candidates:
+`interpolate_data` (5 rrtmgp schemes) if they do not call it in the
+replayed phases, `shr_infnan_mod`/`shr_assert_mod` (`.F90.in` templates
+CESM generates at build time).
 
 **ID: `scheme-io-capture-module-state-setup`. A replay is wrong when the
 scheme reads module state another scheme's init sets.** Added 2026-11-06.
@@ -1266,7 +1256,19 @@ filename approach originally envisioned. CHANGELOG.md L12426.
 **ID: `scheme-io-capture-ddt-args`. Capture derived-type arguments.**
 Added 2026-10-28. The constituent-properties case is done (2026-11-01,
 CHANGELOG.md L13800: `_DDT_CAPTURES` in the pass, captured as subgroup
-`in/<arg>` and rebuilt in the driver); the generic case below is open. The capture pass's type scope is {integer, logical,
+`in/<arg>` and rebuilt in the driver); the generic case below is open.
+Update 2026-11-06 (PR #201, CHANGELOG.md L14333): a phase with a
+derived-type argument the capture does not record is now left out of the
+driver, with the argument and type in `test_<scheme>.skipped`. On the
+c03e cam4 list this leaves out the 11 RRTMGP schemes whose sources now
+build (all take RTE-RRTMGP objects; only `rrtmgp_pre`'s
+`timestep_init` phase replays) and 5 vertical-diffusion schemes taking
+`coords1d` (`vertical_diffusion_prepare_inputs`,
+`_diffuse_dry_static_energy`, `_wind_damping_rate`, and the `run`
+phases of `_diffuse_horizontal_momentum`, `_diffuse_tracers`).
+`coords1d` (`to_be_ccppized/coords_1d.F90`: two integers and six
+allocatable `real(r8)` rank-2 arrays, not polymorphic) is a good first
+generic case. The capture pass's type scope is {integer, logical,
 real(kind_phys)} x rank 0-3 (`scheme_io_capture_pass.py`, module
 docstring); a derived-type argument is skipped, and the generated driver
 declares and passes it uninitialized, so a scheme that reads one replays
@@ -2042,9 +2044,9 @@ Supporting items (not tracked elsewhere):
   - Large automatic arrays in `orographic` (`tau(ncol, -ngwv:ngwv,
     pver+1)`, `gwut`, ...) become device temporaries.
   - Test: no per-scheme replay until their drivers build
-    (`prepare_profiles` needs only `shr_kind_mod`,
-    `scheme-io-capture-share-code`; `orographic` also needs CAM's
-    `interpolate_data` and `shr_log_mod`/`shr_sys_mod`, so no replay);
+    (`prepare_profiles` needed only `shr_kind_mod`, which capture drivers
+    now take from `share/src` (PR #201); `orographic` also needs CAM's
+    `interpolate_data`, so no replay);
     until then a full gw_cam4 GPU run against its
     CPU reference (no GPU testmod yet).
 - `gpu-diagnostics-conditional-sync` — **Diagnostics schemes copy device

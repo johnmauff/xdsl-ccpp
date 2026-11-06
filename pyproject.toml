@@ -44,7 +44,7 @@ include = ["xdsl_ccpp*"]
 # xdsl_ccpp/tools/ccpp_datatable.py's own _resolve_framework_f90_files(),
 # modeled directly on real capgen-v1's own ccpp_capgen.py:_resolve_
 # framework_f90_files()/_FRAMEWORK_SRC_DIR.
-xdsl_ccpp = ["framework_src/*.F90"]
+xdsl_ccpp = ["framework_src/*.F90", "framework_src/capture_stubs/*.F90"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

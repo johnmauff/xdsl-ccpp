@@ -188,9 +188,9 @@ class _DriverBuilder:
             return i1
         if p.arg_type == "integer":
             return i32
-        # A derived type outside the capture's scope (unverified): declared
-        # with its type; its module is not known here, so such a driver
-        # still needs scheme-io-capture-host-module-schemes to build.
+        # A derived type the capture does not record never gets here: its
+        # phase is left out of the driver (_build_test_driver_params,
+        # scheme-io-capture-ddt-args).
         return DerivedType(p.arg_type)
 
     def declare_param(self, p: TestDriverParam, name: "str | None" = None):

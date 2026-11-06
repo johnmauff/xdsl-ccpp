@@ -64,6 +64,8 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "add_compile_options(-Mnofma)" in text
     assert "list(APPEND _acc_flags -gpu=nofma,math_uniform)" in text
     assert "add_compile_options(-noacc)" in text
+    # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
+    assert "add_compile_definitions(USE_CONTIGUOUS=)" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
 
@@ -81,6 +83,22 @@ def test_scheme_sources_are_relative_to_a_selectable_root():
     assert top.index("CCPP_CAPTURE_SCHEME_ROOT") < top.index("include(${_test})")
 
 
+def test_fragment_builds_one_version_of_each_cpu_gpu_variant():
+    text = render_capture_fragment(
+        "rrtmgp_lw_rte", ["/fork/schemes/rrtmgp_lw_rte.F90"], "/fork",
+        [("/fork/k/mo_k.F90", "/fork/k/accel/mo_k.F90")])
+    assert ("if(OPENACC)\n"
+            "  target_sources(test_rrtmgp_lw_rte PRIVATE\n"
+            '  "${CCPP_CAPTURE_SCHEME_ROOT}/k/accel/mo_k.F90")\n'
+            "else()\n"
+            "  target_sources(test_rrtmgp_lw_rte PRIVATE\n"
+            '  "${CCPP_CAPTURE_SCHEME_ROOT}/k/mo_k.F90")\n'
+            "endif()\n") in text
+    add_executable = text[:text.index("set_target_properties")]
+    assert "mo_k.F90" not in add_executable
+    assert "if(OPENACC)" not in render_capture_fragment("kessler", ["/src/kessler.F90"])
+
+
 def test_scheme_source_root_is_the_nearest_git_checkout(tmp_path):
     repo = tmp_path / "atmospheric_physics"
     (repo / "schemes" / "kessler").mkdir(parents=True)
@@ -88,6 +106,19 @@ def test_scheme_source_root_is_the_nearest_git_checkout(tmp_path):
     src = repo / "schemes" / "kessler" / "kessler.F90"
     src.write_text("")
     assert scheme_source_root(str(src)) == str(repo)
+
+
+def test_share_stubs_are_in_the_support_library_and_provided():
+    from xdsl_ccpp.tools.capture_cmake import capture_provided_modules
+
+    support = support_sources("/out/ccpp_kinds.F90")
+    stubs = [p for p in support if os.sep + "capture_stubs" + os.sep in p]
+    assert [os.path.basename(p) for p in stubs] == ["shr_log_mod.F90", "shr_sys_mod.F90"]
+    provided = capture_provided_modules(support)
+    assert {"shr_log_mod", "shr_sys_mod"} <= provided
+    # Only the capture build has them: a model build gets the real ones.
+    from xdsl_ccpp.tools.ccpp_datatable import _resolve_framework_f90_files
+    assert not any("capture_stubs" in p for p in _resolve_framework_f90_files())
 
 
 def test_support_sources_exist():
@@ -531,6 +562,28 @@ def test_driver_builds_with_the_repository_modules_the_scheme_uses(tmp_path):
     assert not (drivers / "test_kessler.skipped").exists()
 
 
+def test_driver_builds_with_share_code_from_a_source_root(tmp_path):
+    # scheme-io-capture-share-code: a module not in the repository is taken
+    # from --capture-source-root (absolute path in the fragment); the
+    # share modules that need ESMF are the support library's stubs.
+    share = tmp_path / "share" / "src"
+    share.mkdir(parents=True)
+    (share / "shr_kind_mod.F90").write_text("module shr_kind_mod\nend module shr_kind_mod\n")
+    (share / "shr_sys_mod.F90").write_text("module shr_sys_mod\n  use esmf\nend module\n")
+    scheme = _kessler_repo(tmp_path, "kessler_util", "ccpp_kinds")
+    (scheme.parent / "utils" / "kessler_util.F90").write_text(
+        "module kessler_util\n  use shared_consts\n  use shr_kind_mod\n"
+        "  use shr_sys_mod, only: shr_sys_abort\nend module kessler_util\n")
+    drivers, _ = _run_kessler_capture(tmp_path, scheme,
+                                      {"capture_source_root": [str(share)]})
+    fragment = (drivers / "test_kessler.cmake").read_text()
+    assert f'"{share}/shr_kind_mod.F90"' in fragment
+    assert "shr_sys_mod.F90" not in fragment
+    assert not (drivers / "test_kessler.skipped").exists()
+    top = (drivers / "CMakeLists.txt").read_text()
+    assert "capture_stubs/shr_sys_mod.F90" in top
+
+
 def test_driver_needing_a_host_module_is_not_built(tmp_path):
     # scheme-io-capture-host-module-schemes A: a module found neither in
     # the repository nor in the support library gets the driver no
@@ -548,5 +601,6 @@ def test_driver_needing_a_host_module_is_not_built(tmp_path):
     assert (drivers / "test_kessler.cmake").exists()
     report = (drivers / "test_kessler_update.skipped").read_text()
     assert ("kessler_update: test_kessler_update.F90 is not built: it needs modules "
-            "found neither in the scheme's repository nor in the capture support "
-            "library: cam_history (used by kessler_update.F90)") in report
+            "the capture build cannot supply (searched: the scheme's repository, any "
+            "--capture-source-root, the capture support library): cam_history "
+            "(used by kessler_update.F90)") in report

@@ -287,20 +287,50 @@ class SourceClosure:
     # procedure -> how it reaches MPI, e.g. "qneg_final calls
     # qneg_print_summary, which has use mpi (qneg.F90)" (mpi_reach)
     mpi_procedures: dict = field(default_factory=dict)
+    # module -> (CPU file, GPU file): a module with a CPU and an OpenACC
+    # version (accel_variant_pair), built from one or the other; neither
+    # file is in *sources*.
+    variants: dict = field(default_factory=dict)
+
+
+def accel_variant_pair(paths) -> "tuple[str, str] | None":
+    """(CPU file, GPU file) when *paths* are exactly two files of the same
+    name, the second in an ``accel/`` subdirectory of the first's
+    directory -- RTE-RRTMGP's layout for kernels with a CPU and an OpenACC
+    version, of which a build compiles one (CAM-SIMA:
+    cime_config/cam_autogen.py, _set_rrtmgp_dependencies) -- else None."""
+    if len(paths) != 2:
+        return None
+    first, second = (os.path.abspath(p) for p in paths)
+    for cpu, gpu in ((first, second), (second, first)):
+        if (os.path.basename(cpu) == os.path.basename(gpu)
+                and os.path.dirname(gpu) == os.path.join(os.path.dirname(cpu), "accel")):
+            return cpu, gpu
+    return None
 
 
 def source_closure(
     start_files, root_dir: "str | None", provided=frozenset(),
     preproc_defs: "dict[str, str | None] | None" = None,
+    listed=frozenset(), extra_roots=(),
 ) -> SourceClosure:
     """Follow the USE statements of *start_files* (and of each file added)
     through the ``.F90`` files under *root_dir*: every module they use that
     is not intrinsic, not MPI and not in *provided* (lowercased names the
     build supplies otherwise) must be defined by a file already in the
     closure, or by exactly one file under *root_dir*, which is added.
-    Modules found nowhere, or in several files, are *unresolved*; MPI use
-    (MPI_MODULES, MPI_INCLUDE_FILES) is listed in *mpi*. The index of
-    *root_dir* is built only when a module is not defined by the files at
+    When several files under *root_dir* define it, only those in *listed*
+    count, if any are (absolute paths: the files the build compiles, e.g.
+    every table's metadata `dependencies`; other copies, such as a
+    library's API, test or example versions, are not built). Two files
+    left that are a CPU/OpenACC pair (accel_variant_pair) are both
+    followed and become a *variant*; the same holds for such a pair among
+    *start_files*. Modules found nowhere, or in several other files, are
+    *unresolved*; MPI use (MPI_MODULES, MPI_INCLUDE_FILES) is listed in
+    *mpi*. A module defined nowhere under *root_dir* is looked for under
+    each of *extra_roots* in turn (other source trees, e.g. CESM share
+    code), the first defining it winning, with the same rules. The index
+    of a tree is built only when a module is not defined by the files at
     hand."""
     result = SourceClosure()
     seen: set = set()
@@ -312,7 +342,19 @@ def source_closure(
             queue.append(path)
     facts: dict = {}
     defined: dict = {}  # module -> file in the closure
-    index = None
+    roots = ([root_dir] if root_dir else []) + list(extra_roots)
+    indexes: dict = {}  # root -> module_definitions(root), built on demand
+
+    def candidates(name):
+        """(root, files defining *name* under it) for the first root that
+        has any; (None, []) when none does."""
+        for root in roots:
+            if root not in indexes:
+                indexes[root] = module_definitions(root)
+            if name in indexes[root]:
+                return root, indexes[root][name]
+        return None, []
+
     pos = 0
     while pos < len(queue):
         # Scan everything queued so far before resolving, so a module
@@ -331,25 +373,45 @@ def source_closure(
                 if (name in _INTRINSIC_MODULES or name in provided
                         or name in defined or name in result.unresolved):
                     continue
-                if index is None:
-                    index = module_definitions(root_dir) if root_dir else {}
-                found = index.get(name, [])
-                if len(found) == 1:
-                    target = os.path.abspath(found[0])
-                    defined[name] = target
-                    if target not in seen:
-                        seen.add(target)
-                        queue.append(target)
+                where, found = candidates(name)
+                found = [os.path.abspath(p) for p in found]
+                if len(found) > 1:
+                    found = [p for p in found if p in listed] or found
+                if len(found) == 1 or accel_variant_pair(found):
+                    defined[name] = found[0]
+                    for target in found:
+                        if target not in seen:
+                            seen.add(target)
+                            queue.append(target)
                 elif found:
                     result.unresolved[name] = (
-                        f"used by {base}; defined in {len(found)} files under {root_dir}"
+                        f"used by {base}; defined in {len(found)} files under {where}"
                     )
                 else:
                     result.unresolved[name] = f"used by {base}"
             for name in sorted(facts[path].includes):
                 if name in MPI_INCLUDE_FILES:
                     result.mpi.append((path, f"include '{name}'"))
-    result.sources = list(queue)
+    # A module defined by several files of the closure (the metadata can
+    # list both versions of a kernel): a CPU/OpenACC pair is a variant;
+    # anything else cannot be built and is unresolved.
+    definers: dict = {}
+    for path in queue:
+        for name in facts[path].modules:
+            definers.setdefault(name, []).append(path)
+    variant_files: set = set()
+    for name, paths in sorted(definers.items()):
+        if len(paths) < 2:
+            continue
+        pair = accel_variant_pair(paths)
+        if pair:
+            result.variants[name] = pair
+            variant_files.update(pair)
+        else:
+            result.unresolved[name] = "defined in " + ", ".join(
+                os.path.relpath(p, root_dir) if root_dir else p for p in paths
+            ) + ", all needed by the scheme"
+    result.sources = [p for p in queue if p not in variant_files]
     result.mpi_procedures = mpi_reach([facts[p] for p in queue], list(queue))
     return result
 
