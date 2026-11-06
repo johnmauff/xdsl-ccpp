@@ -1172,6 +1172,8 @@ class ccppMain:
                     'setup="' + ",".join(f"{other}:{p}" for other, p in setups) + '"')
             if scheme_name in getattr(self, "_setup_only", ()):
                 capture_opts.append("role=setup")
+            if getattr(self, "_ddt_layouts", ""):
+                capture_opts.append(f'ddt_layouts="{self._ddt_layouts}"')
             if directive:
                 # Needed so the pass knows whether/how to sync a
                 # device-resident argument to the host immediately before
@@ -1782,6 +1784,52 @@ class ccppMain:
         return capture_provided_modules(
             support_sources(os.path.join(out_dir, "ccpp_kinds.F90"), kind_srcs))
 
+    def _plan_ddt_layouts(self, mlir_file: str, out_dir: str) -> None:
+        """scheme-io-capture-ddt-args: for the derived-type arguments of the
+        captured schemes (other than the constituent properties), read each
+        type's definition from the scheme's sources
+        (module_dependency_resolver.capture_layout); the types the capture
+        can record component by component go to every capture pass
+        (ddt_layouts), why the others cannot to test_<scheme>.skipped."""
+        from xdsl_ccpp.dialects.ccpp import ArgumentOp, TablePropertiesOp
+        from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
+        from xdsl_ccpp.transforms.module_dependency_resolver import capture_layout
+        from xdsl_ccpp.transforms.scheme_io_capture_pass import (
+            _DDT_CAPTURES,
+            _INTRINSIC_TYPES,
+            format_ddt_layouts,
+        )
+
+        module = self._parse_frontend(mlir_file)
+        meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
+        provided = self._capture_provided(module, out_dir)
+        schemes = {_capture_spec(spec)[0] for spec in self.options_db["capture_scheme"]}
+        types_of: dict = {}  # scheme -> derived types of its arguments
+        for op in module.walk():
+            if not isinstance(op, TablePropertiesOp) or op.table_name.data not in schemes:
+                continue
+            for arg in op.walk():
+                if not isinstance(arg, ArgumentOp):
+                    continue
+                arg_type = arg.arg_type.data.lower()
+                if arg_type not in _INTRINSIC_TYPES and arg_type not in _DDT_CAPTURES:
+                    types_of.setdefault(op.table_name.data, set()).add(arg_type)
+        layouts: dict = {}
+        for scheme, types in sorted(types_of.items()):
+            found = self._scheme_closure_facts(module, scheme, meta_files, provided)
+            facts = found[1] if found else []
+            for type_name in sorted(types):
+                if type_name in layouts:
+                    continue
+                layout, why = capture_layout(type_name, facts)
+                if layout is not None:
+                    layouts[type_name] = layout
+                else:
+                    self._ddt_notes.setdefault(scheme, []).append(
+                        f"derived type {type_name} is not recorded: {why} "
+                        f"(scheme-io-capture-ddt-args)")
+        self._ddt_layouts = format_ddt_layouts(layouts.values())
+
     def _plan_state_setup(self, mlir_file: str, out_dir: str) -> None:
         """scheme-io-capture-module-state-setup: for each captured scheme,
         the other schemes' register/initialize phases that set module
@@ -1881,6 +1929,10 @@ class ccppMain:
                     self.remove_file_if_exists(
                         os.path.join(driver_dir, f"test_{scheme}{suffix}"))
                 continue
+            for note in self._ddt_notes.get(scheme, ()):
+                # Why a derived type is not recorded: with or without a driver.
+                warn_once(f"scheme I/O capture: {scheme}: {note}")
+                self._append_skipped(driver_dir, scheme, note)
             if not os.path.isfile(os.path.join(driver_dir, f"test_{scheme}.F90")):
                 continue  # the capture pass wrote no driver (logged there)
             files = self._capture_scheme_files(module, scheme, meta_files)
@@ -1953,6 +2005,10 @@ class ccppMain:
         self._capture_setups: dict = {}
         self._state_notes: dict = {}
         self._setup_only: set = set()
+        # scheme-io-capture-ddt-args (_plan_ddt_layouts): the ddt_layouts
+        # option; scheme -> [why a derived type is not recorded].
+        self._ddt_layouts: str = ""
+        self._ddt_notes: dict = {}
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend
@@ -2018,6 +2074,7 @@ class ccppMain:
                 self._drop_mpi_capture_phases(mlir_file)
                 if self.options_db.get("capture_test_driver_dir"):
                     self._plan_state_setup(mlir_file, out_dir)
+                self._plan_ddt_layouts(mlir_file, out_dir)
             if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
             elif self.options_db.get("capture_scheme"):

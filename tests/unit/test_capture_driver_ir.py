@@ -300,3 +300,36 @@ def test_uncaptured_derived_type_is_declared_with_its_type():
     assert "type(ty_gas_concs_ccpp) :: gas_concs" in source
     assert "gas_concs=gas_concs" in source
     assert "'gas_concs'" not in source
+
+
+# scheme-io-capture-ddt-args: a derived type recorded component by component.
+
+_COORDS = (("n", "integer", 0, False), ("ifc", "real", 2, True))
+
+
+def test_derived_type_components_are_read_into_the_object():
+    text = _run([P("p", "in", "coords1d", None, 0, type_module="coords_1d",
+                   components=_COORDS)])
+    assert "use coords_1d, only: coords1d" in text
+    assert "type(coords1d) :: p" in text
+    assert "call ccpp_capture_read('in/p', 'n', p%n)" in text
+    assert "if (allocated(p%ifc)) deallocate(p%ifc)" in text
+    assert "call ccpp_capture_extents('in/p', 'ifc', extents2, extents_found)" in text
+    alloc = _between(text, "if (extents_found) then", "end if")
+    assert "allocate(p%ifc(extents2(1), extents2(2)))" in alloc
+    assert "call ccpp_capture_read('in/p', 'ifc', p%ifc)" in alloc
+    assert "p_expected" not in text  # intent(in): never compared
+
+
+def test_derived_type_output_is_compared_component_by_component():
+    text = _run([P("p", "out", "coords1d", None, 0, type_module="coords_1d",
+                   components=_COORDS)])
+    assert "type(coords1d) :: p_expected" in text
+    assert "call ccpp_capture_read('out/p', 'n', p_expected%n)" in text
+    assert "ok = ccpp_capture_compare(p%n, p_expected%n)" in text
+    assert "call ccpp_capture_report('p%n', call_count, ok, n_failed)" in text
+    assert "ccpp_capture_read('in/p'" not in text  # intent(out): nothing read before
+    compare = _between(text, "if (allocated(p_expected%ifc)) then", "call ccpp_capture_report('p%ifc'")
+    assert "if (allocated(p%ifc)) then" in compare
+    assert "ok = ccpp_capture_compare(p%ifc, p_expected%ifc, tolerance," in compare
+    assert "FAIL: p%ifc not allocated by the call" in text

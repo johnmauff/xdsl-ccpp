@@ -679,3 +679,67 @@ def test_driver_needing_a_host_module_is_not_built(tmp_path):
             "the capture build cannot supply (searched: the scheme's repository, any "
             "--capture-source-root, the capture support library): cam_history "
             "(used by kessler_update.F90)") in report
+
+
+# scheme-io-capture-ddt-args: derived types recorded component by component.
+
+def _run_ddthost_capture(tmp_path, flat: bool):
+    """examples/ddthost in a repository of its own, make_ddt captured;
+    *flat*: its vmr_type without the nested derived-type components."""
+    import shutil
+
+    repo = tmp_path / "ddthost"
+    shutil.copytree("examples/ddthost", repo)
+    (repo / ".git").mkdir()
+    if flat:
+        source = repo / "scheme" / "make_ddt.F90"
+        source.write_text(source.read_text()
+                          .replace("      type(ty_ddt2) :: error_maybe\n", "")
+                          .replace("      type(ty_ddt3) :: burma_shave\n", ""))
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    scheme_dir = repo / "scheme"
+    options_db.update({
+        "host_files": [str(scheme_dir / "host_ccpp_ddt.meta")] + [
+            str(repo / "host_ftn" / f"{name}.meta")
+            for name in ("test_host_data", "test_host_mod", "test_host")],
+        "scheme_files": [str(scheme_dir / f"{name}.meta") for name in (
+            "make_ddt", "environ_conditions", "setup_coeffs", "temp_set",
+            "temp_calc_adjust", "temp_adjust")],
+        "suites": [str(scheme_dir / "ddt_suite.xml"), str(scheme_dir / "temp_suite.xml")],
+        "capture_scheme": ["make_ddt"],
+        "capture_test_driver_dir": str(tmp_path / "drivers"),
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+    return tmp_path / "drivers", (tmp_path / "out" / "ddt_suite_cap.F90").read_text()
+
+
+def test_flat_derived_type_is_captured_and_replayed_by_component(tmp_path):
+    pytest.importorskip("fparser")
+    drivers, cap = _run_ddthost_capture(tmp_path, flat=True)
+    # The cap writes vmr's components in sub-group vmr, an allocatable one
+    # only when allocated.
+    block = cap[cap.index("call ccpp_capture_begin_ddt('vmr')"):]
+    block = block[:block.index("call ccpp_capture_end_ddt()")]
+    assert "call ccpp_capture('nvmr', vmr%nvmr," in block
+    assert "if (allocated(vmr%vmr_array)) then" in block
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    assert "type(vmr_type) :: vmr" in driver
+    assert "call ccpp_capture_read('in/vmr', 'nvmr', vmr%nvmr)" in driver
+    assert "call ccpp_capture_read('out/vmr', 'nvmr', vmr_expected%nvmr)" in driver
+    assert "-- make_ddt_run --" in driver
+    # ccpp_info_t has a character component: its phase is left out, and why.
+    report = (drivers / "test_make_ddt.skipped").read_text()
+    assert "derived type ccpp_info_t is not recorded: component errmsg of type " \
+        "ccpp_info_t is character" in report
+
+
+def test_nested_derived_type_is_reported(tmp_path):
+    pytest.importorskip("fparser")
+    drivers, cap = _run_ddthost_capture(tmp_path, flat=False)
+    assert "ccpp_capture_begin_ddt('vmr')" not in cap
+    report = (drivers / "test_make_ddt.skipped").read_text()
+    assert "make_ddt_run: argument 'vmr' is of derived type vmr_type" in report
+    assert "derived type vmr_type is not recorded: component error_maybe of type " \
+        "vmr_type is ty_ddt2" in report
