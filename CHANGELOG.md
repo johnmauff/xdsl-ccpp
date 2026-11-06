@@ -14268,3 +14268,64 @@ all 48 c03 drivers (rrtmgp 24, rk_stratiform 17, pumas 7) regenerated with
 the old and new code and compared after normalizing: same scheme calls,
 reads, compares, reports and device directives, apart from the two
 behaviour changes above. CI passed (PR #199).
+
+## `scheme-io-capture-host-module-schemes`: capture drivers build the repository modules they use; MPI phases not captured (PR #200, 2026-11-06)
+
+Resolves `scheme-io-capture-host-module-schemes`. A capture driver was
+built from the scheme's `.F90` and its metadata `dependencies` only, so
+any other module the scheme used was missing and the first such driver
+stopped the whole `cmake --build`. Now the driver build follows the
+scheme's `use` statements through its repository, a driver that needs
+modules from outside it is reported instead of built, and a phase that
+reaches MPI is not captured (a replay runs as one serial process).
+
+- `xdsl_ccpp/transforms/module_dependency_resolver.py`:
+  - `scan_fortran_source`: the `use`/`module`/`include` statements of a
+    file, and per procedure (and module specification part) its own
+    `use`/`include`/`call` statements; a named generic interface counts
+    as calling its procedures; interface bodies do not count. Statement
+    by statement with fparser's reader and grammar: a whole-file parse
+    fails on files that build fine (`coords_1d.F90`'s `USE_CONTIGUOUS`,
+    `wv_saturation.F90`'s `newunit=`). All 354 atmospheric_physics
+    files in ~3 s. `build_module_index` and `extract_used_modules` use it.
+  - `source_closure`: the files a scheme needs, following `use` through
+    the repository (a module defined in the closure wins; one defined in
+    several files, or nowhere, is unresolved), and `mpi_reach`: which
+    procedures reach `use mpi`/`use mpi_f08`/`include 'mpif.h'`, with the
+    call chain.
+- `xdsl_ccpp/tools/ccpp_dsl.py`:
+  - `_drop_mpi_capture_phases`: before the pass list is built, phases
+    whose entry point reaches MPI leave the `--capture-scheme` entry; a
+    scheme with none left is not captured. Warning and
+    `test_<scheme>.skipped` line with the chain (e.g. "qneg_final calls
+    qneg_print_summary, which has use mpi (qneg.F90)").
+  - `_write_capture_cmake`: each fragment holds the scheme's closure; a
+    scheme with unresolved modules gets no fragment (an old one is
+    removed), and `test_<scheme>.skipped` names the modules and who uses
+    them. The capture itself stays.
+  - The closure is preprocessed with `--preproc-defs` (none: as a compile
+    without `-D`), so `#if 0` code does not count.
+- `xdsl_ccpp/tools/capture_cmake.py`: `capture_provided_modules` -- the
+  support library's modules, the framework's, `ccpp_kinds`, `netcdf`.
+- Tests: scanner (statements a whole-file parse rejects, preprocessing,
+  scopes, calls, generics, interface bodies), closure (two levels,
+  ambiguity, no root), MPI reach (generic, call chain, module scope),
+  and end-to-end: repository modules in the fragment, a host module
+  skipped, an MPI phase left out, listed phases unchanged, a whole-module
+  MPI scheme dropped with its old files removed.
+
+Over the 13 capture lists (112 schemes), 62 drivers can build; the rest
+need CAM modules (`physconst`, `ppgrid`, `spmd_utils`, ... mostly via
+`wv_saturation`), CESM share code (`shr_kind_mod`, `shr_log_mod`, ...) or
+an RTE kernel variant (follow-ons `scheme-io-capture-rte-kernel-variants`,
+`scheme-io-capture-share-code`). Only qneg has phases reaching MPI
+(`timestep_final`, `finalize`).
+
+Verification: pytest 1416 passed; c03 drivers regenerated: the same
+drivers build as before, plus `pumas_post_main`; the others are reported
+in `.skipped`. Replays (CPU and GPU): rrtmgp 10/10, rk_stratiform 5/5,
+pumas 6/7 -- `pumas_post_main` builds but fails its compares because it
+reads `micro_pumas_utils`' `mg_ice_props`/`mg_liq_props`, set by PUMAS's
+init in another scheme (`scheme-io-capture-module-state-setup`). FPHYStest
+kessler list regenerated: `qneg:initialize,run` captured and its
+fragment written. CI passed (PR #200).

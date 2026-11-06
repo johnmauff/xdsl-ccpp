@@ -4,7 +4,11 @@ The capture pass writes one driver, ``test_<scheme>.F90``, per captured
 scheme. This module writes, next to them:
 
 - ``test_<scheme>.cmake`` per scheme: the driver executable (driver, the
-  scheme's ``.F90`` and its metadata ``dependencies``) and its ``add_test``;
+  scheme's ``.F90``, its metadata ``dependencies`` and the files of the
+  scheme's repository they use) and its ``add_test``. A scheme that uses
+  a module neither that repository nor the support library provides
+  (the host model, share code) gets none; ``test_<scheme>.skipped`` says
+  which (ccpp_dsl._write_capture_cmake);
 - ``CMakeLists.txt``: a support library (the generated ``ccpp_kinds.F90``
   and the kind modules it uses, the capture runtime and xdsl_ccpp's
   framework sources), NetCDF from
@@ -344,6 +348,28 @@ def support_sources(kinds_path: str, kind_module_sources=()) -> list:
     files."""
     return (list(kind_module_sources) + [kinds_path]
             + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES])
+
+
+# Modules the capture build supplies besides the support library's: the
+# NetCDF Fortran module (nf-config --fflags).
+_BUILD_PROVIDED_MODULES = frozenset({"netcdf"})
+
+
+def capture_provided_modules(support) -> frozenset:
+    """Lower-case names of the modules a driver's scheme sources can use
+    without adding a file: those the support library's *support* sources
+    define (ccpp_kinds.F90 by name: it may not be written yet), the
+    framework's, and NetCDF's."""
+    from xdsl_ccpp.transforms.module_dependency_resolver import (
+        FRAMEWORK_MODULES,
+        scan_fortran_source,
+    )
+
+    names = set(FRAMEWORK_MODULES) | _BUILD_PROVIDED_MODULES | {"ccpp_kinds"}
+    for path in support:
+        if os.path.isfile(path):
+            names |= scan_fortran_source(path).modules
+    return frozenset(names)
 
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,

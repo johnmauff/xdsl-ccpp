@@ -193,3 +193,163 @@ def test_whole_examples_tree_is_too_broad_a_root():
     # whole examples/ tree must raise, not silently pick one.
     with pytest.raises(ValueError, match="defined in more than one file"):
         build_module_index("examples")
+
+
+# ── scan_fortran_source / source_closure (scheme-io-capture-host-module-
+#    schemes: the capture drivers' sources, and MPI use) ─────────────────────
+
+from xdsl_ccpp.transforms.module_dependency_resolver import (  # noqa: E402
+    scan_fortran_source,
+    source_closure,
+)
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return str(path)
+
+
+def test_scan_reads_statements_a_whole_file_parse_rejects(tmp_path):
+    # USE_CONTIGUOUS is a macro (coords_1d.F90): the file does not parse
+    # as Fortran, its statements still do.
+    f = _write(tmp_path / "c.F90", (
+        "module Coords\n"
+        "  use, intrinsic :: iso_fortran_env, only: &\n"
+        "       real64\n"
+        "  USE Shr_Kind_Mod ! comment\n"
+        "  interface c\n"
+        "     module procedure c_one\n"
+        "  end interface\n"
+        "contains\n"
+        "  subroutine c_one(x)\n"
+        "    real(real64), USE_CONTIGUOUS intent(in) :: x(:)\n"
+        "    include 'mpif.h'\n"
+        "    user = 1\n"
+        "    msg = 'use foo'\n"
+        "  end subroutine\n"
+        "end module\n"
+    ))
+    facts = scan_fortran_source(f)
+    assert facts.uses == {"iso_fortran_env", "shr_kind_mod"}
+    assert facts.modules == {"coords"}
+    assert facts.includes == {"mpif.h"}
+
+
+def test_scan_with_defines_leaves_out_excluded_branches(tmp_path):
+    f = _write(tmp_path / "m.F90", (
+        "module m\n#ifdef SPMD\n  use mpi\n#else\n  use serial_stub\n#endif\nend module\n"
+    ))
+    assert scan_fortran_source(f).uses == {"mpi", "serial_stub"}
+    assert scan_fortran_source(f, {}).uses == {"serial_stub"}
+    assert scan_fortran_source(f, {"SPMD": None}).uses == {"mpi"}
+
+
+def _repo(tmp_path):
+    root = tmp_path / "repo"
+    scheme = _write(root / "schemes" / "s.F90",
+                    "module s\n  use ccpp_kinds\n  use util_a\n  use host_only\nend module\n")
+    _write(root / "utils" / "util_a.F90", "module util_a\n  use util_b\nend module\n")
+    _write(root / "utils" / "b.F90", "module util_b\n  use, intrinsic :: iso_c_binding\nend module\n")
+    _write(root / "utils" / "unused.F90", "module unused\nend module\n")
+    return str(root), scheme
+
+
+def test_closure_follows_uses_through_the_tree(tmp_path):
+    root, scheme = _repo(tmp_path)
+    closure = source_closure([scheme], root, provided={"ccpp_kinds"})
+    assert [os.path.relpath(p, root) for p in closure.sources] == [
+        "schemes/s.F90", "utils/util_a.F90", "utils/b.F90",
+    ]
+    assert closure.unresolved == {"host_only": "used by s.F90"}
+    assert closure.mpi == []
+
+
+def test_closure_prefers_a_file_already_in_it_and_reports_ambiguity(tmp_path):
+    root, scheme = _repo(tmp_path)
+    _write(tmp_path / "repo" / "other" / "util_b.F90", "module util_b\nend module\n")
+    dup = source_closure([scheme], root, provided={"ccpp_kinds", "host_only"})
+    assert "util_b" in dup.unresolved and "defined in 2 files" in dup.unresolved["util_b"]
+    # A start file (e.g. a metadata dependency) that defines the module wins.
+    named = os.path.join(root, "utils", "b.F90")
+    picked = source_closure([scheme, named], root, provided={"ccpp_kinds", "host_only"})
+    assert picked.unresolved == {}
+    assert named in picked.sources
+
+
+def test_closure_finds_mpi_in_a_used_module(tmp_path):
+    root, scheme = _repo(tmp_path)
+    _write(tmp_path / "repo" / "utils" / "b.F90",
+           "module util_b\ncontains\n subroutine r()\n  use mpi, only: mpi_sum\n end subroutine\nend module\n")
+    _write(tmp_path / "repo" / "utils" / "util_a.F90",
+           "module util_a\n  use util_b\n  include 'mpif.h'\nend module\n")
+    closure = source_closure([scheme], root, provided={"ccpp_kinds"})
+    found = sorted((os.path.basename(p), what) for p, what in closure.mpi)
+    assert found == [("b.F90", "use mpi"), ("util_a.F90", "include 'mpif.h'")]
+    assert "mpi" not in closure.unresolved
+
+
+def test_closure_without_a_root_resolves_only_the_given_files(tmp_path):
+    root, scheme = _repo(tmp_path)
+    closure = source_closure([scheme], None, provided={"ccpp_kinds"})
+    assert closure.sources == [scheme]
+    assert set(closure.unresolved) == {"util_a", "host_only"}
+
+
+def test_scan_records_procedure_scopes_and_calls(tmp_path):
+    f = _write(tmp_path / "q.F90", (
+        "module q\n"
+        "  use ccpp_kinds\n"
+        "  interface stats\n"
+        "     module procedure stats_a, stats_b\n"
+        "  end interface\n"
+        "  interface\n"
+        "     subroutine ext(x)\n"
+        "       use mpi\n"
+        "     end subroutine ext\n"
+        "  end interface\n"
+        "contains\n"
+        "  subroutine q_final(n)\n"
+        "    if (n > 0) call summary(n)\n"
+        "  end subroutine q_final\n"
+        "  pure real(kind_phys) function f(x) result(y)\n"
+        "    call obj%helper(x)\n"
+        "  end function\n"
+        "#if 0\n"
+        "  subroutine gone()\n"
+        "  end subroutine\n"
+        "#endif\n"
+        "end module q\n"
+    ))
+    scopes = {s.name: s for s in scan_fortran_source(f, {}).scopes}
+    assert set(scopes) == {None, "stats", "q_final", "f"}  # no interface body
+    assert scopes["stats"].calls == {"stats_a", "stats_b"}
+    assert scopes["q_final"].calls == {"summary"}
+    assert scopes["f"].calls == {"helper"}
+    assert scopes[None].module == "q" and scopes[None].uses == {"ccpp_kinds"}
+
+
+def test_mpi_reach_follows_calls_generics_and_module_scope(tmp_path):
+    root = tmp_path / "repo"
+    scheme = _write(root / "s.F90", (
+        "module s\n  use util_mpi\ncontains\n"
+        "  subroutine s_init()\n  end subroutine\n"
+        "  subroutine s_run()\n    call stats()\n  end subroutine\n"
+        "  subroutine s_final()\n    call helper()\n  end subroutine\n"
+        "end module\n"))
+    _write(root / "util_mpi.F90", (
+        "module util_mpi\n  interface stats\n    module procedure stats_one\n"
+        "  end interface\ncontains\n"
+        "  subroutine stats_one()\n    call reduce()\n  end subroutine\n"
+        "  subroutine reduce()\n    include 'mpif.h'\n  end subroutine\n"
+        "end module\n"))
+    _write(root / "h.F90", "module h_mod\n  use mpi_f08\ncontains\n"
+                           "  subroutine helper()\n  end subroutine\nend module\n")
+    _write(root / "s2.F90", "module s2\n  use h_mod\nend module\n")
+    closure = source_closure([scheme, str(root / "s2.F90")], str(root), preproc_defs={})
+    reach = closure.mpi_procedures
+    assert "s_init" not in reach
+    assert reach["s_run"] == ("s_run calls stats, which calls stats_one, which calls "
+                              "reduce, which has include 'mpif.h' (util_mpi.F90)")
+    assert reach["s_final"] == ("s_final calls helper, which is in module h_mod, "
+                                "which has use mpi_f08 (h.F90)")
