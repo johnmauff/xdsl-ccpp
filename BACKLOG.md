@@ -96,7 +96,8 @@ measured data, and will drift as items are reassessed.
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-generated-stubs` | 2-3 days (imported procedures' interfaces from their source, stub module as IR with error-exit bodies, kinds through the closure, tests) | XS-S |
-| `scheme-io-capture-module-state-setup` | 3-6 days (detection 1-2; replaying another scheme's captured init before the scheme 2-4) | S |
+| `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
+| `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
@@ -1190,21 +1191,33 @@ reads a few declarations, so it costs no build time. Candidates:
 replayed phases, `shr_infnan_mod`/`shr_assert_mod` (`.F90.in` templates
 CESM generates at build time).
 
-**ID: `scheme-io-capture-module-state-setup`. A replay is wrong when the
-scheme reads module state another scheme's init sets.** Added 2026-11-06.
-`pumas_post_main` builds and replays (c03d), but `effi`/`dei` come out
-Inf and `lamc` wrong (CPU and GPU alike): it passes `micro_pumas_utils`'
-`mg_ice_props`/`mg_liq_props` to `size_dist_param_basic`/`_liq`, and
-those are set by `micro_pumas_utils_init`, called from PUMAS's init
-phase, not by any phase of `pumas_post_main`. Same class:
-`rrtmgp_sw_solar_var` (`irrad`/`radbinmax`/`radbinmin` from
-`rrtmgp_sw_solar_var_setup`), `cam_thermo`'s `air_composition` arrays,
-`wv_saturation`'s tables. Wanted, in order: (1) detection -- the
-scanner reports a scheme that reads non-parameter variables of another
-module, and `test_<scheme>.skipped` says the replay may depend on state
-set elsewhere; (2) setup -- the driver replays the captured init phase
-that sets the state (here PUMAS's) before the scheme's own phases, or
-this is folded into `scheme-io-capture-group-replay`.
+**ID: `scheme-io-capture-module-state-setup`. Resolved (2026-11-06, PR #202).** CHANGELOG.md L14397.
+
+**ID: `scheme-io-capture-callee-device-args`. A GPU replay misses device
+data the scheme's callees require.** Added 2026-11-06 (from
+`scheme-io-capture-module-state-setup`). `test_pumas_post_main` passes
+on CPU but stops on GPU (c03d): `data in PRESENT clause was not found on
+device: name=qic(:vlen)` in `micro_pumas_utils.F90`,
+`size_dist_param_basic_vect`. `pumas_post_main_run` has no OpenACC of
+its own; the driver's device arguments come from the entry point's own
+directives (`acc-derive-memory-space` rule (a)), not from the
+procedures it calls, while in the model the cap's data region already
+holds them. Wanted: also take the `present`/`copy` clauses of the
+procedures the scheme reaches (the closure's call graph, as
+`mpi_reach`/`module_state_access` follow it), mapped back to the
+entry point's arguments.
+
+**ID: `scheme-io-capture-generation-speed`. Capture driver generation is
+serial.** Added 2026-11-06. With `--capture-test-driver-dir`, the
+statement scans behind the closures, the MPI check and the module-state
+analysis run in the main process (c03e: ~58 s with capture vs ~20 s
+without, both `--jobs 1`; the module-state closures of the suite's other
+schemes are ~10 s of it); `--jobs` covers only the Fortran-vs-metadata
+check, and the scan cache is per process. Generation without capture is
+unaffected. Wanted: profile, then scan the scheme repository and source
+roots with the `--jobs` pool and seed the main process's cache, and
+compute closures only for schemes defining a module whose variables are
+read.
 
 **ID: `scheme-io-capture-driver-as-ir`. Resolved (2026-11-06, PR #199).** CHANGELOG.md L14223.
 

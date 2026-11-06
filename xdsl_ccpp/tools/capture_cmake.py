@@ -160,6 +160,15 @@ target_include_directories(ccpp_capture_support PUBLIC
   ${{CMAKE_BINARY_DIR}}/mod/ccpp_capture_support)
 target_compile_options(ccpp_capture_support PUBLIC ${{_nf_fflags}})
 target_link_libraries(ccpp_capture_support PUBLIC ${{_nf_flibs}})
+# BLAS, for scheme sources that call it (PUMAS's neural-net emulator, which
+# micro_pumas_v1.F90 uses, calls dgemm), as CIME links -lblas. Optional:
+# without it only such drivers fail to link.
+find_package(BLAS QUIET)
+if(BLAS_FOUND)
+  target_link_libraries(ccpp_capture_support PUBLIC ${{BLAS_LIBRARIES}})
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  target_link_libraries(ccpp_capture_support PUBLIC blas)  # shipped with nvhpc
+endif()
 
 enable_testing()
 

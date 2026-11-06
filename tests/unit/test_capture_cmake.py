@@ -66,6 +66,9 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "add_compile_options(-noacc)" in text
     # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
     assert "add_compile_definitions(USE_CONTIGUOUS=)" in text
+    # BLAS (PUMAS's neural net calls dgemm), optional: never a configure error.
+    assert "find_package(BLAS QUIET)" in text
+    assert "target_link_libraries(ccpp_capture_support PUBLIC ${BLAS_LIBRARIES})" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
 
@@ -582,6 +585,78 @@ def test_driver_builds_with_share_code_from_a_source_root(tmp_path):
     assert not (drivers / "test_kessler.skipped").exists()
     top = (drivers / "CMakeLists.txt").read_text()
     assert "capture_stubs/shr_sys_mod.F90" in top
+
+
+def _kessler_state_repo(tmp_path):
+    """kessler_init sets module variable kstate (module kessler_state),
+    which kessler_update_run reads (scheme-io-capture-module-state-setup)."""
+    scheme = _kessler_repo(tmp_path, "kessler_state, only: kstate",
+                           "kessler_state, only: kstate")
+    (scheme.parent / "utils" / "kessler_state.F90").write_text(
+        "module kessler_state\n  use ccpp_kinds, only: kind_phys\n"
+        "  real(kind_phys) :: kstate = 0.\nend module kessler_state\n")
+    kessler = scheme / "kessler.F90"
+    head, tail = kessler.read_text().split("subroutine kessler_init", 1)
+    kessler.write_text(head + "subroutine kessler_init"
+                       + tail.replace("      errflg = 0\n", "      errflg = 0\n      kstate = 2.\n", 1))
+    update = scheme / "kessler_update.F90"
+    head, tail = update.read_text().split("subroutine kessler_update_run", 1)
+    update.write_text(head + "subroutine kessler_update_run" + tail.replace(
+        "      errflg = 0\n", "      errflg = 0\n      if (kstate < 0.) errflg = 1\n", 1))
+    return scheme
+
+
+def test_driver_replays_the_init_that_sets_module_state_first(tmp_path):
+    # kessler_update_run reads kstate, which kessler_init sets: the
+    # kessler_update driver replays kessler_init's captured call first (not
+    # compared), and its fragment builds kessler.F90. kessler_update's own
+    # init sets its gravit, which its driver replays anyway: nothing more.
+    pytest.importorskip("fparser")
+    drivers, _ = _run_kessler_capture(tmp_path, _kessler_state_repo(tmp_path))
+    driver = (drivers / "test_kessler_update.F90").read_text()
+    setup = driver.index("-- setup: kessler_init (sets module state the replay reads; not compared) --")
+    assert setup < driver.index("-- kessler_update_init --")
+    assert "call kessler_init(" in driver
+    assert "setup1_" in driver  # its arguments are apart from kessler_update's
+    assert "use kessler, only: kessler_init" in driver
+    assert "scheme/kessler.F90" in (drivers / "test_kessler_update.cmake").read_text()
+    assert not (drivers / "test_kessler_update.skipped").exists()
+    assert "-- setup:" not in (drivers / "test_kessler.F90").read_text()
+
+
+def test_unlisted_setter_is_captured_for_the_drivers_only(tmp_path):
+    # kessler is not on the capture list: its init is captured anyway, for
+    # kessler_update's driver, but it gets no driver of its own.
+    pytest.importorskip("fparser")
+    drivers, cap = _run_kessler_capture(tmp_path, _kessler_state_repo(tmp_path),
+                                        {"capture_scheme": ["kessler_update"]})
+    assert "ccpp_capture_begin('kessler_init'" in cap
+    assert "ccpp_capture_begin('kessler_run'" not in cap
+    assert not (drivers / "test_kessler.F90").exists()
+    assert not (drivers / "test_kessler.cmake").exists()
+    assert "-- setup: kessler_init" in (drivers / "test_kessler_update.F90").read_text()
+
+
+def test_setter_that_cannot_be_replayed_is_reported(tmp_path):
+    # kessler_init also reaches MPI: not captured (a replay is serial), so
+    # kessler_update's driver gets no setup and the report says why.
+    pytest.importorskip("fparser")
+    scheme = _kessler_state_repo(tmp_path)
+    (scheme.parent / "utils" / "kessler_state.F90").write_text(
+        "module kessler_state\n  use ccpp_kinds, only: kind_phys\n"
+        "  real(kind_phys) :: kstate = 0.\ncontains\n  subroutine sync_state()\n"
+        "    use mpi\n  end subroutine sync_state\nend module kessler_state\n")
+    kessler = scheme / "kessler.F90"
+    kessler.write_text(kessler.read_text()
+                       .replace("kessler_state, only: kstate", "kessler_state, only: kstate, sync_state")
+                       .replace("      kstate = 2.\n", "      kstate = 2.\n      call sync_state()\n"))
+    drivers, _ = _run_kessler_capture(tmp_path, scheme)
+    assert "-- setup:" not in (drivers / "test_kessler_update.F90").read_text()
+    report = (drivers / "test_kessler_update.skipped").read_text()
+    assert ("kessler_update_run reads module variables kstate (kessler_state), set by "
+            "kessler_init (scheme kessler, initialize phase), which the replay does not "
+            "run (kessler_init calls sync_state, which has use mpi (kessler_state.F90))") \
+        in report
 
 
 def test_driver_needing_a_host_module_is_not_built(tmp_path):

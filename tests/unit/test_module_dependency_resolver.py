@@ -452,3 +452,91 @@ def test_closure_reports_what_an_extra_root_module_still_needs(tmp_path):
     closure = source_closure([scheme], root, provided={"ccpp_kinds", "host_only"},
                              extra_roots=[str(share)])
     assert closure.unresolved == {"esmf": "used by shr_log_mod.F90"}
+
+
+# ── scheme-io-capture-module-state-setup: module variables ─────────────────
+
+from xdsl_ccpp.transforms.module_dependency_resolver import (  # noqa: E402
+    module_state_access,
+)
+
+
+def _state_files(tmp_path):
+    utils = _write(tmp_path / "utils.F90", (
+        "module utils\n"
+        "  use ccpp_kinds, only: kind_phys\n"
+        "  integer, parameter :: nmax = 3\n"
+        "  real(kind_phys) :: ml2, ccon = 0.\n"
+        "  type :: props_t\n"
+        "    real(kind_phys) :: comp\n"
+        "  end type props_t\n"
+        "  type(props_t), public :: props\n"
+        "contains\n"
+        "  subroutine utils_init(x)\n"
+        "    real(kind_phys), intent(in) :: x\n"
+        "    ml2 = x**2\n"
+        "    call fill(props)\n"
+        "  end subroutine utils_init\n"
+        "  subroutine fill(p)\n"
+        "    type(props_t), intent(out) :: p\n"
+        "    p%comp = 1.\n"
+        "  end subroutine fill\n"
+        "  pure function scaled(y) result(z)\n"
+        "    real(kind_phys), intent(in) :: y\n"
+        "    real(kind_phys) :: z\n"
+        "    z = y * ccon\n"
+        "  end function scaled\n"
+        "end module utils\n"
+    ))
+    scheme = _write(tmp_path / "s.F90", (
+        "module s\n"
+        "  use utils, only: lsq => ml2, props, scaled\n"
+        "contains\n"
+        "  subroutine s_run(a, b, msg)\n"
+        "    real, intent(inout) :: a, b\n"
+        "    character(len=*), intent(out) :: msg\n"
+        "    real :: comp\n"
+        "    msg = 'ml2 is unset'\n"
+        "    a = lsq * props%comp + scaled(b)\n"
+        "    comp = 1.\n"
+        "  end subroutine s_run\n"
+        "  subroutine s_shadow(ml2)\n"
+        "    real, intent(in) :: ml2\n"
+        "  end subroutine s_shadow\n"
+        "end module s\n"
+    ))
+    return [scan_fortran_source(utils), scan_fortran_source(scheme)]
+
+
+def test_scan_records_module_variables_declarations_and_assignments(tmp_path):
+    facts = _state_files(tmp_path)
+    module_scope = next(s for s in facts[0].scopes if s.name is None)
+    # Not the parameter, not the derived type's component.
+    assert module_scope.variables == {"ml2", "ccon", "props"}
+    init = next(s for s in facts[0].scopes if s.name == "utils_init")
+    assert init.assigns == {"ml2"} and init.passes == {"props"}
+    run = next(s for s in facts[1].scopes if s.name == "s_run")
+    s_module = next(s for s in facts[1].scopes if s.name is None)
+    assert s_module.use_only == (
+        ("utils", frozenset({("lsq", "ml2"), ("props", "props"), ("scaled", "scaled")})),)
+    # Not the component after %, not the string's words.
+    assert "comp" in run.refs  # the local comp = 1.
+    assert "is" not in run.refs and "unset" not in run.refs
+    assert run.assigns == {"msg", "a", "comp"}
+
+
+def test_module_state_reads_follow_renames_calls_and_functions(tmp_path):
+    facts = _state_files(tmp_path)
+    reads = module_state_access(facts, "s_run")
+    # lsq is ml2 renamed; scaled (a function) reads ccon.
+    assert reads == {("utils", "ml2"): "s_run", ("utils", "props"): "s_run",
+                     ("utils", "ccon"): "scaled"}
+    # A dummy argument named like a module variable hides it.
+    assert module_state_access(facts, "s_shadow") == {}
+
+
+def test_module_state_sets_include_what_a_call_may_set(tmp_path):
+    facts = _state_files(tmp_path)
+    assert set(module_state_access(facts, "utils_init", "assigns")) == {("utils", "ml2")}
+    assert set(module_state_access(facts, "utils_init", "sets")) == {
+        ("utils", "ml2"), ("utils", "props")}

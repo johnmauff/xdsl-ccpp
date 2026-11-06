@@ -300,21 +300,35 @@ class _DriverBuilder:
 
     # -- one phase ------------------------------------------------------
 
-    def phase(self, table: str, params: "list[TestDriverParam]", module: str) -> list:
+    def phase(self, table: str, params: "list[TestDriverParam]", module: str,
+              setup_prefix: "str | None" = None) -> list:
+        """One phase's replay: each captured call read, made and compared.
+        With *setup_prefix* (scheme-io-capture-module-state-setup), a
+        setup phase -- another scheme's call that sets module state the
+        replayed scheme reads -- read and made but not compared; its
+        arguments are locals named with the prefix, apart from the
+        scheme's own."""
         self.use(table, module)
         log_units, scalar_reads, allocations, array_reads = [], [], [], []
         after_reads, compares, kwargs = [], [], []
         copy_in, create, copy_out, delete = [], [], [], []
         errmsg = errflg = None
+        setup = setup_prefix is not None
+        names = {p.name for p in params}
+
+        def local(name: str) -> str:
+            return f"{setup_prefix}{name}" if setup and name in names else name
 
         for p in params:
-            kwargs.append(KeywordArgExprOp(p.name, _var(p.name)))
-            self.declare_param(p)
+            supplied = p.category in _DRIVER_SUPPLIED_CATEGORIES
+            name = p.name if supplied else local(p.name)
+            kwargs.append(KeywordArgExprOp(p.name, _var(name)))
+            self.declare_param(p, name)
             if p.ddt_read is not None:
                 # A derived type: rebuilt from the capture (its read
                 # allocates it), never compared.
                 array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
-                                         _str("in"), _str(p.name), _var(p.name)))
+                                         _str("in"), _str(p.name), _var(name)))
                 continue
             if p.category == "error_arg":
                 if p.arg_type == "character":
@@ -330,15 +344,16 @@ class _DriverBuilder:
                 continue
             if p.rank:
                 group = "out" if p.category == "out" else "in"
-                allocations += self.allocate(p.name, p.rank, p.dims, group, p.name)
+                dims = [local(d) for d in p.dims] if p.dims else p.dims
+                allocations += self.allocate(name, p.rank, dims, group, p.name)
             if p.category == "unverified":
                 continue
             if self.directive and p.is_device:
-                (copy_in if p.category in ("in", "inout") else create).append(p.name)
-                (copy_out if p.category in ("out", "inout") else delete).append(p.name)
+                (copy_in if p.category in ("in", "inout") else create).append(name)
+                (copy_out if p.category in ("out", "inout") else delete).append(name)
             if p.category in ("in", "inout"):
-                (array_reads if p.rank else scalar_reads).append(self.read("in", p.name, p.name))
-            if p.category in ("out", "inout"):
+                (array_reads if p.rank else scalar_reads).append(self.read("in", p.name, name))
+            if p.category in ("out", "inout") and not setup:
                 expected = f"{p.name}_expected"
                 self.declare_param(p, expected)
                 if p.rank:
@@ -351,6 +366,8 @@ class _DriverBuilder:
         if all(p.category in _DRIVER_SUPPLIED_CATEGORIES for p in params):
             return [CommentOp([f"-- {table} (nothing captured: called once, not compared) --"]),
                     *log_units, _assign("call_count", _int(1), i32), call, *check]
+        title = (f"-- setup: {table} (sets module state the replay reads; not compared) --"
+                 if setup else f"-- {table} --")
 
         enter, exit_ = self.device_copies(copy_in, create, copy_out, delete)
         self.local("n_calls", i32)
@@ -367,7 +384,7 @@ class _DriverBuilder:
         count = CallExprOp(self.use("ccpp_capture_call_count", _CAPTURE_MOD), [_str(table)],
                            result_type=i32)
         return [
-            CommentOp([f"-- {table} --"]),
+            CommentOp([title]),
             _assign("n_calls", count, i32),
             *_scf_if(_int_cmp("n_calls", "eq", 0),
                      self.fail(_str(f"FAIL: no captured calls of {table} found"))),
@@ -380,12 +397,16 @@ def build_test_driver(
     phase_tables: "list[tuple[str, list[TestDriverParam], str]]",
     tolerance: float,
     directive: "str | None" = None,
+    setup_tables: "list[tuple[str, list[TestDriverParam], str]]" = (),
 ) -> ProgramOp:
     """The test driver program test_<scheme_name> replaying `phase_tables`
     (already in lifecycle order) against the capture. `tolerance` is the
     compiled-in default the CCPP_CAPTURE_TOLERANCE environment variable
     overrides at run time; `directive` ("acc"/"omp"/None) adds device
-    copies around the calls of device-resident arguments."""
+    copies around the calls of device-resident arguments. `setup_tables`
+    (other schemes' phases that set module state the scheme reads, in
+    suite order; scheme-io-capture-module-state-setup) are replayed
+    first, not compared."""
     b = _DriverBuilder(directive)
     b.use_symbol(CCPP_KIND_PHYS, _KINDS_MOD)
     for name, elem in (("tolerance", RealKindType(CCPP_KIND_PHYS)), ("n_failed", i32),
@@ -403,6 +424,8 @@ def build_test_driver(
                    "(nothing when the capture has none)."]),
         _call(b.use("ccpp_capture_restore_constituents", _REPLAY_MOD)),
     ]
+    for index, (table, params, module) in enumerate(setup_tables, start=1):
+        body += [BlankLineOp(), *b.phase(table, params, module, setup_prefix=f"setup{index}_")]
     for table, params, module in phase_tables:
         body += [BlankLineOp(), *b.phase(table, params, module)]
     body += [
@@ -427,7 +450,8 @@ def build_test_driver(
         declarations.append(stub)
     header = CommentOp([
         "Generated by xdsl_ccpp's --capture-test-driver-dir: replays the captured calls of",
-        f"{scheme_name} ({', '.join(t for t, _, _ in phase_tables)})",
+        f"{scheme_name} ({', '.join(t for t, _, _ in phase_tables)})"
+        + (f", after {', '.join(t for t, _, _ in setup_tables)}" if setup_tables else ""),
         "in lifecycle order and compares the outputs with the captured 'after' values.",
         "Not hand-maintained: regenerate rather than edit.",
     ])

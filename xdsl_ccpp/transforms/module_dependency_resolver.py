@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from dataclasses import dataclass, field
 
 # Framework-provided modules the generator itself unconditionally supplies
@@ -70,13 +71,29 @@ MPI_INCLUDE_FILES = frozenset({"mpif.h"})
 class ScopeFacts:
     """The USEs, INCLUDEs and CALLs of one scope of a Fortran file: a
     procedure (*name*), or the specification part of module *module*
-    (*name* None, which applies to all the module's procedures)."""
+    (*name* None, which applies to all the module's procedures).
+
+    For module state (scheme-io-capture-module-state-setup), by name:
+    *use_only* is ((module, None | frozenset of (local, remote) names),
+    ...) for its USE statements (None: no ONLY list); *declared* the
+    entities its type declarations declare; *variables* (a module's
+    specification part) those that are not parameters; *refs* the
+    identifiers its statements mention (not components after %, not in
+    strings); *assigns* the base names of its assignments' and pointer
+    assignments' left-hand sides; *passes* those of its CALLs' actual
+    arguments (which the callee may set)."""
 
     name: "str | None"
     module: "str | None"
     uses: frozenset
     includes: frozenset
     calls: frozenset
+    use_only: tuple = ()
+    declared: frozenset = frozenset()
+    variables: frozenset = frozenset()
+    refs: frozenset = frozenset()
+    assigns: frozenset = frozenset()
+    passes: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -95,10 +112,120 @@ class _ScopeBuilder:
         self.uses: set = set()
         self.includes: set = set()
         self.calls: set = set()
+        self.use_only: list = []
+        self.declared: set = set()
+        self.variables: set = set()
+        self.refs: set = set()
+        self.assigns: set = set()
+        self.passes: set = set()
 
     def freeze(self) -> ScopeFacts:
         return ScopeFacts(self.name, self.module, frozenset(self.uses),
-                          frozenset(self.includes), frozenset(self.calls))
+                          frozenset(self.includes), frozenset(self.calls),
+                          tuple(self.use_only), frozenset(self.declared),
+                          frozenset(self.variables), frozenset(self.refs),
+                          frozenset(self.assigns), frozenset(self.passes))
+
+
+# Type declaration statements start with one of these words.
+_DECLARATION_WORDS = frozenset({
+    "real", "integer", "logical", "character", "complex", "double", "type", "class",
+})
+_STRING_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+_COMPONENT_RE = re.compile(r"%\s*[a-z]\w*")
+# An identifier: a letter not preceded by a word character or a "."
+# (kind suffixes such as 1.0_kind_phys, operators such as .and.).
+_IDENTIFIER_RE = re.compile(r"(?<![\w.])[a-z][a-z0-9_]*")
+
+
+def _identifiers(lower: str) -> set:
+    """The identifiers a (lower-case) statement mentions, without the
+    components after % and the contents of strings."""
+    text = _COMPONENT_RE.sub(" ", _STRING_RE.sub(" ", lower))
+    return set(_IDENTIFIER_RE.findall(text))
+
+
+def _skip_parens(text: str, pos: int) -> int:
+    """The position after the parenthesized group starting at *pos*."""
+    depth = 0
+    for at in range(pos, len(text)):
+        depth += text[at] == "("
+        depth -= text[at] == ")"
+        if depth == 0:
+            return at + 1
+    return len(text)
+
+
+def _assigned_name(lower: str) -> "str | None":
+    """The base name a (lower-case) assignment or pointer assignment
+    statement assigns -- ``x = ``, ``x(i)%y = ``, ``p => `` -- after an
+    optional one-line ``if (...)``; None for any other statement
+    (``do k = ...``, declarations, comparisons)."""
+    text = _STRING_RE.sub("''", lower).strip()
+    if re.match(r"if\s*\(", text):
+        text = text[_skip_parens(text, text.index("(")):].strip()
+    match = re.match(r"[a-z]\w*", text)
+    if match is None:
+        return None
+    pos = match.end()
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+        elif text[pos] == "(":
+            pos = _skip_parens(text, pos)
+        elif text[pos] == "%":
+            component = re.match(r"%\s*[a-z]\w*", text[pos:])
+            if component is None:
+                return None
+            pos += component.end()
+        else:
+            break
+    if text.startswith("=>", pos) or (text.startswith("=", pos)
+                                      and not text.startswith("==", pos)):
+        return match.group(0)
+    return None
+
+
+def _base_name(node) -> "str | None":
+    """The variable an actual argument or designator starts with."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    if isinstance(node, f03.Actual_Arg_Spec):
+        node = node.children[1]
+    if isinstance(node, f03.Name):
+        return str(node).lower()
+    if isinstance(node, (f03.Part_Ref, f03.Data_Ref)):
+        names = walk(node, f03.Name)
+        return str(names[0]).lower() if names else None
+    return None
+
+
+def _call_arguments(call) -> set:
+    """Base names of a Call_Stmt's actual arguments (it may set them)."""
+    import fparser.two.Fortran2003 as f03
+
+    args = call.children[1]
+    items = args.children if isinstance(args, f03.Actual_Arg_Spec_List) else (
+        [args] if args is not None else [])
+    return {name for name in map(_base_name, items) if name}
+
+
+def _use_only(use) -> tuple:
+    """(module, None | frozenset of (local, remote)) for a Use_Stmt."""
+    import fparser.two.Fortran2003 as f03
+
+    module = str(use.children[2]).lower()
+    only = use.children[4] if "ONLY" in str(use.children[3] or "").upper() else None
+    if only is None:
+        return module, None
+    pairs = set()
+    for item in getattr(only, "children", ()) or ():
+        if isinstance(item, f03.Rename):
+            pairs.add((str(item.children[1]).lower(), str(item.children[2]).lower()))
+        elif isinstance(item, f03.Name):
+            pairs.add((str(item).lower(), str(item).lower()))
+    return module, frozenset(pairs)
 
 
 def _called_name(call) -> str:
@@ -135,6 +262,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     procedures: list = []  # open procedure scopes, innermost last
     interface_depth = 0  # interface bodies declare, they do not define
     generic = None  # scope of the open named interface: it "calls" its procedures
+    type_depth = 0  # inside a derived-type definition: components, not variables
 
     def current():
         return procedures[-1] if procedures else module_scope
@@ -157,22 +285,41 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
         lower = line.lstrip().lower()
         words = lower.replace("(", " ").split()
         first = words[0] if words else ""
+        if type_depth:
+            if re.match(r"end\s*type\b", lower.strip()):
+                type_depth -= 1
+            continue
+        if (first == "type" and not re.match(r"type\s*\(", lower.strip())
+                and (len(words) < 2 or words[1] != "is")):
+            type_depth += 1  # a derived-type definition ("type :: t")
+            continue
+        if procedures and not interface_depth:
+            # Module state (scheme-io-capture-module-state-setup).
+            current().refs.update(_identifiers(lower))
+            assigned = _assigned_name(lower)
+            if assigned:
+                current().assigns.add(assigned)
         try:
             if first == "use" or lower.startswith("use,"):
-                name = str(f03.Use_Stmt(line).children[2]).lower()
+                use = f03.Use_Stmt(line)
+                name = str(use.children[2]).lower()
                 uses.add(name)  # an interface body's too: the file needs it
                 if not interface_depth:
                     current().uses.add(name)
+                    current().use_only.append(_use_only(use))
             elif first == "include":
                 name = str(f03.Include_Stmt(line).children[0]).lower()
                 includes.add(name)
                 if not interface_depth:
                     current().includes.add(name)
             elif first == "call":
-                current().calls.add(_called_name(f03.Call_Stmt(line)))
+                call = f03.Call_Stmt(line)
+                current().calls.add(_called_name(call))
+                current().passes.update(_call_arguments(call))
             elif first == "if" and " call " in f" {lower}":
                 for call in walk(f03.If_Stmt(line), f03.Call_Stmt):
                     current().calls.add(_called_name(call))
+                    current().passes.update(_call_arguments(call))
             elif first in ("interface", "abstract") and "interface" in words[:2]:
                 interface_depth += 1
                 names = walk(f03.Interface_Stmt(line), f03.Name)
@@ -203,6 +350,14 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
                 module = str(f03.Module_Stmt(line).children[1]).lower()
                 modules.add(module)
                 module_scope = _ScopeBuilder(None, module)
+            elif (not interface_depth and first in _DECLARATION_WORDS
+                    and "function" not in words and "subroutine" not in words):
+                decl = f03.Type_Declaration_Stmt(line)
+                names = {str(e.children[0]).lower()
+                         for e in walk(decl.children[2], f03.Entity_Decl)}
+                current().declared.update(names)
+                if not procedures and "parameter" not in str(decl.children[1] or "").lower():
+                    module_scope.variables.update(names)
             elif not interface_depth and ("subroutine" in words or "function" in words):
                 stmt_cls = f03.Subroutine_Stmt if "subroutine" in words else f03.Function_Stmt
                 name = str(stmt_cls(line).children[1]).lower()
@@ -459,6 +614,59 @@ def mpi_reach(file_facts, paths) -> dict:
     return {name: ", which calls ".join(path).replace(", which calls ", " calls ", 1)
             + (", which " if len(path) > 1 else " ") + fact
             for name, (path, fact) in chains.items()}
+
+
+def module_state_access(file_facts, entry: str, kind: str = "reads") -> dict:
+    """The module variables procedure *entry* and the procedures it reaches
+    read (*kind* "reads": mention), assign (*kind* "assigns") or may set
+    (*kind* "sets": assign, or pass to a CALL), over the scopes of *file_facts* (one
+    FortranSourceFacts per file): {(module, variable): procedure}, the
+    first procedure found doing so. Matched by name: a procedure sees its
+    own module's variables and those of the modules it, or its module,
+    USEs (through an ONLY list's local names); names it declares itself
+    hide them. Calls are followed through CALL statements, generic
+    interfaces and function references (a defined procedure's name among
+    the identifiers). scheme-io-capture-module-state-setup."""
+    variables: dict = {}  # module -> its variables
+    module_scopes: dict = {}
+    by_name: dict = {}
+    for facts in file_facts:
+        for scope in facts.scopes:
+            if scope.name is None:
+                if scope.module:
+                    module_scopes[scope.module] = scope
+                    variables[scope.module] = scope.variables
+                continue
+            by_name.setdefault(scope.name, []).append(scope)
+    found: dict = {}
+    seen: set = set()
+    queue = [entry.lower()]
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        for scope in by_name.get(name, ()):
+            visible: dict = {}
+            module_scope = module_scopes.get(scope.module)
+            for module, only in scope.use_only + (module_scope.use_only if module_scope else ()):
+                module_vars = variables.get(module, frozenset())
+                if only is None:
+                    for var in module_vars:
+                        visible.setdefault(var, (module, var))
+                else:
+                    for local, remote in only:
+                        if remote in module_vars:
+                            visible[local] = (module, remote)
+            for var in variables.get(scope.module, frozenset()):
+                visible[var] = (scope.module, var)
+            names = {"reads": scope.refs, "assigns": scope.assigns,
+                     "sets": scope.assigns | scope.passes}[kind]
+            for local in sorted(names - scope.declared):
+                if local in visible:
+                    found.setdefault(visible[local], scope.name)
+            queue.extend(sorted(scope.calls | (scope.refs & by_name.keys())))
+    return found
 
 
 def _is_ddt_or_host_table(f90_path: str) -> bool:
