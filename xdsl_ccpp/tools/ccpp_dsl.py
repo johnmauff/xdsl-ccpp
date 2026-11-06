@@ -1166,6 +1166,12 @@ class ccppMain:
             if phase:
                 # Quoted: a phase list has commas.
                 capture_opts.append(f'phase="{phase}"')
+            setups = getattr(self, "_capture_setups", {}).get(scheme_name, [])
+            if setups:
+                capture_opts.append(
+                    'setup="' + ",".join(f"{other}:{p}" for other, p in setups) + '"')
+            if scheme_name in getattr(self, "_setup_only", ()):
+                capture_opts.append("role=setup")
             if directive:
                 # Needed so the pass knows whether/how to sync a
                 # device-resident argument to the host immediately before
@@ -1179,7 +1185,9 @@ class ccppMain:
                 device_args = ",".join(
                     f"{table}:{arg}"
                     for table, args in sorted(getattr(self, "_capture_device_args", {}).items())
-                    if table.startswith(f"{scheme_name.lower()}_")
+                    if table.startswith(tuple(
+                        f"{name.lower()}_"
+                        for name in [scheme_name] + [other for other, _p in setups]))
                     for arg in args
                 )
                 if device_args:
@@ -1688,7 +1696,8 @@ class ccppMain:
 
     def _scheme_closure_facts(self, module, scheme: str, meta_files: dict, provided):
         """(entry points {phase: name}, FortranSourceFacts of every file of
-        *scheme*'s closure), cached per generation; None without a .F90."""
+        *scheme*'s closure, the SourceClosure), cached per generation; None
+        without a .F90."""
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
         from xdsl_ccpp.transforms.module_dependency_resolver import scan_fortran_source
         from xdsl_ccpp.transforms.util.cap_shared import split_scheme_table_name
@@ -1707,68 +1716,127 @@ class ccppMain:
                     split = split_scheme_table_name(scope.name or "")
                     if split and split[0] == scheme:
                         entries[split[1]] = scope.name
-                cache[scheme] = (entries, [scan_fortran_source(p, defs) for p in paths])
+                cache[scheme] = (entries, [scan_fortran_source(p, defs) for p in paths],
+                                 closure)
         return cache[scheme]
 
-    def _report_module_state(self, module, driver_dir: str, spec: str,
-                             meta_files: dict, provided) -> None:
-        """scheme-io-capture-module-state-setup, detection: the module
-        variables the captured phases of *spec*'s scheme read and do not
-        assign themselves (passing one to a call does not count: its
-        value may be read there), and the register/initialize/timestep-initial
-        phases of the suite's other schemes that set them -- the replay,
-        which runs only the scheme's own phases, sees them unset. Each is
-        warned about and listed in test_<scheme>.skipped."""
+    def _module_state_setters(self, module, spec: str, meta_files: dict, provided) -> list:
+        """scheme-io-capture-module-state-setup: the module variables the
+        captured phases of *spec*'s scheme read and do not assign
+        themselves (passing one to a call does not count: its value may be
+        read there), and the register/initialize/timestep-initial phases
+        of the suite's other schemes that set them. Returns [(reading
+        entry point, setter entry point, setter scheme, setter phase,
+        [(module, variable)])]."""
         from xdsl_ccpp.transforms.module_dependency_resolver import module_state_access
 
         scheme, phases = _capture_spec(spec)
         own = self._scheme_closure_facts(module, scheme, meta_files, provided)
         if own is None:
-            return
-        entries, facts = own
+            return []
+        entries, facts, _closure = own
         replayed = [entries[p] for p in (phases.split(",") if phases else _CAPTURE_PHASES)
                     if p in entries]
         reads: dict = {}
-        sets: dict = {}
+        assigned: dict = {}
         for entry in replayed:
-            for key, proc in module_state_access(facts, entry, "reads").items():
-                reads.setdefault(key, (entry, proc))
-            sets.update(module_state_access(facts, entry, "assigns"))
-        needed = {key: where for key, where in reads.items() if key not in sets}
+            for key, _proc in module_state_access(facts, entry, "reads").items():
+                reads.setdefault(key, entry)
+            assigned.update(module_state_access(facts, entry, "assigns"))
+        needed = {key: entry for key, entry in reads.items() if key not in assigned}
         if not needed:
-            return
+            return []
         needed_modules = {module_name for module_name, _var in needed}
-        setters: list = []  # (setter entry, scheme, phase, [(module, var)])
+        found: list = []
         for other in sorted(meta_files):
             if other == scheme:
                 continue
-            found = self._scheme_closure_facts(module, other, meta_files, provided)
-            if found is None:
+            other_facts = self._scheme_closure_facts(module, other, meta_files, provided)
+            if other_facts is None:
                 continue
-            other_entries, other_facts = found
-            if not any(name in f.modules for f in other_facts for name in needed_modules):
+            other_entries, files_facts, _ = other_facts
+            if not any(name in f.modules for f in files_facts for name in needed_modules):
                 continue
             for phase in self._STATE_SETUP_PHASES:
                 entry = other_entries.get(phase)
                 if entry is None:
                     continue
-                set_here = sorted(set(module_state_access(other_facts, entry, "sets"))
-                                  & needed.keys())
-                if set_here:
-                    setters.append((entry, other, phase, set_here))
-        for entry, other, phase, keys in setters:
-            by_reader: dict = {}
-            for key in keys:
-                by_reader.setdefault(needed[key][0], []).append(key)
-            for reader, reader_keys in sorted(by_reader.items()):
-                names = ", ".join(f"{var} ({mod})" for mod, var in sorted(reader_keys))
-                reason = (
-                    f"{reader} reads module variables {names}, set by {entry} "
-                    f"(scheme {other}, {phase} phase), which the replay does not "
-                    f"run: the replay may differ (scheme-io-capture-module-state-setup)"
-                )
-                warn_once(f"scheme I/O capture: {scheme}: {reason}")
-                self._append_skipped(driver_dir, scheme, reason)
+                set_here = set(module_state_access(files_facts, entry, "sets")) & needed.keys()
+                by_reader: dict = {}
+                for key in sorted(set_here):
+                    by_reader.setdefault(needed[key], []).append(key)
+                for reader, keys in sorted(by_reader.items()):
+                    found.append((reader, entry, other, phase, keys))
+        return found
+
+    def _capture_provided(self, module, out_dir: str):
+        """The modules a capture driver build supplies itself
+        (capture_cmake.capture_provided_modules of the support library)."""
+        from xdsl_ccpp.tools.capture_cmake import (
+            capture_provided_modules,
+            kinds_sources,
+            support_sources,
+        )
+
+        kind_srcs, _missing = kinds_sources(module)
+        return capture_provided_modules(
+            support_sources(os.path.join(out_dir, "ccpp_kinds.F90"), kind_srcs))
+
+    def _plan_state_setup(self, mlir_file: str, out_dir: str) -> None:
+        """scheme-io-capture-module-state-setup: for each captured scheme,
+        the other schemes' register/initialize phases that set module
+        state it reads become setup phases of its test driver (replayed
+        first, not compared) and are captured too -- added to their
+        --capture-scheme entry, or captured for the drivers only (no
+        driver of their own, role "setup") when not listed. A setter that
+        cannot be replayed (its closure does not build, it reaches MPI) or
+        runs every time step is reported instead (_write_capture_cmake).
+        Done before the pass list is built."""
+        from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
+
+        module = self._parse_frontend(mlir_file)
+        meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
+        provided = self._capture_provided(module, out_dir)
+        specs = list(self.options_db["capture_scheme"])
+        listed = {_capture_spec(spec)[0]: spec for spec in specs}
+        extra: dict = {}  # setter scheme not listed -> [phases]
+        for spec in specs:
+            scheme = _capture_spec(spec)[0]
+            for reader, entry, other, phase, keys in self._module_state_setters(
+                    module, spec, meta_files, provided):
+                names = ", ".join(f"{var} ({mod})" for mod, var in keys)
+                why = None
+                if phase == "timestep_initial":
+                    why = "it runs every time step, which the replay does not reproduce"
+                else:
+                    closure = self._scheme_closure_facts(module, other, meta_files, provided)[2]
+                    if closure.unresolved:
+                        why = "its sources need modules the capture build cannot supply: " + \
+                            ", ".join(sorted(closure.unresolved))
+                    elif entry in closure.mpi_procedures:
+                        why = closure.mpi_procedures[entry]
+                if why is not None:
+                    self._state_notes.setdefault(scheme, []).append(
+                        f"{reader} reads module variables {names}, set by {entry} "
+                        f"(scheme {other}, {phase} phase), which the replay does not run "
+                        f"({why}): the replay may differ (scheme-io-capture-module-state-setup)")
+                    continue
+                setups = self._capture_setups.setdefault(scheme, [])
+                if (other, phase) not in setups:
+                    setups.append((other, phase))
+                if other in listed:
+                    other_phases = _capture_spec(listed[other])[1]
+                    if other_phases and phase not in other_phases.split(","):
+                        listed[other] = f"{other}:{other_phases},{phase}"
+                else:
+                    extra.setdefault(other, [])
+                    if phase not in extra[other]:
+                        extra[other].append(phase)
+        self.options_db["capture_scheme"] = list(listed.values()) + [
+            f"{other}:{','.join(p for p in _CAPTURE_PHASES if p in phases)}"
+            for other, phases in extra.items()
+        ]
+        self._setup_only = set(extra)
 
     def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
         """Write the CMake build for the capture test drivers
@@ -1807,6 +1875,12 @@ class ccppMain:
             if scheme in scheme_sources:
                 continue
             fragment = os.path.join(driver_dir, f"test_{scheme}.cmake")
+            if scheme in self._setup_only:
+                # Captured for other drivers' setup only: no driver of its own.
+                for suffix in (".F90", ".cmake", ".skipped"):
+                    self.remove_file_if_exists(
+                        os.path.join(driver_dir, f"test_{scheme}{suffix}"))
+                continue
             if not os.path.isfile(os.path.join(driver_dir, f"test_{scheme}.F90")):
                 continue  # the capture pass wrote no driver (logged there)
             files = self._capture_scheme_files(module, scheme, meta_files)
@@ -1817,7 +1891,14 @@ class ccppMain:
                 )
                 self.remove_file_if_exists(fragment)
                 continue
-            self._report_module_state(module, driver_dir, spec, meta_files, provided)
+            for other, _phase in self._capture_setups.get(scheme, ()):
+                # The setup phases' sources (scheme-io-capture-module-state-setup).
+                for path in self._capture_scheme_files(module, other, meta_files) or ():
+                    if path not in files:
+                        files.append(path)
+            for note in self._state_notes.get(scheme, ()):
+                warn_once(f"scheme I/O capture: {scheme}: {note}")
+                self._append_skipped(driver_dir, scheme, note)
             closure = self._capture_closure(module, files, provided)
             if closure.unresolved:
                 self._report_driver_not_built(driver_dir, scheme, closure.unresolved)
@@ -1866,6 +1947,12 @@ class ccppMain:
         self._capture_notes: dict = {}
         # scheme -> _scheme_closure_facts (module state, per generation)
         self._state_closure_cache: dict = {}
+        # scheme-io-capture-module-state-setup (_plan_state_setup):
+        # scheme -> [(setter scheme, phase)] its driver replays first;
+        # scheme -> [report lines]; schemes captured only for that.
+        self._capture_setups: dict = {}
+        self._state_notes: dict = {}
+        self._setup_only: set = set()
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend
@@ -1929,6 +2016,8 @@ class ccppMain:
                 mlir_file = self.run_frontend(tmp_dir)
             if self.options_db.get("capture_scheme"):
                 self._drop_mpi_capture_phases(mlir_file)
+                if self.options_db.get("capture_test_driver_dir"):
+                    self._plan_state_setup(mlir_file, out_dir)
             if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
             elif self.options_db.get("capture_scheme"):

@@ -661,6 +661,22 @@ class SchemeIOCapturePass(ModulePass):
     # Used only for the generated test driver's enter/exit data: the cap
     # gets no directives without --directive.
     driver_device_args: "str | None" = None
+    # scheme-io-capture-module-state-setup: "scheme:phase,..." -- other
+    # schemes' phases that set module state this scheme reads; the test
+    # driver replays their captured calls first, not compared (ccpp_dsl
+    # captures them too).
+    setup: "str | None" = None
+    # "setup": an instance capturing a phase only for other schemes'
+    # drivers -- no driver, no report of its own.
+    role: str = ""
+
+    def _setup_phases(self) -> "set[tuple[str, str]]":
+        pairs = set()
+        for item in (self.setup or "").split(","):
+            scheme, _, phase = item.strip().partition(":")
+            if scheme and phase:
+                pairs.add((scheme, phase))
+        return pairs
 
     def _driver_device_names(self, table_name: str) -> "set[str]":
         names = set()
@@ -719,8 +735,13 @@ class SchemeIOCapturePass(ModulePass):
         # {table_name: reason} for phases left out of the driver.
         skipped: dict = {}
         captured_any = False
+        setup_phases = self._setup_phases()
+        setup_tables: dict = {}  # in suite order: {table_name: (params, module)}
 
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
+            if (scheme_name, phase) in setup_phases and self.test_driver_dir:
+                self._add_setup_table(call_op, scheme_name, table_name, meta_data,
+                                      real_kinds, setup_tables, skipped)
             if scheme_name != self.scheme:
                 continue
             if self.phase and phase not in self.phase.split(","):
@@ -806,12 +827,12 @@ class SchemeIOCapturePass(ModulePass):
 
         # A driver needs at least one compared phase; call-only phases
         # (scheme-io-capture-uncaptured-phases) only set up for those.
-        if self.test_driver_dir:
+        if self.test_driver_dir and self.role != "setup":
             if any(
                 not is_call_only_phase(params)
                 for _phase, params, _module in captured_tables.values()
             ):
-                self._maybe_emit_test_driver(self.scheme, captured_tables)
+                self._maybe_emit_test_driver(self.scheme, captured_tables, setup_tables)
                 self._report_skipped(skipped)
             elif skipped:
                 self._report_skipped(skipped, f"no test_{self.scheme}.F90 written")
@@ -987,7 +1008,34 @@ class SchemeIOCapturePass(ModulePass):
         glob.attributes["module"] = StringAttr(module)
         Rewriter.insert_op(glob, InsertPoint.at_end(module_op.body.block))
 
-    def _maybe_emit_test_driver(self, scheme_name, captured_tables: dict) -> None:
+    def _add_setup_table(self, call_op, scheme_name, table_name, meta_data, real_kinds,
+                         setup_tables: dict, skipped: dict) -> None:
+        """Add another scheme's call site that sets module state this
+        scheme reads (scheme-io-capture-module-state-setup) to
+        *setup_tables*, or why it cannot be replayed to *skipped*."""
+        if table_name in setup_tables or scheme_name not in meta_data:
+            return
+        arg_tables = meta_data[scheme_name].arg_tables
+        if table_name not in arg_tables:
+            return
+        args_by_name = {a.name: a for a in arg_tables[table_name].getFunctionArguments()}
+        param_names = _call_param_names(call_op, scheme_name, table_name, meta_data)
+        if param_names is None:
+            return
+        device = _device_arg_names(scheme_name, table_name, meta_data) | {
+            p for p in param_names if p.lower() in self._driver_device_names(table_name)
+        }
+        params, reason = _build_test_driver_params(param_names, args_by_name, device, real_kinds)
+        if params is None:
+            skipped[table_name] = (
+                f"not replayed before the scheme's phases, so module state it sets "
+                f"is unset in the replay: {reason}"
+            )
+        else:
+            setup_tables[table_name] = (params, _callee_module(call_op, table_name, scheme_name))
+
+    def _maybe_emit_test_driver(self, scheme_name, captured_tables: dict,
+                                setup_tables: "dict | None" = None) -> None:
         """Write test_<scheme_name>.F90 into self.test_driver_dir, covering
         every phase in `captured_tables` ({table_name: (phase, params,
         module)}, module being the scheme subroutine's Fortran module)
@@ -1019,6 +1067,8 @@ class SchemeIOCapturePass(ModulePass):
         # replays a capture on CPU and, built with OpenACC, on GPU.
         program = build_test_driver(
             scheme_name, phase_tables, tolerance, self.directive or "acc",
+            [(table, params, module)
+             for table, (params, module) in (setup_tables or {}).items()],
         )
         os.makedirs(self.test_driver_dir, exist_ok=True)
         out_path = os.path.join(self.test_driver_dir, f"test_{scheme_name}.F90")
