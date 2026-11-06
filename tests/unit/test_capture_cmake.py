@@ -584,6 +584,35 @@ def test_driver_builds_with_share_code_from_a_source_root(tmp_path):
     assert "capture_stubs/shr_sys_mod.F90" in top
 
 
+def test_module_state_another_schemes_init_sets_is_reported(tmp_path):
+    # scheme-io-capture-module-state-setup: kessler_update_run reads a
+    # module variable kessler's init sets; kessler_update's driver does not
+    # replay that, so test_kessler_update.skipped says so. kessler_update's
+    # own init sets its gravit, which its driver replays: not reported.
+    scheme = _kessler_repo(tmp_path, "kessler_state, only: kstate",
+                           "kessler_state, only: kstate")
+    (scheme.parent / "utils" / "kessler_state.F90").write_text(
+        "module kessler_state\n  use ccpp_kinds, only: kind_phys\n"
+        "  real(kind_phys) :: kstate = 0.\nend module kessler_state\n")
+    kessler = scheme / "kessler.F90"
+    head, tail = kessler.read_text().split("subroutine kessler_init", 1)
+    kessler.write_text(head + "subroutine kessler_init"
+                       + tail.replace("      errflg = 0\n", "      errflg = 0\n      kstate = 2.\n", 1))
+    update = scheme / "kessler_update.F90"
+    head, tail = update.read_text().split("subroutine kessler_update_run", 1)
+    update.write_text(head + "subroutine kessler_update_run" + tail.replace(
+        "      errflg = 0\n", "      errflg = 0\n      if (kstate < 0.) errflg = 1\n", 1))
+    drivers, _ = _run_kessler_capture(tmp_path, scheme)
+    report = (drivers / "test_kessler_update.skipped").read_text()
+    assert ("kessler_update: kessler_update_run reads module variables kstate "
+            "(kessler_state), set by kessler_init (scheme kessler, initialize phase), "
+            "which the replay does not run") in report
+    assert "gravit" not in report
+    assert not (drivers / "test_kessler.skipped").exists()
+    # Reported only: the driver still builds.
+    assert (drivers / "test_kessler_update.cmake").exists()
+
+
 def test_driver_needing_a_host_module_is_not_built(tmp_path):
     # scheme-io-capture-host-module-schemes A: a module found neither in
     # the repository nor in the support library gets the driver no

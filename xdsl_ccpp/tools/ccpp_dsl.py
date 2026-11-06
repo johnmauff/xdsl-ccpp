@@ -1681,6 +1681,95 @@ class ccppMain:
         warn_once(f"scheme I/O capture: {scheme}: {reason}")
         cls._append_skipped(driver_dir, scheme, reason)
 
+    # Phases that set module state another scheme's replay may read: the
+    # cap calls them before the run phases (scheme-io-capture-module-
+    # state-setup).
+    _STATE_SETUP_PHASES = ("register", "initialize", "timestep_initial")
+
+    def _scheme_closure_facts(self, module, scheme: str, meta_files: dict, provided):
+        """(entry points {phase: name}, FortranSourceFacts of every file of
+        *scheme*'s closure), cached per generation; None without a .F90."""
+        from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
+        from xdsl_ccpp.transforms.module_dependency_resolver import scan_fortran_source
+        from xdsl_ccpp.transforms.util.cap_shared import split_scheme_table_name
+
+        cache = self._state_closure_cache
+        if scheme not in cache:
+            files = self._capture_scheme_files(module, scheme, meta_files)
+            if files is None:
+                cache[scheme] = None
+            else:
+                defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
+                closure = self._capture_closure(module, files, provided)
+                paths = closure.sources + [p for pair in closure.variants.values() for p in pair]
+                entries = {}
+                for scope in scan_fortran_source(files[0], defs).scopes:
+                    split = split_scheme_table_name(scope.name or "")
+                    if split and split[0] == scheme:
+                        entries[split[1]] = scope.name
+                cache[scheme] = (entries, [scan_fortran_source(p, defs) for p in paths])
+        return cache[scheme]
+
+    def _report_module_state(self, module, driver_dir: str, spec: str,
+                             meta_files: dict, provided) -> None:
+        """scheme-io-capture-module-state-setup, detection: the module
+        variables the captured phases of *spec*'s scheme read and do not
+        assign themselves (passing one to a call does not count: its
+        value may be read there), and the register/initialize/timestep-initial
+        phases of the suite's other schemes that set them -- the replay,
+        which runs only the scheme's own phases, sees them unset. Each is
+        warned about and listed in test_<scheme>.skipped."""
+        from xdsl_ccpp.transforms.module_dependency_resolver import module_state_access
+
+        scheme, phases = _capture_spec(spec)
+        own = self._scheme_closure_facts(module, scheme, meta_files, provided)
+        if own is None:
+            return
+        entries, facts = own
+        replayed = [entries[p] for p in (phases.split(",") if phases else _CAPTURE_PHASES)
+                    if p in entries]
+        reads: dict = {}
+        sets: dict = {}
+        for entry in replayed:
+            for key, proc in module_state_access(facts, entry, "reads").items():
+                reads.setdefault(key, (entry, proc))
+            sets.update(module_state_access(facts, entry, "assigns"))
+        needed = {key: where for key, where in reads.items() if key not in sets}
+        if not needed:
+            return
+        needed_modules = {module_name for module_name, _var in needed}
+        setters: list = []  # (setter entry, scheme, phase, [(module, var)])
+        for other in sorted(meta_files):
+            if other == scheme:
+                continue
+            found = self._scheme_closure_facts(module, other, meta_files, provided)
+            if found is None:
+                continue
+            other_entries, other_facts = found
+            if not any(name in f.modules for f in other_facts for name in needed_modules):
+                continue
+            for phase in self._STATE_SETUP_PHASES:
+                entry = other_entries.get(phase)
+                if entry is None:
+                    continue
+                set_here = sorted(set(module_state_access(other_facts, entry, "sets"))
+                                  & needed.keys())
+                if set_here:
+                    setters.append((entry, other, phase, set_here))
+        for entry, other, phase, keys in setters:
+            by_reader: dict = {}
+            for key in keys:
+                by_reader.setdefault(needed[key][0], []).append(key)
+            for reader, reader_keys in sorted(by_reader.items()):
+                names = ", ".join(f"{var} ({mod})" for mod, var in sorted(reader_keys))
+                reason = (
+                    f"{reader} reads module variables {names}, set by {entry} "
+                    f"(scheme {other}, {phase} phase), which the replay does not "
+                    f"run: the replay may differ (scheme-io-capture-module-state-setup)"
+                )
+                warn_once(f"scheme I/O capture: {scheme}: {reason}")
+                self._append_skipped(driver_dir, scheme, reason)
+
     def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
         """Write the CMake build for the capture test drivers
         (tools/capture_cmake.py): a test_<scheme>.cmake for every captured
@@ -1728,6 +1817,7 @@ class ccppMain:
                 )
                 self.remove_file_if_exists(fragment)
                 continue
+            self._report_module_state(module, driver_dir, spec, meta_files, provided)
             closure = self._capture_closure(module, files, provided)
             if closure.unresolved:
                 self._report_driver_not_built(driver_dir, scheme, closure.unresolved)
@@ -1774,6 +1864,8 @@ class ccppMain:
         self._frontend = None
         # scheme -> (not captured at all?, [reasons]) (_drop_mpi_capture_phases)
         self._capture_notes: dict = {}
+        # scheme -> _scheme_closure_facts (module state, per generation)
+        self._state_closure_cache: dict = {}
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend
