@@ -58,6 +58,7 @@ module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
   use netcdf
+  use, intrinsic :: iso_fortran_env, only: output_unit
 
   implicit none
   private
@@ -76,6 +77,12 @@ module ccpp_capture_mod
   public :: ccpp_capture_extents
   public :: ccpp_capture_compare
   public :: ccpp_capture_tolerance_override
+  public :: ccpp_capture_call_count
+  public :: ccpp_capture_report
+
+  ! The unit a test driver passes a scheme as its log unit (the captured
+  ! one is the host's, not open in the driver): standard output.
+  integer, parameter, public :: ccpp_capture_output_unit = output_unit
 
 
   interface ccpp_capture
@@ -1200,6 +1207,37 @@ contains
   ! unset env var is the normal, silent case every generated driver hits
   ! by default).
   ! ---------------------------------------------------------------------
+
+  ! Number of captured calls of `table`: the files <table>_1.nc,
+  ! <table>_2.nc, ... that exist, counted up to the first missing one. A
+  ! test driver replays calls 1 to this count.
+  integer function ccpp_capture_call_count(table)
+    character(len=*), intent(in) :: table
+    logical :: exists
+
+    ccpp_capture_call_count = 0
+    do
+      inquire(file=lc_file_path(table, ccpp_capture_call_count + 1), exist=exists)
+      if (.not. exists) exit
+      ccpp_capture_call_count = ccpp_capture_call_count + 1
+    end do
+  end function ccpp_capture_call_count
+
+  ! A test driver's verdict on one compared value of one call: prints
+  ! PASS/FAIL and counts a failure in n_failed.
+  subroutine ccpp_capture_report(name, call_count, ok, n_failed)
+    character(len=*), intent(in) :: name
+    integer, intent(in) :: call_count
+    logical, intent(in) :: ok
+    integer, intent(inout) :: n_failed
+
+    if (ok) then
+      write(*,*) 'PASS: ', trim(name), ' (call ', call_count, ')'
+    else
+      write(*,*) 'FAIL: ', trim(name), ' (call ', call_count, ')'
+      n_failed = n_failed + 1
+    end if
+  end subroutine ccpp_capture_report
 
   function ccpp_capture_tolerance_override(default_tolerance) result(tolerance)
     real(kind=kind_phys), intent(in) :: default_tolerance

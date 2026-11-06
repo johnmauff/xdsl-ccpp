@@ -91,7 +91,6 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
-| `scheme-io-capture-driver-as-ir` | 3-5 days (driver program built from existing IR ops in the pass, printed by `print_to_ftn`; new ops only where none fits; existing driver tests as the equivalence check; delete the string renderer) | S |
 | `scheme-io-capture-ddt-args` | 4-8 days (generic: component discovery, recursive capture/restore of allocatable and fixed-size numeric components; the constituent-properties case is done) | S-M |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
@@ -1227,38 +1226,7 @@ scheme reads module state another module sets up at run time (e.g. the
 `rrtmgp_sw_solar_var_setup`, filled by its init); that
 state is not a scheme argument and is not captured.
 
-**ID: `scheme-io-capture-driver-as-ir`. The capture test driver is a
-Fortran string template, not IR.** `render_scheme_io_capture_test_driver`
-and `_render_test_driver_phase_block` (`backend/print_ftn.py`) assemble the
-whole `test_<scheme>.F90` program from hand-written Fortran strings
-(declarations, `use` lines, loops, calls, compares, the `report`
-subroutine), outside the IR -> `print_to_ftn` path the caps use. So every
-Fortran rule the IR printer already gets right has to be re-learned by the
-template, and the driver bugs of 2026-11-05 were exactly that: a
-3955-character scheme call nvfortran rejected
-(`micro_pumas_ccpp_dimensions_post`; patched by passing the text through
-`ftnPrintContext`'s splitter, `_continue_long_lines`), a real kind
-declared but not imported (`pumas_r8`), the log unit's `use` line, and
-hand-deduplicated errmsg/errflg declarations. It also breaks the repo rule
-(CLAUDE.md): the generator builds IR, and a printer prints ops -- it should
-not compose programs; the driver also cannot be printed to another
-language.
-
-Wanted: `SchemeIOCapturePass` builds the driver as its own IR module -- a
-program `func.FuncOp` with `LocalVarOp` declarations, `func.FuncOp.external`
-+ `module` attributes for the `use` lines (scheme entry points,
-`ccpp_kinds` kinds, `ccpp_capture_mod`/`ccpp_capture_replay_mod`
-procedures, DDT readers), `CallStatementOp` for the scheme call and
-`ccpp_capture_*` calls, `scf.if`/loop ops for the replay loop and errflg
-check, the `Acc*`/`Omp*` data ops for device residency -- and prints it with
-`print_to_ftn` to `test_<scheme>.F90`. Add a small reusable op only where
-none fits (e.g. a `do ... exit` loop, a program unit, list-directed
-`write`), with its printer case. The `TestDriverParam` classification stays
-in the pass. Equivalence check: the existing driver tests
-(`tests/unit/test_print_ftn_scheme_io_capture_driver.py` and the pass's
-driver tests), asserting on statements rather than exact text, plus a
-replay of the c03 capture directories. Then delete the string renderer and
-`_continue_long_lines`.
+**ID: `scheme-io-capture-driver-as-ir`. Resolved (2026-11-06, PR #199).** CHANGELOG.md L14223.
 
 **ID: `scheme-io-capture-real-kinds`. Resolved (2026-11-05, PR #198).** CHANGELOG.md L14186.
 

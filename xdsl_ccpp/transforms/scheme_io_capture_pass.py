@@ -95,40 +95,35 @@ residency a real cap can lean on -- so when --directive was set at
 cap-generation time, _build_test_driver_params marks every
 memory_space=device argument (TestDriverParam.is_device, via the same
 cap_shared._device_arg_names lookup apply()'s own per-argument capture
-loop already uses for this same call site) and print_ftn.py's driver
-renderer wraps the real scheme call with its own `!$acc enter data`/
+loop already uses for this same call site) and the driver
+(capture_driver_ir) wraps the real scheme call with its own `!$acc enter data`/
 `!$omp target enter data` beforehand and the matching exit-data after --
 without this, a real scheme's own `!$acc ... present(...)` checks (e.g.
 kessler_run's) would abort the moment the driver tries to call it under
 `-acc`. Without --directive the driver still uses OpenACC data
-directives (comments in a CPU build), for the memory_space=device
+directives (inside #ifdef USE_GPU), for the memory_space=device
 arguments and for `driver_device_args`: the arguments the scheme's own
 OpenACC requires on the device (present, default(present)), which
 ccpp_dsl reads from the .F90 when .meta says nothing. That list reaches
 only the driver; the cap gets no directives without --directive.
 
-The driver's own real-valued comparison tolerance defaults to
-`_TEST_DRIVER_TOLERANCE` but is overridable per invocation via
+The driver's own real-valued comparison tolerance defaults to zero
+(bit for bit) but is overridable per invocation via
 --capture-tolerance (scheme-io-capture-tolerance-config) -- uniform
 across every real-valued comparison in the generated driver, no
 per-variable override in v1. Threaded through as a quoted string in the
 pass-pipeline spec (see ccpp_dsl.py's own comment on why: a bare
 scientific-notation literal with no "." in it, e.g. "1e-08", trips the
 pipeline parser's own int-vs-float NUMBER-token ambiguity) and re-parsed
-with float() here, then formatted into a safe Fortran literal by
-print_ftn.format_fortran_real_literal -- this file never constructs
-Fortran syntax itself.
+with float() here, and becomes a real constant of kind kind_phys in the
+driver's IR.
 
-Language-specific-knowledge boundary, same as everywhere else in this
-codebase: this file interprets CCPP metadata only (_driver_param_category,
-_resolve_array_dims, _build_test_driver_params) and never emits Fortran
-syntax directly -- the resolved, Fortran-agnostic result
-(print_ftn.TestDriverParam) is handed to
-print_ftn.render_scheme_io_capture_test_driver, which is the one place
-that knows how to render a declaration, an allocate statement, or the
-driver's overall program structure as text. (The per-argument capture
-calls apply() inserts directly into the IR, below, are a different case:
-those are CallStatementOps in the generated cap's own IR tree.)
+This file interprets CCPP metadata only (_driver_param_category,
+_resolve_array_dims, _build_test_driver_params); the resolved
+TestDriverParam lists go to capture_driver_ir.build_test_driver, which
+builds the driver as IR (a ProgramOp, scheme-io-capture-driver-as-ir)
+that print_ftn prints like any other unit -- no Fortran text is written
+here or there.
 """
 
 import functools
@@ -143,11 +138,11 @@ from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.backend.print_ftn import (
+from xdsl_ccpp.backend.print_ftn import print_fortran_unit
+from xdsl_ccpp.transforms.capture_driver_ir import (
     TestDriverParam,
-    format_fortran_real_literal,
+    build_test_driver,
     is_call_only_phase,
-    render_scheme_io_capture_test_driver,
 )
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
@@ -177,10 +172,9 @@ from xdsl_ccpp.util.errors import warn_once
 # Default absolute tolerance used by every generated driver's real-valued
 # comparisons, when --capture-tolerance isn't given (scheme-io-capture-
 # tolerance-config): zero, so a replay is a bit-for-bit check (a ported
-# scheme is expected to reproduce its capture exactly). Set in one line of
-# the generated source; --capture-tolerance or CCPP_CAPTURE_TOLERANCE at
-# run time loosens it deliberately.
-_TEST_DRIVER_TOLERANCE = "0.0_kind_phys"
+# scheme is expected to reproduce its capture exactly); --capture-tolerance
+# or CCPP_CAPTURE_TOLERANCE at run time loosens it deliberately.
+_TEST_DRIVER_TOLERANCE = 0.0
 
 # CCPP standard name for "is this the MPI root/master task" -- CAM-SIMA
 # exposes this via spmd_utils.F90's `masterproc`, already a widely-used
@@ -523,8 +517,7 @@ def _build_test_driver_params(
     real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
 ) -> "tuple[list[TestDriverParam] | None, str]":
     """Resolve CCPP metadata for one real scheme call site into the
-    plain, Fortran-agnostic TestDriverParam list print_ftn.py's
-    render_scheme_io_capture_test_driver needs -- all CCPP-specific
+    TestDriverParam list capture_driver_ir.build_test_driver needs -- all CCPP-specific
     interpretation (intent, optionality, dim_names resolution) happens
     here, not in the printer. Returns (params, ""), or (None, reason) --
     the caller skips this phase and reports the reason
@@ -994,10 +987,8 @@ class SchemeIOCapturePass(ModulePass):
         a separate kessler_init call sets -- replaying a scheme's phases
         together, in order, is what makes the comparison meaningful.
 
-        Hands the already-resolved TestDriverParam lists to print_ftn.py's
-        render_scheme_io_capture_test_driver for the actual Fortran text
-        -- this method and _build_test_driver_params never construct
-        Fortran syntax themselves. Not a hard pipeline failure on any
+        Builds the driver as IR (capture_driver_ir.build_test_driver) and
+        prints it with print_ftn.print_fortran_unit. Not a hard pipeline failure on any
         problem (unresolvable array dims, an unwritable directory): this
         is a developer convenience on top of the real capture calls
         above, which have already been inserted into the IR by this point
@@ -1010,21 +1001,17 @@ class SchemeIOCapturePass(ModulePass):
         phase_tables = [
             (table_name, params, module) for table_name, (_phase, params, module) in ordered
         ]
-        tolerance = (
-            format_fortran_real_literal(float(self.tolerance))
-            if self.tolerance is not None
-            else _TEST_DRIVER_TOLERANCE
-        )
+        tolerance = float(self.tolerance) if self.tolerance is not None else _TEST_DRIVER_TOLERANCE
         # The driver always carries device data directives (OpenACC unless
-        # --directive says otherwise): they are comments in a CPU build, so
-        # one driver replays a capture on CPU and, built with OpenACC, on GPU.
-        source = render_scheme_io_capture_test_driver(
+        # --directive says otherwise), inside #ifdef USE_GPU: one driver
+        # replays a capture on CPU and, built with OpenACC, on GPU.
+        program = build_test_driver(
             scheme_name, phase_tables, tolerance, self.directive or "acc",
         )
         os.makedirs(self.test_driver_dir, exist_ok=True)
         out_path = os.path.join(self.test_driver_dir, f"test_{scheme_name}.F90")
         with open(out_path, "w") as f:
-            f.write(source)
+            print_fortran_unit(program, f)
 
     def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var, step_var=None) -> None:
         """Insert one file's worth of capture calls immediately before

@@ -1500,6 +1500,43 @@ class DoLoopOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ProgramOp(IRDLOperation):
+    """A main program unit: the Fortran ``program {sym_name}``.
+
+    The body holds what a module body holds outside its own variables:
+    external declarations and use stubs (``func.FuncOp`` declarations and
+    ``llvm.GlobalOp`` with a ``module`` attribute, printed as ``use`` lines)
+    and procedure definitions (``func.FuncOp``). The executable part calls
+    the procedure ``main``, defined in the body. Emits::
+
+        program {sym_name}
+          use <module>, only: <name>   ! one per declaration / use stub
+          implicit none
+          call {main}()
+        contains
+          <procedure definitions>
+        end program {sym_name}
+
+    Used for the scheme I/O capture test drivers
+    (scheme-io-capture-driver-as-ir).
+    """
+
+    name = "ccpp_utils.program"
+
+    sym_name = prop_def(StringAttr)
+    main     = prop_def(StringAttr)
+    body     = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, sym_name: str, main: str, body_ops: list):
+        super().__init__(
+            properties={"sym_name": StringAttr(sym_name), "main": StringAttr(main)},
+            regions=[Region([Block(body_ops)])],
+        )
+
+
+@irdl_op_definition
 class ScopedBlockOp(IRDLOperation):
     """Fortran BLOCK construct introducing a local scope with declarations.
 
@@ -3293,6 +3330,7 @@ CCPPUtils = Dialect(
         DdtMethodCallOp,
         ErrorGuardOp,
         DoLoopOp,
+        ProgramOp,
         ScopedBlockOp,
         CToFortranStringCopyOp,
         FortranToCStringCopyOp,
