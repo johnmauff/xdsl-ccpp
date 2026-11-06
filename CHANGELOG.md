@@ -14329,3 +14329,67 @@ reads `micro_pumas_utils`' `mg_ice_props`/`mg_liq_props`, set by PUMAS's
 init in another scheme (`scheme-io-capture-module-state-setup`). FPHYStest
 kessler list regenerated: `qneg:initialize,run` captured and its
 fragment written. CI passed (PR #200).
+
+## `scheme-io-capture-rte-kernel-variants` and `scheme-io-capture-share-code`: capture drivers build RTE kernel variants and CESM share code (PR #201, 2026-11-06)
+
+Resolves `scheme-io-capture-rte-kernel-variants` and
+`scheme-io-capture-share-code`. Capture drivers could not build when a
+scheme needed an RTE-RRTMGP kernel module (defined in 2-3 files: the CPU
+version, an `accel/` OpenACC version and an `api/` copy) or CESM share
+code (`shr_kind_mod`, and `shr_log_mod`/`shr_sys_mod`, which need ESMF).
+
+- `xdsl_ccpp/transforms/module_dependency_resolver.py`:
+  - `source_closure(listed=...)`: a module defined in several files of
+    the repository is looked for among the files the build compiles
+    (every table's metadata `dependencies`), which drops the `api/`,
+    test and example copies.
+  - `accel_variant_pair`: two files left that are a file and its copy in
+    an `accel/` subdirectory become a variant (`SourceClosure.variants`);
+    so does such a pair among the start files (the RRTMGP schemes'
+    metadata lists both). Anything else still ambiguous is unresolved,
+    with the paths.
+  - `source_closure(extra_roots=...)`: a module defined nowhere in the
+    repository is looked for in other source trees, in order.
+- `xdsl_ccpp/tools/capture_cmake.py`:
+  - A fragment builds a variant's `accel/` file with `-DOPENACC=ON` and
+    the other one otherwise (`if(OPENACC)` + `target_sources`), as
+    CAM-SIMA's `_set_rrtmgp_dependencies` does; `listed_dependency_paths`.
+  - The support library adds `framework_src/capture_stubs/shr_log_mod.F90`
+    and `shr_sys_mod.F90`: stand-ins with the real interfaces of what the
+    schemes use (`shr_log_errMsg`, `shr_sys_abort`, which ends the replay
+    with `error stop`). Only the capture build gets them.
+  - `CMakeLists.txt` defines `USE_CONTIGUOUS` (empty), as CIME does for
+    gnu, intel and nvhpc; `coords_1d.F90` uses it in declarations.
+- `xdsl_ccpp/tools/ccpp_dsl.py`: new option `--capture-source-root DIR`
+  (repeatable), searched after the scheme's repository; its files appear
+  in the fragments by absolute path. The "not built" reason now lists
+  everywhere the build searched.
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: a phase with a
+  derived-type argument the capture does not record is left out of the
+  driver, with the argument and type in `test_<scheme>.skipped`
+  (`scheme-io-capture-ddt-args` stop-gap); before, the driver declared
+  the object without its module and did not compile.
+- CAM-SIMA (`cime_config/cam_autogen.py`, separate commit): passes
+  `--capture-source-root <CAM-SIMA>/share/src` with
+  `--capture-test-driver-dir`.
+- Tests: variant pairs, the listed copy, a pair among the start files,
+  two needed files for one module, the `if(OPENACC)` fragment, extra
+  roots (searched after the repository; what they still need reported),
+  the stubs in the support library and absent from model builds, a share
+  root end-to-end, the derived-type skip.
+
+The kernel variants unblock 11 RRTMGP drivers' sources, but all of them
+take RTE-RRTMGP derived types, so only `rrtmgp_pre`'s `timestep_init`
+phase is replayed until `scheme-io-capture-ddt-args`.
+
+Verification: pytest 1428 passed; CAM-SIMA Python tests 57 passed. c03e
+(F2000_C4, cam4 list) regenerated: 30 drivers build (was 20), CPU replay
+27/30 (was 17/20); the 10 new ones pass: `rrtmgp_pre`,
+`compute_kinematic_fluxes_and_obklen`,
+`implicit_surface_stress_add_drag_coefficient`, and
+`vertical_diffusion_` `interpolate_to_interfaces`,
+`set_dry_static_energy_at_toa_zero`, `set_temperature_at_toa_default`,
+`set_total_surface_stress`, `tendencies`, `diffuse_horizontal_momentum`,
+`diffuse_tracers` (the last two: the phases without `coords1d`). The 3
+failures are the `hb_*` schemes (`scheme-io-capture-module-state-setup`).
+CI passed (PR #201).
