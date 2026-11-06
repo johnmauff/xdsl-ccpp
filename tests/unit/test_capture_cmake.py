@@ -426,17 +426,58 @@ def test_kind_module_sources_come_before_ccpp_kinds_in_the_support_library():
             < text.index("ccpp_capture_mod.F90"))
 
 
-def test_a_scheme_using_mpi_is_not_captured(tmp_path):
-    # scheme-io-capture-host-module-schemes: a replay runs as one serial
-    # process, so a scheme that uses MPI gets no capture calls and no
-    # driver; a report says why, and an earlier generation's driver and
-    # fragment are removed. The other schemes are unaffected.
+def _kessler_with_mpi(tmp_path, module_level: bool):
+    """examples/kessler's schemes, kessler_update.F90 using MPI: in its
+    module's specification part (*module_level*), else only in a
+    subroutine its timestep_final phase calls (as qneg does)."""
     scheme = _kessler_without_memory_space(tmp_path)
-    source = (scheme / "kessler_update.F90").read_text()
-    marker = "      !Local variables\n"
-    assert marker in source
-    (scheme / "kessler_update.F90").write_text(
-        source.replace(marker, "      include 'mpif.h'\n" + marker, 1))
+    path = scheme / "kessler_update.F90"
+    source = path.read_text()
+    if module_level:
+        marker = "   use ccpp_kinds, only: kind_phys\n"
+        assert marker in source
+        source = source.replace(marker, marker + "   include 'mpif.h'\n", 1)
+    else:
+        marker = "   end subroutine kessler_update_timestep_final\n"
+        assert marker in source
+        source = source.replace(marker, "      call update_summary()\n" + marker, 1)
+        source = source.replace(
+            "end module kessler_update",
+            "   subroutine update_summary()\n      use mpi, only: mpi_sum\n"
+            "   end subroutine update_summary\nend module kessler_update", 1)
+    path.write_text(source)
+    return scheme
+
+
+def test_phases_reaching_mpi_are_not_captured(tmp_path):
+    # scheme-io-capture-host-module-schemes: a replay runs as one serial
+    # process, so a phase whose entry point reaches MPI is not captured;
+    # the scheme's other phases are, and a report says why.
+    scheme = _kessler_with_mpi(tmp_path, module_level=False)
+    drivers, cap = _run_kessler_capture(tmp_path, scheme)
+
+    assert "ccpp_capture_begin('kessler_update_run'" in cap
+    assert "ccpp_capture_begin('kessler_update_timestep_final'" not in cap
+    assert (drivers / "test_kessler_update.F90").exists()
+    report = (drivers / "test_kessler_update.skipped").read_text()
+    assert ("kessler_update: phase timestep_final not captured: "
+            "kessler_update_timestep_final calls update_summary, which has use mpi "
+            "(kessler_update.F90); a replay runs as one serial process") in report
+
+
+def test_listed_phases_not_reaching_mpi_are_captured_as_before(tmp_path):
+    scheme = _kessler_with_mpi(tmp_path, module_level=False)
+    drivers, cap = _run_kessler_capture(
+        tmp_path, scheme, {"capture_scheme": ["kessler", "kessler_update:initialize,run"]})
+    assert "ccpp_capture_begin('kessler_update_run'" in cap
+    assert not (drivers / "test_kessler_update.skipped").exists()
+
+
+def test_a_scheme_using_mpi_in_every_phase_is_not_captured(tmp_path):
+    # MPI in the module's specification part reaches every phase: no
+    # capture calls and no driver, and an earlier generation's driver and
+    # fragment are removed. The other scheme is unaffected.
+    scheme = _kessler_with_mpi(tmp_path, module_level=True)
     drivers = tmp_path / "drivers"
     drivers.mkdir()
     (drivers / "test_kessler_update.F90").write_text("stale\n")
@@ -444,14 +485,15 @@ def test_a_scheme_using_mpi_is_not_captured(tmp_path):
 
     drivers, cap = _run_kessler_capture(tmp_path, scheme)
 
-    assert "ccpp_capture_begin('kessler_update_run'" not in cap
+    assert "ccpp_capture_begin('kessler_update_" not in cap
     assert "ccpp_capture_begin('kessler_run'" in cap
     assert sorted(os.listdir(drivers)) == [
         "CMakeLists.txt", "test_kessler.F90", "test_kessler.cmake",
         "test_kessler_update.skipped",
     ]
     report = (drivers / "test_kessler_update.skipped").read_text()
-    assert "kessler_update: not captured: it uses MPI (kessler_update.F90 has include 'mpif.h')" in report
+    assert ("kessler_update: not captured: kessler_update_init is in module "
+            "kessler_update, which has include 'mpif.h' (kessler_update.F90)") in report
 
 
 def _kessler_repo(tmp_path, kessler_use: str, update_use: str):

@@ -294,3 +294,62 @@ def test_closure_without_a_root_resolves_only_the_given_files(tmp_path):
     closure = source_closure([scheme], None, provided={"ccpp_kinds"})
     assert closure.sources == [scheme]
     assert set(closure.unresolved) == {"util_a", "host_only"}
+
+
+def test_scan_records_procedure_scopes_and_calls(tmp_path):
+    f = _write(tmp_path / "q.F90", (
+        "module q\n"
+        "  use ccpp_kinds\n"
+        "  interface stats\n"
+        "     module procedure stats_a, stats_b\n"
+        "  end interface\n"
+        "  interface\n"
+        "     subroutine ext(x)\n"
+        "       use mpi\n"
+        "     end subroutine ext\n"
+        "  end interface\n"
+        "contains\n"
+        "  subroutine q_final(n)\n"
+        "    if (n > 0) call summary(n)\n"
+        "  end subroutine q_final\n"
+        "  pure real(kind_phys) function f(x) result(y)\n"
+        "    call obj%helper(x)\n"
+        "  end function\n"
+        "#if 0\n"
+        "  subroutine gone()\n"
+        "  end subroutine\n"
+        "#endif\n"
+        "end module q\n"
+    ))
+    scopes = {s.name: s for s in scan_fortran_source(f, {}).scopes}
+    assert set(scopes) == {None, "stats", "q_final", "f"}  # no interface body
+    assert scopes["stats"].calls == {"stats_a", "stats_b"}
+    assert scopes["q_final"].calls == {"summary"}
+    assert scopes["f"].calls == {"helper"}
+    assert scopes[None].module == "q" and scopes[None].uses == {"ccpp_kinds"}
+
+
+def test_mpi_reach_follows_calls_generics_and_module_scope(tmp_path):
+    root = tmp_path / "repo"
+    scheme = _write(root / "s.F90", (
+        "module s\n  use util_mpi\ncontains\n"
+        "  subroutine s_init()\n  end subroutine\n"
+        "  subroutine s_run()\n    call stats()\n  end subroutine\n"
+        "  subroutine s_final()\n    call helper()\n  end subroutine\n"
+        "end module\n"))
+    _write(root / "util_mpi.F90", (
+        "module util_mpi\n  interface stats\n    module procedure stats_one\n"
+        "  end interface\ncontains\n"
+        "  subroutine stats_one()\n    call reduce()\n  end subroutine\n"
+        "  subroutine reduce()\n    include 'mpif.h'\n  end subroutine\n"
+        "end module\n"))
+    _write(root / "h.F90", "module h_mod\n  use mpi_f08\ncontains\n"
+                           "  subroutine helper()\n  end subroutine\nend module\n")
+    _write(root / "s2.F90", "module s2\n  use h_mod\nend module\n")
+    closure = source_closure([scheme, str(root / "s2.F90")], str(root), preproc_defs={})
+    reach = closure.mpi_procedures
+    assert "s_init" not in reach
+    assert reach["s_run"] == ("s_run calls stats, which calls stats_one, which calls "
+                              "reduce, which has include 'mpif.h' (util_mpi.F90)")
+    assert reach["s_final"] == ("s_final calls helper, which is in module h_mod, "
+                                "which has use mpi_f08 (h.F90)")

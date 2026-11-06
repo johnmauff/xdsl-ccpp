@@ -67,12 +67,49 @@ MPI_INCLUDE_FILES = frozenset({"mpif.h"})
 
 
 @dataclass(frozen=True)
+class ScopeFacts:
+    """The USEs, INCLUDEs and CALLs of one scope of a Fortran file: a
+    procedure (*name*), or the specification part of module *module*
+    (*name* None, which applies to all the module's procedures)."""
+
+    name: "str | None"
+    module: "str | None"
+    uses: frozenset
+    includes: frozenset
+    calls: frozenset
+
+
+@dataclass(frozen=True)
 class FortranSourceFacts:
     """What one Fortran file declares and needs (lowercased names)."""
 
     uses: frozenset  # modules USEd anywhere in the file
     modules: frozenset  # modules the file defines
     includes: frozenset  # files named by Fortran INCLUDE lines
+    scopes: tuple = ()  # ScopeFacts per procedure and module specification part
+
+
+class _ScopeBuilder:
+    def __init__(self, name, module):
+        self.name, self.module = name, module
+        self.uses: set = set()
+        self.includes: set = set()
+        self.calls: set = set()
+
+    def freeze(self) -> ScopeFacts:
+        return ScopeFacts(self.name, self.module, frozenset(self.uses),
+                          frozenset(self.includes), frozenset(self.calls))
+
+
+def _called_name(call) -> str:
+    """The procedure a Call_Stmt names (a type-bound one: its binding)."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    designator = call.children[0]
+    if isinstance(designator, f03.Name):
+        return str(designator).lower()
+    return str(walk(designator, f03.Name)[-1]).lower()
 
 
 @functools.lru_cache(maxsize=None)
@@ -80,6 +117,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     import fparser.two.Fortran2003 as f03
     from fparser.common.readfortran import FortranStringReader, Line
     from fparser.two.parser import ParserFactory
+    from fparser.two.utils import walk
 
     ParserFactory().create(std="f2003")
     with open(path, errors="replace") as f:
@@ -91,26 +129,92 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     uses: set = set()
     modules: set = set()
     includes: set = set()
+    scopes: list = []
+    module = None
+    module_scope = _ScopeBuilder(None, None)
+    procedures: list = []  # open procedure scopes, innermost last
+    interface_depth = 0  # interface bodies declare, they do not define
+    generic = None  # scope of the open named interface: it "calls" its procedures
+
+    def current():
+        return procedures[-1] if procedures else module_scope
+
+    def close_procedure():
+        if procedures:
+            scopes.append(procedures.pop().freeze())
+
     # Statement by statement (the reader joins continuation lines and drops
     # comments), each matched against fparser's own grammar for that
     # statement: a whole-file parse fails on files that build fine (macros
     # such as coords_1d.F90's USE_CONTIGUOUS, F2008 specifiers), and such a
-    # file would hide all its USEs.
+    # file would hide all its statements. Calls are CALL statements (also
+    # in a one-line IF); a function referenced in an expression is not
+    # followed.
     for item in FortranStringReader(source, ignore_comments=True):
         if not isinstance(item, Line):
             continue
-        keyword = item.line.lstrip()[:7].lower()
+        line = item.line
+        lower = line.lstrip().lower()
+        words = lower.replace("(", " ").split()
+        first = words[0] if words else ""
         try:
-            if keyword.startswith("use"):
-                uses.add(str(f03.Use_Stmt(item.line).children[2]).lower())
-            elif keyword.startswith("module"):
+            if first == "use" or lower.startswith("use,"):
+                name = str(f03.Use_Stmt(line).children[2]).lower()
+                uses.add(name)  # an interface body's too: the file needs it
+                if not interface_depth:
+                    current().uses.add(name)
+            elif first == "include":
+                name = str(f03.Include_Stmt(line).children[0]).lower()
+                includes.add(name)
+                if not interface_depth:
+                    current().includes.add(name)
+            elif first == "call":
+                current().calls.add(_called_name(f03.Call_Stmt(line)))
+            elif first == "if" and " call " in f" {lower}":
+                for call in walk(f03.If_Stmt(line), f03.Call_Stmt):
+                    current().calls.add(_called_name(call))
+            elif first in ("interface", "abstract") and "interface" in words[:2]:
+                interface_depth += 1
+                names = walk(f03.Interface_Stmt(line), f03.Name)
+                if interface_depth == 1 and len(names) == 1:
+                    generic = _ScopeBuilder(str(names[0]).lower(), module)
+            elif interface_depth and first in ("module", "procedure"):
+                if generic is not None:
+                    generic.calls.update(
+                        str(n).lower() for n in walk(f03.Procedure_Stmt(line), f03.Name))
+            elif first == "end" or first.startswith("end"):
+                kind = (words[1] if first == "end" and len(words) > 1 else first[3:])
+                if kind == "interface":
+                    interface_depth = max(0, interface_depth - 1)
+                    if not interface_depth and generic is not None:
+                        scopes.append(generic.freeze())
+                        generic = None
+                elif interface_depth:
+                    continue
+                elif kind in ("subroutine", "function", ""):
+                    close_procedure()
+                elif kind == "module":
+                    while procedures:
+                        close_procedure()
+                    scopes.append(module_scope.freeze())
+                    module, module_scope = None, _ScopeBuilder(None, None)
+            elif first == "module" and len(words) == 2:
                 # "module procedure ..." is not a Module_Stmt.
-                modules.add(str(f03.Module_Stmt(item.line).children[1]).lower())
-            elif keyword.startswith("include"):
-                includes.add(str(f03.Include_Stmt(item.line).children[0]).lower())
+                module = str(f03.Module_Stmt(line).children[1]).lower()
+                modules.add(module)
+                module_scope = _ScopeBuilder(None, module)
+            elif not interface_depth and ("subroutine" in words or "function" in words):
+                stmt_cls = f03.Subroutine_Stmt if "subroutine" in words else f03.Function_Stmt
+                name = str(stmt_cls(line).children[1]).lower()
+                procedures.append(_ScopeBuilder(name, module))
         except Exception:  # noqa: BLE001 -- not that statement (e.g. "user = 1")
             continue
-    return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes))
+    while procedures:
+        close_procedure()
+    if module_scope.module or module_scope.uses or module_scope.includes:
+        scopes.append(module_scope.freeze())
+    return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes),
+                              tuple(scopes))
 
 
 def scan_fortran_source(
@@ -180,6 +284,9 @@ class SourceClosure:
     sources: list = field(default_factory=list)  # absolute paths, starting files first
     unresolved: dict = field(default_factory=dict)  # module -> reason (who uses it, why missing)
     mpi: list = field(default_factory=list)  # (file, "use mpi" / "include 'mpif.h'")
+    # procedure -> how it reaches MPI, e.g. "qneg_final calls
+    # qneg_print_summary, which has use mpi (qneg.F90)" (mpi_reach)
+    mpi_procedures: dict = field(default_factory=dict)
 
 
 def source_closure(
@@ -243,7 +350,53 @@ def source_closure(
                 if name in MPI_INCLUDE_FILES:
                     result.mpi.append((path, f"include '{name}'"))
     result.sources = list(queue)
+    result.mpi_procedures = mpi_reach([facts[p] for p in queue], list(queue))
     return result
+
+
+def mpi_reach(file_facts, paths) -> dict:
+    """{procedure: how it reaches MPI} over the scopes of *file_facts* (one
+    FortranSourceFacts per file of *paths*): a procedure reaches MPI if its
+    own scope, or its module's specification part, USEs an MPI module or
+    INCLUDEs mpif.h, or it CALLs (through generic interfaces too) a
+    procedure that reaches MPI. Procedures are matched by name; one not
+    defined in these files (e.g. the host model's) is not followed."""
+    by_name: dict = {}
+    module_mpi: dict = {}
+    for facts, path in zip(file_facts, paths):
+        base = os.path.basename(path)
+        for scope in facts.scopes:
+            direct = sorted(f"use {m}" for m in scope.uses & MPI_MODULES) + sorted(
+                f"include '{i}'" for i in scope.includes & MPI_INCLUDE_FILES)
+            if scope.name is None:
+                if direct and scope.module:
+                    module_mpi[scope.module] = f"module {scope.module}, which has {direct[0]} ({base})"
+                continue
+            by_name.setdefault(scope.name, []).append((scope, direct, base))
+    chains: dict = {}  # name -> ([name, callee, ...], what the last one has)
+    for name, entries in by_name.items():
+        for scope, direct, base in entries:
+            if direct:
+                chains[name] = ([name], f"has {direct[0]} ({base})")
+            elif scope.module in module_mpi:
+                chains[name] = ([name], f"is in {module_mpi[scope.module]}")
+            if name in chains:
+                break
+    changed = True
+    while changed:
+        changed = False
+        for name, entries in by_name.items():
+            if name in chains:
+                continue
+            callee = next((c for scope, _d, _b in entries for c in sorted(scope.calls)
+                           if c in chains), None)
+            if callee is not None:
+                path, fact = chains[callee]
+                chains[name] = ([name] + path, fact)
+                changed = True
+    return {name: ", which calls ".join(path).replace(", which calls ", " calls ", 1)
+            + (", which " if len(path) > 1 else " ") + fact
+            for name, (path, fact) in chains.items()}
 
 
 def _is_ddt_or_host_table(f90_path: str) -> bool:

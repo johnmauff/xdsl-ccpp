@@ -1547,76 +1547,112 @@ class ccppMain:
     def _capture_closure(self, files: list, provided):
         """module_dependency_resolver.source_closure of a captured scheme's
         *files* (_capture_scheme_files) through its repository
-        (scheme_source_root), with --preproc-defs; without them every
-        preprocessor branch counts."""
+        (scheme_source_root), preprocessed with --preproc-defs (none: what
+        a compile without -D sees, so `#if 0` code never counts)."""
         from xdsl_ccpp.tools.capture_cmake import scheme_source_root
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
         from xdsl_ccpp.transforms.module_dependency_resolver import source_closure
 
-        raw_defs = self.options_db.get("preproc_defs")
-        preproc_defs = parse_preproc_defines(raw_defs) if raw_defs else None
+        preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
         return source_closure(files, scheme_source_root(files[0]), provided, preproc_defs)
 
-    def _drop_mpi_capture_schemes(self, mlir_file: str) -> None:
-        """scheme-io-capture-host-module-schemes: a scheme that uses MPI --
-        `use mpi`/`use mpi_f08` or `include 'mpif.h'` in its .F90, its
-        metadata dependencies, or the modules of its repository they use
-        (module_dependency_resolver.source_closure) -- is not captured: its
-        replay driver runs as one serial process. Such entries leave
-        --capture-scheme here, before the pass list is built, with a
-        warning and a test_<scheme>.skipped report (stale drivers and
-        CMake fragments of the scheme are removed)."""
+    def _drop_mpi_capture_phases(self, mlir_file: str) -> None:
+        """scheme-io-capture-host-module-schemes: a phase whose entry point
+        (<scheme>_<phase suffix> in the scheme's .F90) reaches MPI -- `use
+        mpi`/`use mpi_f08` or `include 'mpif.h'` in it, its module or a
+        procedure it calls, through the scheme's .F90, its metadata
+        dependencies and the modules of its repository they use
+        (module_dependency_resolver.source_closure, mpi_reach) -- is not
+        captured: a replay driver runs as one serial process. The
+        --capture-scheme entry keeps its other phases (all phases when it
+        named none); a scheme with none left is not captured at all. Done
+        here, before the pass list is built; each is warned about and
+        reported in test_<scheme>.skipped (_write_capture_notes)."""
         from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
-        from xdsl_ccpp.transforms.module_dependency_resolver import FRAMEWORK_MODULES
+        from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
+        from xdsl_ccpp.transforms.module_dependency_resolver import (
+            FRAMEWORK_MODULES,
+            scan_fortran_source,
+        )
+        from xdsl_ccpp.transforms.util.cap_shared import split_scheme_table_name
 
         module = self._parse_frontend(mlir_file)
         meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
-        driver_dir = self.options_db.get("capture_test_driver_dir")
+        preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
         kept = []
         for spec in self.options_db["capture_scheme"]:
-            scheme = _capture_spec(spec)[0]
+            scheme, phases = _capture_spec(spec)
             files = self._capture_scheme_files(module, scheme, meta_files)
-            mpi = self._capture_closure(files, FRAMEWORK_MODULES).mpi if files else []
-            if not mpi:
+            if not files:
                 kept.append(spec)
                 continue
-            uses = ", ".join(
-                f"{os.path.basename(path)} has {what}" for path, what in mpi
-            )
-            reason = f"not captured: it uses MPI ({uses}), and a replay runs as one serial process"
+            closure = self._capture_closure(files, FRAMEWORK_MODULES)
+            entries = {}  # phase -> entry point (the arg table's name)
+            for scope in scan_fortran_source(files[0], preproc_defs).scopes:
+                split = split_scheme_table_name(scope.name or "")
+                if split and split[0] == scheme:
+                    entries[split[1]] = scope.name
+            requested = phases.split(",") if phases else [
+                p for p in _CAPTURE_PHASES if p in entries
+            ]
+            left_out = [p for p in requested if entries.get(p) in closure.mpi_procedures]
+            if not left_out:
+                kept.append(spec)
+                continue
+            why = "; ".join(closure.mpi_procedures[entries[p]] for p in left_out)
+            remaining = [p for p in requested if p not in left_out]
+            if remaining:
+                kept.append(f"{scheme}:{','.join(remaining)}")
+                noun = "phase" if len(left_out) == 1 else "phases"
+                reason = (f"{noun} {', '.join(left_out)} not captured: {why}; "
+                          f"a replay runs as one serial process")
+            else:
+                reason = f"not captured: {why}; a replay runs as one serial process"
             warn_once(f"scheme I/O capture: {scheme}: {reason}")
-            if driver_dir:
-                os.makedirs(driver_dir, exist_ok=True)
+            self._capture_notes[scheme] = (not remaining, [reason])
+        self.options_db["capture_scheme"] = kept
+
+    def _write_capture_notes(self, driver_dir: str) -> None:
+        """Report _drop_mpi_capture_phases' decisions in test_<scheme>.skipped:
+        a new file, and no stale driver or fragment, for a scheme not
+        captured at all; after the capture pass's lines otherwise."""
+        for scheme, (dropped, reasons) in self._capture_notes.items():
+            if dropped:
                 self.remove_file_if_exists(
                     os.path.join(driver_dir, f"test_{scheme}.F90"),
                     os.path.join(driver_dir, f"test_{scheme}.cmake"),
+                    os.path.join(driver_dir, f"test_{scheme}.skipped"),
                 )
-                with open(os.path.join(driver_dir, f"test_{scheme}.skipped"), "w") as f:
-                    f.write(f"# Generated by xdsl_ccpp: {scheme} is not captured, and why.\n")
-                    f.write(f"{scheme}: {reason}\n")
-        self.options_db["capture_scheme"] = kept
+            for reason in reasons:
+                self._append_skipped(driver_dir, scheme, reason)
 
     @staticmethod
-    def _report_driver_not_built(driver_dir: str, scheme: str, unresolved: dict) -> None:
-        """Warn that test_<scheme>.F90 gets no build, naming the modules
-        neither the scheme's repository nor the support library provides,
-        and add that to test_<scheme>.skipped (after the capture pass's
-        lines, if any)."""
-        needs = ", ".join(f"{name} ({why})" for name, why in sorted(unresolved.items()))
-        reason = (
-            f"test_{scheme}.F90 is not built: it needs modules found neither in "
-            f"the scheme's repository nor in the capture support library: {needs}"
-        )
-        warn_once(f"scheme I/O capture: {scheme}: {reason}")
+    def _append_skipped(driver_dir: str, scheme: str, reason: str) -> None:
+        """Add "<scheme>: <reason>" to test_<scheme>.skipped (after the
+        capture pass's lines, if any)."""
+        os.makedirs(driver_dir, exist_ok=True)
         path = os.path.join(driver_dir, f"test_{scheme}.skipped")
         exists = os.path.isfile(path)
         with open(path, "a") as f:
             if not exists:
                 f.write(
                     f"# Generated by xdsl_ccpp: parts of the {scheme} capture "
-                    f"that are not replayed, and why.\n"
+                    f"that are not captured or not replayed, and why.\n"
                 )
             f.write(f"{scheme}: {reason}\n")
+
+    @classmethod
+    def _report_driver_not_built(cls, driver_dir: str, scheme: str, unresolved: dict) -> None:
+        """Warn that test_<scheme>.F90 gets no build, naming the modules
+        neither the scheme's repository nor the support library provides,
+        and add that to test_<scheme>.skipped."""
+        needs = ", ".join(f"{name} ({why})" for name, why in sorted(unresolved.items()))
+        reason = (
+            f"test_{scheme}.F90 is not built: it needs modules found neither in "
+            f"the scheme's repository nor in the capture support library: {needs}"
+        )
+        warn_once(f"scheme I/O capture: {scheme}: {reason}")
+        cls._append_skipped(driver_dir, scheme, reason)
 
     def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
         """Write the CMake build for the capture test drivers
@@ -1638,6 +1674,7 @@ class ccppMain:
         )
 
         driver_dir = self.options_db["capture_test_driver_dir"]
+        self._write_capture_notes(driver_dir)
         module = self._parse_frontend(mlir_file)
         # The kind modules ccpp_kinds.F90 uses (a scheme's kind_spec, e.g.
         # pumas_kinds) go in the support library, and so out of the
@@ -1705,6 +1742,8 @@ class ccppMain:
         except (ValueError, FileNotFoundError) as e:
             raise CcppDslError(str(e)) from e
         self._frontend = None
+        # scheme -> (not captured at all?, [reasons]) (_drop_mpi_capture_phases)
+        self._capture_notes: dict = {}
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend
@@ -1767,7 +1806,7 @@ class ccppMain:
             else:
                 mlir_file = self.run_frontend(tmp_dir)
             if self.options_db.get("capture_scheme"):
-                self._drop_mpi_capture_schemes(mlir_file)
+                self._drop_mpi_capture_phases(mlir_file)
             if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
             elif self.options_db.get("capture_scheme"):
