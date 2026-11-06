@@ -14088,3 +14088,40 @@ diff 0.23143; likewise `hack_convect_shallow`).
 Verification: pytest 1385 passed; Fortran constituents test ALL TESTS
 PASSED (nvfortran); CI passed (PR #194). End-to-end check pending the
 post-Tier-1 rrtmgp and cam4 recaptures.
+
+## `scheme-io-capture-constituent-index-case`: case-insensitive constituent lookup in the drivers (PR #195, 2026-11-05)
+
+Follow-up to `scheme-io-capture-constituent-index-table` (PR #194). The
+c03a rrtmgp recapture captured and restored the constituent table, yet
+`test_rrtmgp_constituents` still failed (max diff 0.23143, the O2 mixing
+ratio). `rrtmgp_constituents` asks for gases in upper case (`'O2'`,
+`'CO2'`) while the table holds `o2`; capgen's `ccpp_scheme_utils`
+(CAM-SIMA's) lower-cases the name before the lookup, the bundled one the
+drivers build compared exactly, so every gas came back `int_unassigned`.
+
+- `xdsl_ccpp/framework_src/ccpp_scheme_utils.F90`:
+  `ccpp_constituent_index` and `ccpp_constituent_indices` compare names
+  case-insensitively (`to_lower` from `ccpp_constituent_prop_mod`), as
+  capgen does.
+- `tests/fortran/test_ccpp_capture_constituents.F90`: a mixed-case lookup
+  of the restored table.
+- `BACKLOG.md`: new `scheme-io-capture-real-kinds`,
+  `scheme-io-capture-skip-message`, `scheme-io-capture-uncaptured-phases`
+  (found on the c03d pumas replay) and `rrtmgp-intent-out-unassigned`
+  (RRTMGP `intent(out)` audit); status on
+  `rrtmgp-dry-static-energy-intent-out`.
+
+Post-Tier-1 recaptures (c03a rrtmgp, c03b rk_stratiform, c03d pumas; CPU
+replays): newly passing `test_rrtmgp_dry_static_energy_tendency`
+(intent change), `test_convective_cloud_cover` (log unit, PR #192),
+`test_rrtmgp_constituents` (constituent table, PR #194, plus this fix);
+`pumas_kinds.F90` now comes from the generated `CMakeLists.txt` (PR #193;
+the `build_capture_tests.sh` workaround is removed). Remaining failures are
+`scheme-io-capture-host-module-schemes`, `scheme-io-capture-real-kinds`
+and `scheme-io-capture-uncaptured-phases`. The c03a/b runs first failed
+on startup because `sima_baselines` moved on 2026-11-05 to
+`/glade/campaign/cesm/amwg/soft_eng/sima_baselines`; the CAM-SIMA testmods
+are updated locally (uncommitted).
+
+Verification: pytest 1385 passed; Fortran constituents test ALL TESTS
+PASSED (nvfortran); c03a replay `test_rrtmgp_constituents` passes.

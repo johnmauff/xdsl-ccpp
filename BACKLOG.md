@@ -96,6 +96,9 @@ measured data, and will drift as items are reassessed.
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
+| `scheme-io-capture-real-kinds` | 1-2 days (accept `real` of a `kind_spec` kind equal to `kind_phys` in capture and drivers, declare it from `ccpp_kinds`; unit tests; recapture pumas) | XS-S |
+| `scheme-io-capture-uncaptured-phases` | 1 day (call uncompared phases with only error/log/scalar arguments in lifecycle order; unit + driver tests; no recapture) | XS |
+| `scheme-io-capture-skip-message` | 0.5 day (driver-skip notes through `xdsl_ccpp.util.errors`, naming the argument; unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
@@ -1226,6 +1229,67 @@ scheme reads module state another module sets up at run time (e.g. the
 `rrtmgp_sw_solar_var_setup`, filled by its init); that
 state is not a scheme argument and is not captured.
 
+**ID: `scheme-io-capture-real-kinds`. Reals of a scheme-specific kind
+are neither captured nor compared.** `_is_capture_supported`
+(`scheme_io_capture_pass.py`) accepts `real` only with `kind = kind_phys`.
+Any other real -- e.g. PUMAS's `real(pumas_r8)`, declared through
+`kind_spec = pumas_kinds:pumas_r8` -- is "unverified": not captured, and in
+the driver passed through uncompared, sized from the scheme's other
+arguments. Found 2026-11-05 on the c03d pumas capture:
+
+- `micro_pumas_ccpp_dimensions_post`: 71 `pumas_r8` inputs dimensioned
+  `(microphysics_horizontal_loop_extent,
+  microphysics_vertical_layer_dimension)`; neither dimension is an
+  argument, so `_build_test_driver_params` returns None and no driver is
+  written (the scheme's `kind_phys` outputs are captured anyway).
+- `micro_pumas_ccpp_dimensions_pre`: its 32 `pumas_r8` outputs (the
+  scheme's whole purpose) are passed but never compared, so its driver
+  passing says little.
+- `pumas_post_main`: one `pumas_r8` argument.
+
+`pumas_r8` is `selected_real_kind(12)`, the same kind as `kind_phys` in
+CAM-SIMA, so `ccpp_capture_mod`'s `real(kind_phys)` procedures already
+match it. Wanted: treat a real whose kind is one of the table's
+`kind_spec` kinds as supported (capture, read and compare as `kind_phys`),
+and declare it in the driver through `ccpp_kinds`, which `use`s the kind
+module since `scheme-io-capture-kinds-deps`. If the kinds differ, the
+generic call fails to compile; a `kind_phys`-equality check in the driver
+(or separate procedures) would make that explicit. Then recapture pumas.
+
+**ID: `scheme-io-capture-uncaptured-phases`. A phase with nothing to
+capture is left out of the driver, even when later phases depend on it.**
+`_build_test_driver_params` returns None when no argument of a call is
+captured, so that phase gets no capture table and the driver
+(`_maybe_emit_test_driver`) never calls it. A phase that only sets module
+state is then skipped. Found 2026-11-05 on the c03d pumas replay:
+`clamp_number_concentrations_init` has only `errmsg`/`errflg`; it looks
+up the four number-concentration constituents (`ccpp_constituent_index`)
+and stores their indices in module variables. Without it the replay's
+indices stay -1, `_run` clamps nothing, and `const_q` fails by ~1.5e-11
+(values the model raised to `qmin = 1e-12`). The constituent table it
+needs is already restored (`scheme-io-capture-constituent-index-table`).
+
+Wanted: when a scheme is captured, include its phases that have no
+captured argument but whose arguments the driver can supply on its own
+(error arguments, the log unit, and scalars it can take from another
+phase's capture, e.g. `ncol`). Call each once in CCPP lifecycle order,
+with no comparison. A phase needing anything else is still skipped, with
+the reason reported (see `scheme-io-capture-skip-message`). No
+recapture is needed: the drivers are generated at case build, so
+regenerating the c03d drivers is enough. Check the other capture lists for
+schemes with argument-free init/timestep_init phases.
+
+**ID: `scheme-io-capture-skip-message`. A skipped test driver is
+silent in CAM-SIMA builds.** When `_build_test_driver_params` returns None,
+`SchemeIOCapturePass` prints `generate-scheme-io-capture: skipping
+test-driver generation for <table> -- ...` with a bare `print` to stderr.
+That never reaches the CAM-SIMA `atm.bldlog` (c03d, 2026-11-05:
+`micro_pumas_ccpp_dimensions_post` was captured but had no driver, with
+no message anywhere). Wanted: report it through `xdsl_ccpp.util.errors`
+(`warn_once`, so it carries the `xDSL-ccpp:` prefix and reaches the build
+log) and name the cause: which argument, and which dimension could not be
+resolved, or that nothing was captured.
+
 **ID: `scheme-io-capture-kinds-deps`. Resolved (2026-11-05, PR #193).** CHANGELOG.md L14012.
 
 **ID: `scheme-io-capture-log-unit`. Resolved (2026-11-05, PR #192).** CHANGELOG.md L13987.
@@ -2106,7 +2170,11 @@ Supporting items (not tracked elsewhere):
   (bit-for-bit); upstream PR to ESCOMP/atmospheric_physics. Check
   `calculate_net_heating` and the other rrtmgp utilities for the same
   pattern (done 2026-11-05: `calculate_net_heating` is fine; the other
-  findings are `rrtmgp-intent-out-unassigned`).
+  findings are `rrtmgp-intent-out-unassigned`). Status 2026-11-05: change
+  made in the submodule (uncommitted); the c03a recapture replays
+  `test_rrtmgp_dry_static_energy_tendency` cleanly (CPU). Still to do:
+  bit-for-bit rrtmgp `/cam-sima-test` (CPU + GPU pair), commit, upstream
+  PR.
 - `rrtmgp-intent-out-unassigned` — **atmospheric_physics: other RRTMGP
   schemes leave `intent(out)` arguments unassigned.** Audit of
   `schemes/rrtmgp/*.F90` and `utils/calculate_net_heating.F90`
