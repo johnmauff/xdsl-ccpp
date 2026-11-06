@@ -97,7 +97,6 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
 | `scheme-io-capture-real-kinds` | 1-2 days (accept `real` of a `kind_spec` kind equal to `kind_phys` in capture and drivers, declare it from `ccpp_kinds`; unit tests; recapture pumas) | XS-S |
-| `scheme-io-capture-uncaptured-phases` | 1 day (call uncompared phases with only error/log/scalar arguments in lifecycle order; unit + driver tests; no recapture) | XS |
 | `scheme-io-capture-skip-message` | 0.5 day (driver-skip notes through `xdsl_ccpp.util.errors`, naming the argument; unit test) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
@@ -1256,28 +1255,7 @@ module since `scheme-io-capture-kinds-deps`. If the kinds differ, the
 generic call fails to compile; a `kind_phys`-equality check in the driver
 (or separate procedures) would make that explicit. Then recapture pumas.
 
-**ID: `scheme-io-capture-uncaptured-phases`. A phase with nothing to
-capture is left out of the driver, even when later phases depend on it.**
-`_build_test_driver_params` returns None when no argument of a call is
-captured, so that phase gets no capture table and the driver
-(`_maybe_emit_test_driver`) never calls it. A phase that only sets module
-state is then skipped. Found 2026-11-05 on the c03d pumas replay:
-`clamp_number_concentrations_init` has only `errmsg`/`errflg`; it looks
-up the four number-concentration constituents (`ccpp_constituent_index`)
-and stores their indices in module variables. Without it the replay's
-indices stay -1, `_run` clamps nothing, and `const_q` fails by ~1.5e-11
-(values the model raised to `qmin = 1e-12`). The constituent table it
-needs is already restored (`scheme-io-capture-constituent-index-table`).
-
-Wanted: when a scheme is captured, include its phases that have no
-captured argument but whose arguments the driver can supply on its own
-(error arguments, the log unit, and scalars it can take from another
-phase's capture, e.g. `ncol`). Call each once in CCPP lifecycle order,
-with no comparison. A phase needing anything else is still skipped, with
-the reason reported (see `scheme-io-capture-skip-message`). No
-recapture is needed: the drivers are generated at case build, so
-regenerating the c03d drivers is enough. Check the other capture lists for
-schemes with argument-free init/timestep_init phases.
+**ID: `scheme-io-capture-uncaptured-phases`. Resolved (2026-11-05, PR #196).** CHANGELOG.md L14129.
 
 **ID: `scheme-io-capture-skip-message`. A skipped test driver is
 silent in CAM-SIMA builds.** When `_build_test_driver_params` returns None,
