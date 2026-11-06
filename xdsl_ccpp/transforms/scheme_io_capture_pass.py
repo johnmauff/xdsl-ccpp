@@ -834,13 +834,19 @@ class SchemeIOCapturePass(ModulePass):
             ):
                 self._maybe_emit_test_driver(self.scheme, captured_tables, setup_tables)
                 self._report_skipped(skipped)
-            elif skipped:
-                self._report_skipped(skipped, f"no test_{self.scheme}.F90 written")
-            elif captured_tables:
-                self._report_skipped({}, (
-                    f"no test_{self.scheme}.F90 written: its phases have nothing "
-                    f"captured, so there is nothing to compare"
-                ))
+            else:
+                # No driver: one an earlier generation wrote is stale (and
+                # would get a CMake fragment).
+                stale = os.path.join(self.test_driver_dir, f"test_{self.scheme}.F90")
+                if os.path.exists(stale):
+                    os.remove(stale)
+                if skipped:
+                    self._report_skipped(skipped, f"no test_{self.scheme}.F90 written")
+                elif captured_tables:
+                    self._report_skipped({}, (
+                        f"no test_{self.scheme}.F90 written: its phases have nothing "
+                        f"captured, so there is nothing to compare"
+                    ))
 
     def _report_skipped(self, skipped: dict, no_driver: "str | None" = None) -> None:
         """scheme-io-capture-skip-message: warn about each phase left out of

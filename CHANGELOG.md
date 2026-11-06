@@ -14393,3 +14393,67 @@ Verification: pytest 1428 passed; CAM-SIMA Python tests 57 passed. c03e
 `diffuse_tracers` (the last two: the phases without `coords1d`). The 3
 failures are the `hb_*` schemes (`scheme-io-capture-module-state-setup`).
 CI passed (PR #201).
+
+## `scheme-io-capture-module-state-setup`: capture drivers replay the init that sets the module state a scheme reads (PR #202, 2026-11-06)
+
+Resolves `scheme-io-capture-module-state-setup`. A scheme that reads
+module variables another scheme's init sets replayed against unset state:
+`hb_pbl_independent_coefficients`, `hb_pbl_dependent_coefficients` and
+`hb_diff_exchange_coefficients` read `holtslag_boville_diff`'s `ml2`,
+`ccon`, `npbl`, `ntop_turb`, `nbot_turb` (set by
+`holtslag_boville_diff_init`), and `pumas_post_main` reads
+`micro_pumas_utils`' `mg_liq_props`/`mg_ice_props` (set through
+`micro_pumas_ccpp_init`). Now the driver replays that init first.
+
+- `xdsl_ccpp/transforms/module_dependency_resolver.py`:
+  - The statement scanner records, per module, its variables (not
+    parameters, not derived-type components) and, per procedure, its
+    `use ... only` names (renames included), declarations, the
+    identifiers it mentions (not `%` components, not strings), the base
+    names it assigns (`_assigned_name`: `x(i)%y = `, `p => `, after a
+    one-line `if`) and those it passes to calls.
+  - `module_state_access`: the module variables an entry point and what
+    it reaches (calls, generic interfaces, function references) read,
+    assign or may set (assign or pass to a call); a local declaration
+    hides a module variable of the same name.
+- `xdsl_ccpp/tools/ccpp_dsl.py`:
+  - `_module_state_setters`: the variables a captured scheme's replayed
+    phases read and do not assign, and the register/initialize/
+    timestep-initial phases of the suite's other schemes that set them.
+  - `_plan_state_setup`, before the pass list: such a register or
+    initialize phase becomes a setup phase of the scheme's driver and is
+    captured (added to the setter's `--capture-scheme` entry, or captured
+    with `role=setup`, no driver of its own, when the setter is not
+    listed). A setter that reaches MPI, whose sources cannot be built, or
+    that runs every time step (`timestep_initial`, not reproduced) is
+    reported in `test_<scheme>.skipped` instead.
+  - The setter's sources join the scheme's fragment.
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: options `setup` and
+  `role`; the setter's call site becomes a setup table. A scheme that
+  gets no driver now removes an earlier generation's
+  `test_<scheme>.F90`, which had kept getting a CMake fragment and did
+  not compile (13 such drivers in c03e).
+- `xdsl_ccpp/transforms/capture_driver_ir.py`: a setup phase reads the
+  setter's captured inputs, calls it and checks `errflg`, compares
+  nothing; its arguments are separate locals (`setup<n>_<name>`).
+- `xdsl_ccpp/tools/capture_cmake.py`: the drivers link BLAS when CMake
+  finds it (nvhpc's `blas` otherwise), as CIME does: PUMAS's neural-net
+  module, in `micro_pumas_ccpp_init`'s sources, calls `dgemm`.
+- Tests: scanner facts, reads through renames and functions, shadowing,
+  assigns vs sets; end-to-end on the kessler example (a setup replayed
+  first with its own locals and sources, an unlisted setter captured
+  without a driver, a setter reaching MPI reported); stale driver
+  removed; BLAS in the CMake.
+
+Generation with `--capture-test-driver-dir` takes about 10 s longer
+(closures of the suite's other schemes); see
+`scheme-io-capture-generation-speed`.
+
+Verification: pytest 1435 passed. Recaptured c03e (F2000_C4, cam4 list)
+and c03d (pumas): c03e 30/30 on CPU and GPU (the three `hb_*` now pass);
+pumas 7/7 on CPU, 6/7 on GPU -- `pumas_post_main` now reaches PUMAS's
+`size_dist_param_basic_vect`, whose `present(qic)` the driver does not
+satisfy (`scheme-io-capture-callee-device-args`).
+`rrtmgp_sw_solar_var`'s setter (`rrtmgp_sw_solar_var_setup_init`) is
+detected but reported: its sources need `interpolate_data`.
+CI passed (PR #202).

@@ -66,6 +66,9 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "add_compile_options(-noacc)" in text
     # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
     assert "add_compile_definitions(USE_CONTIGUOUS=)" in text
+    # BLAS (PUMAS's neural net calls dgemm), optional: never a configure error.
+    assert "find_package(BLAS QUIET)" in text
+    assert "target_link_libraries(ccpp_capture_support PUBLIC ${BLAS_LIBRARIES})" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
 

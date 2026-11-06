@@ -1088,3 +1088,18 @@ def test_phase_with_an_unrecorded_derived_type_argument_is_left_out():
                       "which the capture does not record (scheme-io-capture-ddt-args)")
     params, reason = _build_test_driver_params(["t"], args, set())
     assert [p.name for p in params] == ["t"] and reason == ""
+
+
+def test_no_driver_removes_an_earlier_generations_driver(run_host_match, ccpp_context, tmp_path):
+    # A scheme that now gets no driver (here: nothing resolvable to replay)
+    # must not keep an older test_<scheme>.F90, which would get a fragment.
+    stale = tmp_path / "test_test_io_capture_scheme.F90"
+    stale.write_text("! from an earlier generation\n")
+    module = run_host_match(scheme_metas=[_SCHEME_META], host_metas=[_HOST_META],
+                            suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme", phase="register",
+                        test_driver_dir=str(tmp_path)).apply(ccpp_context, module)
+    assert not stale.exists()
