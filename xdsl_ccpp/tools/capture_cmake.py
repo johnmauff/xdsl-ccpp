@@ -125,6 +125,10 @@ endif()
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   add_compile_options(-Mnofma)
 endif()
+# CIME defines USE_CONTIGUOUS on every compile (cime/CIME/Tools/Makefile):
+# "contiguous," where HAS_F2008_CONTIGUOUS, empty for gnu, intel and nvhpc;
+# CAM's to_be_ccppized/coords_1d.F90 and others use it in declarations.
+add_compile_definitions(USE_CONTIGUOUS=)
 if(OPENACC)
   separate_arguments(_acc_flags UNIX_COMMAND "${{CCPP_CAPTURE_ACC_FLAGS}}")
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
@@ -375,13 +379,25 @@ def kinds_sources(module) -> "tuple[list, list]":
     return sources, missing
 
 
+# Stand-ins for CESM share modules that need ESMF (framework_src/
+# capture_stubs/, scheme-io-capture-share-code): only what the physics
+# schemes' sources use, with the real interfaces. In the support library,
+# so their modules are provided and the real ones never looked for.
+_SHARE_STUB_FILES = (
+    "shr_log_mod.F90",
+    "shr_sys_mod.F90",
+)
+
+
 def support_sources(kinds_path: str, kind_module_sources=()) -> list:
     """The support library's sources: the kind modules the generated
     ccpp_kinds.F90 uses (*kind_module_sources*, see kinds_sources), the
-    generated ccpp_kinds.F90 and xdsl_ccpp's framework and capture runtime
-    files."""
+    generated ccpp_kinds.F90, xdsl_ccpp's framework and capture runtime
+    files and the share-code stubs."""
     return (list(kind_module_sources) + [kinds_path]
-            + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES])
+            + [os.path.join(_FRAMEWORK_SRC_DIR, name) for name in _SUPPORT_FILES]
+            + [os.path.join(_FRAMEWORK_SRC_DIR, "capture_stubs", name)
+               for name in _SHARE_STUB_FILES])
 
 
 # Modules the capture build supplies besides the support library's: the

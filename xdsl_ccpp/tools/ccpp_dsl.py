@@ -365,6 +365,17 @@ class ccppMain:
                  "ctest --test-dir build.",
         )
         parser.add_argument(
+            "--capture-source-root",
+            action="append",
+            default=[],
+            metavar="DIR",
+            help="Only meaningful together with --capture-test-driver-dir: "
+                 "another source tree (e.g. CESM share code's share/src) "
+                 "searched for the modules a captured scheme uses, after the "
+                 "scheme's own repository. May be repeated; its files are "
+                 "named by absolute path in the drivers' CMake build.",
+        )
+        parser.add_argument(
             "--capture-label",
             default=None,
             metavar="LABEL",
@@ -592,6 +603,13 @@ class ccppMain:
         options_db["capture_scheme"] = _capture_entries(
             options_db.get("capture_scheme") or [], options_db["scheme_files"],
         )
+        options_db["capture_source_root"] = [
+            os.path.abspath(p) for p in coerce_list_option(
+                options_db.get("capture_source_root") or []) if p
+        ]
+        for root in options_db["capture_source_root"]:
+            if not os.path.isdir(root):
+                raise ValueError(f"--capture-source-root '{root}' is not a directory")
         options_db["jobs"] = int(options_db.get("jobs") or 1)
         if options_db["jobs"] < 1:
             raise ValueError("--jobs must be at least 1")
@@ -1551,14 +1569,17 @@ class ccppMain:
         a compile without -D sees, so `#if 0` code never counts). A module
         defined in several files there is looked for among the files the
         build compiles: every table's metadata `dependencies` in the
-        frontend *module* (scheme-io-capture-rte-kernel-variants)."""
+        frontend *module* (scheme-io-capture-rte-kernel-variants). A
+        module found nowhere there is looked for under each
+        --capture-source-root in turn (scheme-io-capture-share-code)."""
         from xdsl_ccpp.tools.capture_cmake import listed_dependency_paths, scheme_source_root
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
         from xdsl_ccpp.transforms.module_dependency_resolver import source_closure
 
         preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
         return source_closure(files, scheme_source_root(files[0]), provided, preproc_defs,
-                              listed=listed_dependency_paths(module))
+                              listed=listed_dependency_paths(module),
+                              extra_roots=self.options_db.get("capture_source_root") or ())
 
     def _drop_mpi_capture_phases(self, mlir_file: str) -> None:
         """scheme-io-capture-host-module-schemes: a phase whose entry point
@@ -1648,12 +1669,14 @@ class ccppMain:
     @classmethod
     def _report_driver_not_built(cls, driver_dir: str, scheme: str, unresolved: dict) -> None:
         """Warn that test_<scheme>.F90 gets no build, naming the modules
-        neither the scheme's repository nor the support library provides,
-        and add that to test_<scheme>.skipped."""
+        the capture build cannot supply (from the scheme's repository, a
+        --capture-source-root or the support library) and why, and add
+        that to test_<scheme>.skipped."""
         needs = ", ".join(f"{name} ({why})" for name, why in sorted(unresolved.items()))
         reason = (
-            f"test_{scheme}.F90 is not built: it needs modules found neither in "
-            f"the scheme's repository nor in the capture support library: {needs}"
+            f"test_{scheme}.F90 is not built: it needs modules the capture build "
+            f"cannot supply (searched: the scheme's repository, any "
+            f"--capture-source-root, the capture support library): {needs}"
         )
         warn_once(f"scheme I/O capture: {scheme}: {reason}")
         cls._append_skipped(driver_dir, scheme, reason)

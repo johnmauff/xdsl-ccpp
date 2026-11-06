@@ -423,3 +423,32 @@ def test_closure_reports_two_needed_files_defining_one_module(tmp_path):
     assert closure.unresolved == {
         "mo_k": "defined in kernels/mo_k.F90, kernels/api/mo_k.F90, all needed by the scheme"
     }
+
+
+# ── scheme-io-capture-share-code: other source trees ───────────────────────
+
+def test_closure_looks_in_extra_roots_after_the_repository(tmp_path):
+    root, scheme = _repo(tmp_path)
+    share = tmp_path / "share"
+    kind = _write(share / "shr_kind_mod.F90", "module shr_kind_mod\nend module\n")
+    # A copy of a repository module there never wins over the repository's.
+    _write(share / "util_a.F90", "module util_a\nend module\n")
+    _write(tmp_path / "repo" / "utils" / "c.F90", "module util_c\n  use shr_kind_mod\nend module\n")
+    _write(tmp_path / "repo" / "utils" / "util_a.F90",
+           "module util_a\n  use util_b\n  use util_c\nend module\n")
+    closure = source_closure([scheme], root, provided={"ccpp_kinds", "host_only"},
+                             extra_roots=[str(share)])
+    assert closure.unresolved == {}
+    assert kind in closure.sources
+    assert os.path.join(root, "utils", "util_a.F90") in closure.sources
+    assert os.path.join(str(share), "util_a.F90") not in closure.sources
+
+
+def test_closure_reports_what_an_extra_root_module_still_needs(tmp_path):
+    root, scheme = _repo(tmp_path)
+    share = tmp_path / "share"
+    _write(share / "shr_log_mod.F90", "module shr_log_mod\n  use esmf\nend module\n")
+    _write(tmp_path / "repo" / "utils" / "util_a.F90", "module util_a\n  use shr_log_mod\nend module\n")
+    closure = source_closure([scheme], root, provided={"ccpp_kinds", "host_only"},
+                             extra_roots=[str(share)])
+    assert closure.unresolved == {"esmf": "used by shr_log_mod.F90"}
