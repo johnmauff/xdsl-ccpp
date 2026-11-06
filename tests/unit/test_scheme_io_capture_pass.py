@@ -840,3 +840,90 @@ def test_constituent_table_capture_guarded_by_host_mpi_root_flag(run_host_match,
 def test_no_constituent_table_capture_when_nothing_is_captured(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="nonexistent_scheme")
     assert "ccpp_constituents" not in fortran
+
+
+# scheme-io-capture-uncaptured-phases: the init table with nothing to
+# capture -- only errmsg/errflg (clamp_number_concentrations_init).
+_INIT_IN_VAR = """[ in_var ]
+  standard_name = test_capture_in_var
+  units = K
+  type = real | kind = kind_phys
+  dimensions = ()
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+_INIT_TABLE_HEAD = "  name = test_io_capture_scheme_init\n  type = scheme\n"
+
+
+def _driver_with_init(run_host_match, ccpp_context, tmp_path, init_args: str, phase: str = ""):
+    """Write the driver for _SCHEME_META with its init table's arguments
+    replaced by *init_args*; returns (cap Fortran, driver text or None)."""
+    head, init = _SCHEME_META.split(_INIT_TABLE_HEAD)
+    assert init == _INIT_IN_VAR.format(CCPP_MANDATORY_ARGS=CCPP_MANDATORY_ARGS)
+    meta = head + _INIT_TABLE_HEAD + init_args
+    module = run_host_match(scheme_metas=[meta], host_metas=[_HOST_META], suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", phase=phase, test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    path = tmp_path / "test_test_io_capture_scheme.F90"
+    return out.getvalue(), (path.read_text() if path.exists() else None)
+
+
+def test_uncaptured_init_is_called_once_before_the_run_replay(run_host_match, ccpp_context, tmp_path):
+    """An init with only errmsg/errflg has nothing captured, but the run
+    phase may read module state it sets: the driver calls it once, first,
+    with no capture file and no compare; errflg is still checked."""
+    fortran, driver = _driver_with_init(run_host_match, ccpp_context, tmp_path, CCPP_MANDATORY_ARGS)
+    assert "ccpp_capture_begin('test_io_capture_scheme_init'" not in fortran
+    assert driver is not None
+    init_call = driver.index("  call test_io_capture_scheme_init(")
+    assert "! -- test_io_capture_scheme_init (nothing captured: called once, not compared) --" in driver
+    assert 'ccpp_capture_open_call("test_io_capture_scheme_init"' not in driver
+    assert init_call < driver.index('ccpp_capture_open_call("test_io_capture_scheme_run"')
+    after_init = driver[init_call:driver.index("  ! -- test_io_capture_scheme_run --")]
+    assert "if (errflg /= 0) then" in after_init
+    assert "n_failed = n_failed + 1" in after_init
+    assert "use test_io_capture_scheme, only: test_io_capture_scheme_init" in driver
+
+
+def test_uncaptured_phase_needing_other_arguments_is_left_out(run_host_match, ccpp_context, tmp_path):
+    """An init with nothing captured but an argument the driver cannot
+    supply (here a real of another kind) is still skipped."""
+    other_kind = """[ other_var ]
+  standard_name = test_capture_other_kind_var
+  units = K
+  type = real | kind = kind_other
+  dimensions = ()
+  intent = in
+""" + CCPP_MANDATORY_ARGS
+    host = _HOST_META + """[ other_var ]
+  standard_name = test_capture_other_kind_var
+  units = K
+  type = real | kind = kind_other
+  dimensions = ()
+"""
+    head, _init = _SCHEME_META.split(_INIT_TABLE_HEAD)
+    module = run_host_match(scheme_metas=[head + _INIT_TABLE_HEAD + other_kind],
+                            host_metas=[host], suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+    driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
+    assert "test_io_capture_scheme_init" not in driver
+    assert 'ccpp_capture_open_call("test_io_capture_scheme_run"' in driver
+
+
+def test_no_driver_with_only_a_call_only_phase(run_host_match, ccpp_context, tmp_path):
+    """A driver needs a compared phase: capturing only an init with
+    nothing to capture writes no driver."""
+    _fortran, driver = _driver_with_init(run_host_match, ccpp_context, tmp_path,
+                                         CCPP_MANDATORY_ARGS, phase="initialize")
+    assert driver is None
