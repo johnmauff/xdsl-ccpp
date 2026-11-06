@@ -623,3 +623,17 @@ def test_capture_layout_of_flat_types_and_why_not(tmp_path):
         "component s of type mixed_t has kind sp, not kind_phys"
     assert capture_layout("other_t", facts)[1] == \
         "no definition of type other_t in the scheme's sources"
+
+
+def test_module_state_reads_follow_a_renamed_procedure(tmp_path):
+    # micro_pumas_v1: use wv_sat_methods, only: qsat_ice => wv_sat_qsat_ice_vect
+    lib = _write(tmp_path / "lib.F90", (
+        "module lib\n  real :: h2otrip\ncontains\n"
+        "  subroutine lib_svp(t)\n    real, intent(inout) :: t\n    t = t / h2otrip\n"
+        "  end subroutine lib_svp\nend module lib\n"))
+    user = _write(tmp_path / "user.F90", (
+        "module user\n  use lib, only: svp => lib_svp\ncontains\n"
+        "  subroutine user_run(t)\n    real, intent(inout) :: t\n    call svp(t)\n"
+        "  end subroutine user_run\nend module user\n"))
+    facts = [scan_fortran_source(lib), scan_fortran_source(user)]
+    assert module_state_access(facts, "user_run") == {("lib", "h2otrip"): "lib_svp"}

@@ -737,7 +737,7 @@ def module_state_access(file_facts, entry: str, kind: str = "reads") -> dict:
     USEs (through an ONLY list's local names); names it declares itself
     hide them. Calls are followed through CALL statements, generic
     interfaces and function references (a defined procedure's name among
-    the identifiers). scheme-io-capture-module-state-setup."""
+    the identifiers), also under a USE rename. scheme-io-capture-module-state-setup."""
     variables: dict = {}  # module -> its variables
     module_scopes: dict = {}
     by_name: dict = {}
@@ -776,7 +776,14 @@ def module_state_access(file_facts, entry: str, kind: str = "reads") -> dict:
             for local in sorted(names - scope.declared):
                 if local in visible:
                     found.setdefault(visible[local], scope.name)
-            queue.extend(sorted(scope.calls | (scope.refs & by_name.keys())))
+            # A procedure USEd under another name (qsat_ice =>
+            # wv_sat_qsat_ice_vect) is followed under its own.
+            renames = {local: remote
+                       for _module, only in scope.use_only + (
+                           module_scope.use_only if module_scope else ())
+                       for local, remote in (only or ())}
+            callees = {renames.get(name, name) for name in scope.calls | scope.refs}
+            queue.extend(sorted(callees & by_name.keys()))
     return found
 
 

@@ -98,6 +98,8 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-generated-stubs` | 2-3 days (imported procedures' interfaces from their source, stub module as IR with error-exit bodies, kinds through the closure, tests) | XS-S |
 | `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
 | `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
+| `wv-saturation-ccppize` | 4-8 days plus upstream review (atmospheric_physics: `wv_saturation` init as a CCPP scheme taking its constants and namelist through metadata, errmsg/errflg instead of `endrun`, no CAM host modules; bit-for-bit check; then recapture pumas and the `wv_saturation` users) | S-M |
+| `scheme-io-capture-mpi-reach-renames` | 0.5 day (follow USE-renamed procedures in `mpi_reach`, as `module_state_access` does; test; check which captured phases it newly leaves out) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
@@ -1206,6 +1208,38 @@ holds them. Wanted: also take the `present`/`copy` clauses of the
 procedures the scheme reaches (the closure's call graph, as
 `mpi_reach`/`module_state_access` follow it), mapped back to the
 entry point's arguments.
+
+**ID: `wv-saturation-ccppize`. CCPP-ize `wv_saturation` (atmospheric_physics,
+upstream).** Added 2026-11-06 (from `scheme-io-capture-ddt-args`).
+`to_be_ccppized/wv_saturation.F90`'s `wv_sat_init`, called from the init
+of scheme `to_be_ccppized_temporary`, sets `wv_sat_methods`' private
+module constants (`tmelt`, `h2otrip`, `tboil`, `ttrice`, `epsilo`,
+`omeps`) through `wv_sat_methods_init`, taking them from CAM host modules
+(`physconst`) and reading its own namelist (`namelist_utils`,
+`spmd_utils`, `cam_logfile`, `cam_abortutils`). A capture replay cannot
+run that setup: the variables are private (not capturable) and the
+setter's sources need host modules. So `test_micro_pumas_ccpp` (c03d,
+kept on the pumas list as a reminder) replays with `h2otrip` unset:
+PUMAS's `qsat_ice` (`wv_sat_qsat_ice_vect` -> `GoffGratch_svp_ice_vect`)
+divides by it, NaNs spread through the microphysics, and most outputs
+fail; `test_micro_pumas_ccpp.skipped` names the setter and the missing
+modules. Wanted (atmospheric_physics PR): an init scheme for
+`wv_saturation` (or `wv_sat_methods`) whose `.meta` takes the constants
+and the namelist settings as arguments, reports errors through
+errmsg/errflg, and uses no CAM host modules; `to_be_ccppized_temporary`
+then goes away. The capture's module-state setup then replays it before
+`micro_pumas_ccpp`, and the drivers blocked by `wv_saturation` (the ~14
+capture-list schemes that need CAM modules through it, e.g.
+`hack_convect_shallow`) can build. Related: `gpu-port-wv-saturation`
+(device `qsat`), which touches the same module.
+
+**ID: `scheme-io-capture-mpi-reach-renames`. The MPI check does not follow
+renamed procedures.** Added 2026-11-06. `mpi_reach` follows calls by
+procedure name only; a procedure USEd under another name (`use m, only:
+local => remote`) is not followed, so an MPI call behind one is missed
+and its phase captured. `module_state_access` resolves the renames
+since `scheme-io-capture-ddt-args` (the `qsat_ice` case); do the same in
+`mpi_reach` and check which captured phases it newly leaves out.
 
 **ID: `scheme-io-capture-generation-speed`. Capture driver generation is
 serial.** Added 2026-11-06. With `--capture-test-driver-dir`, the
