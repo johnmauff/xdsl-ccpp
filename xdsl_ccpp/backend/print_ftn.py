@@ -263,6 +263,19 @@ class TestDriverParam:
     type_module: "str | None" = None
 
 
+# Categories of the arguments a test driver supplies itself, with nothing
+# to read from a capture file.
+_DRIVER_SUPPLIED_CATEGORIES = frozenset({"error_arg", "log_unit"})
+
+
+def is_call_only_phase(params: "list[TestDriverParam]") -> bool:
+    """Whether a phase is replayed as a plain call (scheme-io-capture-
+    uncaptured-phases): nothing of it was captured and every argument is
+    one the driver supplies itself, e.g. an `_init` with only errmsg/errflg
+    that sets module state a later phase reads."""
+    return all(p.category in _DRIVER_SUPPLIED_CATEGORIES for p in params)
+
+
 # The test driver's local name for iso_fortran_env's output_unit (renamed on
 # import so it cannot clash with a scheme argument called output_unit).
 _DRIVER_LOG_UNIT = "ccpp_driver_output_unit"
@@ -409,6 +422,10 @@ def _render_test_driver_phase_block(
     allocated once up front): a real scheme's own column count can
     legitimately differ from one captured call to the next (different
     chunks), so each iteration must be free to reallocate.
+
+    A call-only phase (is_call_only_phase: nothing captured, every
+    argument supplied by the driver) has no capture file: it is called
+    once, with no loop, read or compare; a nonzero errflg is still a FAIL.
     """
     decls: list[str] = []
     allocates: list[str] = []
@@ -555,6 +572,24 @@ def _render_test_driver_phase_block(
                     "diag_first_mismatch_index"
                 )
 
+    errflg_check = []
+    if errflg_param is not None:
+        errflg_check = [
+            f"if ({errflg_param} /= 0) then",
+            f"  write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}, "
+            "' (call ', call_count, ')'"
+            + (f", ' errmsg=', trim({errmsg_param})" if errmsg_param else ""),
+            "  n_failed = n_failed + 1",
+            "end if",
+        ]
+
+    if is_call_only_phase(params):
+        body = [f"  ! -- {table_name} (nothing captured: called once, not compared) --"]
+        body += [f"  {r}" for r in scalar_before_reads]
+        body += ["  call_count = 1", f"  call {table_name}({', '.join(call_kwargs)})"]
+        body += [f"  {line}" for line in errflg_check]
+        return decls, body
+
     enter_data_line = (
         _render_driver_enter_data(directive, enter_copyin, enter_create) if directive else None
     )
@@ -582,16 +617,8 @@ def _render_test_driver_phase_block(
     if enter_data_line is not None:
         body += [f"    {enter_data_line}"]
     body += ["", f"    call {table_name}({', '.join(call_kwargs)})", ""]
-    if errflg_param is not None:
-        body += [
-            f"    if ({errflg_param} /= 0) then",
-            f"      write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}, "
-            "' (call ', call_count, ')'"
-            + (f", ' errmsg=', trim({errmsg_param})" if errmsg_param else ""),
-            "      n_failed = n_failed + 1",
-            "    end if",
-            "",
-        ]
+    if errflg_check:
+        body += [f"    {line}" for line in errflg_check] + [""]
     # The exit-data directive comes first of all here, before any
     # after/compare step -- it's what actually brings a device-resident
     # out/inout array's real, scheme-computed result back into the host

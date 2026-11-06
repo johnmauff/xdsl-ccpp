@@ -147,6 +147,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.backend.print_ftn import (
     TestDriverParam,
     format_fortran_real_literal,
+    is_call_only_phase,
     render_scheme_io_capture_test_driver,
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
@@ -491,9 +492,12 @@ def _build_test_driver_params(
     interpretation (intent, optionality, dim_names resolution) happens
     here, not in the printer. Returns None (caller skips emission, logs a
     note) if any array argument's dimensions can't be resolved, or if
-    nothing in this call site is actually captured (a driver with no
-    fixture-backed comparison would be a no-op test, not a regression
-    test).
+    nothing in this call site is captured and it needs an argument the
+    driver cannot supply itself. A phase with nothing captured whose
+    arguments are all driver-supplied (errmsg/errflg, the log unit) is
+    returned as a call-only phase (print_ftn.is_call_only_phase,
+    scheme-io-capture-uncaptured-phases): e.g. an `_init` that only sets
+    module state the `_run` replay reads.
 
     `device_names` (scheme-io-capture-gpu-residency) is the identical
     cap_shared._device_arg_names lookup apply()'s own per-argument loop
@@ -544,7 +548,7 @@ def _build_test_driver_params(
             type_module=handler.type_module if handler else None,
         ))
 
-    if not any_captured:
+    if not any_captured and not is_call_only_phase(params):
         return None
     return params
 
@@ -714,7 +718,8 @@ class SchemeIOCapturePass(ModulePass):
                     print(
                         f"generate-scheme-io-capture: skipping test-driver generation "
                         f"for {table_name} -- could not resolve one or more array "
-                        f"dimensions, or nothing in this call site was actually captured.",
+                        f"dimensions, or nothing in this call site was captured and it "
+                        f"needs arguments the driver cannot supply.",
                         file=sys.stderr,
                     )
                 else:
@@ -724,7 +729,11 @@ class SchemeIOCapturePass(ModulePass):
         if captured_any:
             self._capture_constituent_table(op, mpi_root_ref, declared_decls)
 
-        if self.test_driver_dir and captured_tables:
+        # A driver needs at least one compared phase; call-only phases
+        # (scheme-io-capture-uncaptured-phases) only set up for those.
+        if self.test_driver_dir and any(
+            not is_call_only_phase(params) for _phase, params, _module in captured_tables.values()
+        ):
             self._maybe_emit_test_driver(self.scheme, captured_tables)
 
     def _capture_constituent_table(self, op, mpi_root_ref, declared_decls: set) -> None:

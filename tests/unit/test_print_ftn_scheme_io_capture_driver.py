@@ -459,3 +459,29 @@ def test_driver_restores_the_constituent_table_before_replaying():
     assert source.count("call ccpp_capture_restore_constituents()") == 1
     restore = source.index("call ccpp_capture_restore_constituents()")
     assert restore < source.index('ccpp_capture_open_call("s_init"')
+
+
+def test_call_only_phase_called_once_before_the_compared_phase():
+    """scheme-io-capture-uncaptured-phases: a phase whose arguments are all
+    driver-supplied (error arguments, the log unit) has no capture file;
+    it is called once, in order, with no read or compare."""
+    init = [
+        TestDriverParam("iulog", "log_unit", "integer", None, 0),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    run = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "s", [("s_init", init, "s"), ("s_run", run, "s")], _TOLERANCE,
+    )
+    init_call = source.index("  call s_init(iulog=iulog, errmsg=errmsg, errflg=errflg)")
+    assert source.index("iulog = ccpp_driver_output_unit") < init_call
+    assert init_call < source.index('ccpp_capture_open_call("s_run"')
+    assert 'ccpp_capture_open_call("s_init"' not in source
+    assert "FAIL: s_init returned errflg=" in source
+    # errmsg/errflg declared once, shared by both phases.
+    assert source.count("integer :: errflg") == 1

@@ -14125,3 +14125,34 @@ are updated locally (uncommitted).
 
 Verification: pytest 1385 passed; Fortran constituents test ALL TESTS
 PASSED (nvfortran); c03a replay `test_rrtmgp_constituents` passes.
+
+## `scheme-io-capture-uncaptured-phases`: drivers call phases with nothing captured (PR #196, 2026-11-05)
+
+Resolves `scheme-io-capture-uncaptured-phases`. A phase with no captured
+argument got no capture table, so the generated test driver never called
+it, even when a later phase reads module state it sets. c03d pumas:
+`clamp_number_concentrations_init` (only `errmsg`/`errflg`) looks up the
+number-concentration constituents and stores their indices; without it
+the replay's indices stayed -1, `_run` clamped nothing, and `const_q`
+failed by ~1.5e-11.
+
+- `xdsl_ccpp/backend/print_ftn.py`: `is_call_only_phase(params)` (every
+  argument driver-supplied: error arguments, the log unit). Such a phase
+  is called once, in lifecycle order after
+  `ccpp_capture_restore_constituents()`, with no capture file, read or
+  compare; a nonzero errflg is still a FAIL.
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`:
+  `_build_test_driver_params` returns call-only phases instead of None; a
+  phase with nothing captured that needs any other argument is still
+  skipped; a driver is written only when some phase is compared.
+- Tests: three pass tests (errmsg/errflg-only init called before the run
+  replay; init needing another argument left out; no driver from a
+  call-only phase alone) and one printer test (call-only phase with the
+  log unit).
+- Not done: scalars a call-only phase could take from another phase's
+  capture (e.g. `ncol`); no scheme needing it has turned up.
+
+Verification: pytest 1389 passed; CI passed (PR #196); c03d pumas drivers
+regenerated (case rebuilt after removing `bld/atm/obj/cam_build_cache.xml`
+-- CAM-SIMA does not regenerate after an xdsl-ccpp-only change):
+`test_clamp_number_concentrations` passes (CPU), no recapture.
