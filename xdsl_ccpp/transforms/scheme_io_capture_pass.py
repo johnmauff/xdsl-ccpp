@@ -134,7 +134,6 @@ those are CallStatementOps in the generated cap's own IR tree.)
 import functools
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
 
 from xdsl.context import Context
@@ -172,6 +171,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
+from xdsl_ccpp.util.errors import warn_once
 
 # Default absolute tolerance used by every generated driver's real-valued
 # comparisons, when --capture-tolerance isn't given (scheme-io-capture-
@@ -485,15 +485,16 @@ def _enclosing_module(op) -> "builtin.ModuleOp | None":
 
 def _build_test_driver_params(
     param_names: list, args_by_name: dict, device_names: "set[str]",
-) -> "list[TestDriverParam] | None":
+) -> "tuple[list[TestDriverParam] | None, str]":
     """Resolve CCPP metadata for one real scheme call site into the
     plain, Fortran-agnostic TestDriverParam list print_ftn.py's
     render_scheme_io_capture_test_driver needs -- all CCPP-specific
     interpretation (intent, optionality, dim_names resolution) happens
-    here, not in the printer. Returns None (caller skips emission, logs a
-    note) if any array argument's dimensions can't be resolved, or if
-    nothing in this call site is captured and it needs an argument the
-    driver cannot supply itself. A phase with nothing captured whose
+    here, not in the printer. Returns (params, ""), or (None, reason) --
+    the caller skips this phase and reports the reason
+    (scheme-io-capture-skip-message) -- if an uncaptured array argument's
+    dimensions can't be resolved, or if nothing in this call site is
+    captured and it needs an argument the driver cannot supply itself. A phase with nothing captured whose
     arguments are all driver-supplied (errmsg/errflg, the log unit) is
     returned as a call-only phase (print_ftn.is_call_only_phase,
     scheme-io-capture-uncaptured-phases): e.g. an `_init` that only sets
@@ -518,7 +519,7 @@ def _build_test_driver_params(
     for pname in param_names:
         arg = args_by_name.get(pname)
         if arg is None:
-            return None
+            return None, f"argument '{pname}' has no metadata"
         category = _driver_param_category(arg)
         if category == "optional":
             continue
@@ -534,7 +535,7 @@ def _build_test_driver_params(
         if category == "unverified" and rank > 0:
             dims = _resolve_array_dims(arg, std_name_to_param)
             if dims is None:
-                return None
+                return None, _unresolved_dims_reason(pname, arg, std_name_to_param)
         handler = _ddt_capture(arg)
 
         if category in ("in", "out", "inout"):
@@ -549,8 +550,41 @@ def _build_test_driver_params(
         ))
 
     if not any_captured and not is_call_only_phase(params):
-        return None
-    return params
+        needed = next(p for p in params if p.category not in ("error_arg", "log_unit"))
+        return None, (
+            f"nothing in it is captured, and the driver cannot supply argument "
+            f"'{needed.name}' ({_type_text(args_by_name[needed.name])})"
+        )
+    return params, ""
+
+
+def _type_text(arg) -> str:
+    """An argument's metadata type for a message, e.g. `real, kind
+    pumas_r8, rank 2`."""
+    parts = [_attr_text(arg, "type") or "unknown type"]
+    if _attr_text(arg, "kind"):
+        parts.append(f"kind {_attr_text(arg, 'kind')}")
+    rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+    if rank:
+        parts.append(f"rank {rank}")
+    return ", ".join(parts)
+
+
+def _unresolved_dims_reason(pname: str, arg, std_name_to_param: dict) -> str:
+    """Why _resolve_array_dims failed for an uncaptured array argument."""
+    names = [n.strip() for n in arg.getAttr("dim_names")] if arg.hasAttr("dim_names") else []
+    missing = [
+        n for n in names
+        if std_name_to_param.get(n.split(":")[-1].strip()) is None
+    ]
+    where = (
+        f"its dimension '{missing[0]}' is not an argument of the call"
+        if missing else "its dimensions are unknown"
+    )
+    return (
+        f"argument '{pname}' ({_type_text(arg)}) is outside the capture's type "
+        f"scope, so the driver must size it from the other arguments, but {where}"
+    )
 
 
 @dataclass(frozen=True)
@@ -639,6 +673,8 @@ class SchemeIOCapturePass(ModulePass):
         # outright wrong (e.g. kessler_run depends on module state only
         # kessler_init, a separate phase, sets).
         captured_tables: dict = {}
+        # {table_name: reason} for phases left out of the driver.
+        skipped: dict = {}
         captured_any = False
 
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
@@ -713,15 +749,11 @@ class SchemeIOCapturePass(ModulePass):
                 driver_device = device_names | {
                     p for p in param_names if p.lower() in self._driver_device_names(table_name)
                 }
-                params = _build_test_driver_params(param_names, args_by_name, driver_device)
+                params, reason = _build_test_driver_params(
+                    param_names, args_by_name, driver_device,
+                )
                 if params is None:
-                    print(
-                        f"generate-scheme-io-capture: skipping test-driver generation "
-                        f"for {table_name} -- could not resolve one or more array "
-                        f"dimensions, or nothing in this call site was captured and it "
-                        f"needs arguments the driver cannot supply.",
-                        file=sys.stderr,
-                    )
+                    skipped[table_name] = reason
                 else:
                     module = _callee_module(call_op, table_name, scheme_name)
                     captured_tables[table_name] = (phase, params, module)
@@ -731,10 +763,47 @@ class SchemeIOCapturePass(ModulePass):
 
         # A driver needs at least one compared phase; call-only phases
         # (scheme-io-capture-uncaptured-phases) only set up for those.
-        if self.test_driver_dir and any(
-            not is_call_only_phase(params) for _phase, params, _module in captured_tables.values()
-        ):
-            self._maybe_emit_test_driver(self.scheme, captured_tables)
+        if self.test_driver_dir:
+            if any(
+                not is_call_only_phase(params)
+                for _phase, params, _module in captured_tables.values()
+            ):
+                self._maybe_emit_test_driver(self.scheme, captured_tables)
+                self._report_skipped(skipped)
+            elif skipped:
+                self._report_skipped(skipped, f"no test_{self.scheme}.F90 written")
+            elif captured_tables:
+                self._report_skipped({}, (
+                    f"no test_{self.scheme}.F90 written: its phases have nothing "
+                    f"captured, so there is nothing to compare"
+                ))
+
+    def _report_skipped(self, skipped: dict, no_driver: "str | None" = None) -> None:
+        """scheme-io-capture-skip-message: warn about each phase left out of
+        the test driver, and list them in test_<scheme>.skipped next to the
+        drivers (removed when nothing is skipped). The file is what the user
+        sees: in CAM-SIMA the warnings appear only in the case.build output
+        (generation runs in buildnml), not in atm.bldlog. *no_driver* says
+        why no driver was written at all."""
+        path = os.path.join(self.test_driver_dir, f"test_{self.scheme}.skipped")
+        if not skipped and no_driver is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        lines = []
+        for table_name, reason in skipped.items():
+            warn_once(f"scheme I/O capture: {table_name} left out of the test driver: {reason}")
+            lines.append(f"{table_name}: {reason}")
+        if no_driver is not None:
+            warn_once(f"scheme I/O capture: {self.scheme}: {no_driver}")
+            lines.append(f"{self.scheme}: {no_driver}")
+        os.makedirs(self.test_driver_dir, exist_ok=True)
+        with open(path, "w") as f:
+            f.write(
+                f"# Generated by xdsl_ccpp: phases of {self.scheme} left out of "
+                f"test_{self.scheme}.F90, and why.\n"
+            )
+            f.write("\n".join(lines) + "\n")
 
     def _capture_constituent_table(self, op, mpi_root_ref, declared_decls: set) -> None:
         """Capture the host cap's constituent-properties array once, right
