@@ -452,3 +452,59 @@ def test_a_scheme_using_mpi_is_not_captured(tmp_path):
     ]
     report = (drivers / "test_kessler_update.skipped").read_text()
     assert "kessler_update: not captured: it uses MPI (kessler_update.F90 has include 'mpif.h')" in report
+
+
+def _kessler_repo(tmp_path, kessler_use: str, update_use: str):
+    """examples/kessler's schemes in a repository of their own (a .git
+    marks its root) with a utility module, kessler.F90 and
+    kessler_update.F90 each given one more USE statement."""
+    repo = tmp_path / "repo"
+    scheme = _kessler_without_memory_space(repo)
+    (repo / ".git").mkdir()
+    (repo / "utils").mkdir()
+    (repo / "utils" / "kessler_util.F90").write_text(
+        "module kessler_util\n  use shared_consts\nend module kessler_util\n")
+    (repo / "utils" / "consts.F90").write_text(
+        "module shared_consts\n  use ccpp_kinds\n  use netcdf\nend module shared_consts\n")
+    for name, use in (("kessler.F90", kessler_use), ("kessler_update.F90", update_use)):
+        source = (scheme / name).read_text()
+        first_use = "   use ccpp_kinds, only:"
+        assert first_use in source
+        (scheme / name).write_text(source.replace(first_use, f"   use {use}\n{first_use}", 1))
+    return scheme
+
+
+def test_driver_builds_with_the_repository_modules_the_scheme_uses(tmp_path):
+    # scheme-io-capture-host-module-schemes B: kessler_util and, through it,
+    # shared_consts (in a file not named after it) join the fragment;
+    # ccpp_kinds and netcdf come from the build.
+    scheme = _kessler_repo(tmp_path, "kessler_util", "ccpp_kinds")
+    drivers, _ = _run_kessler_capture(tmp_path, scheme)
+    fragment = (drivers / "test_kessler.cmake").read_text()
+    assert '"${CCPP_CAPTURE_SCHEME_ROOT}/scheme/kessler.F90"' in fragment
+    assert '"${CCPP_CAPTURE_SCHEME_ROOT}/utils/kessler_util.F90"' in fragment
+    assert '"${CCPP_CAPTURE_SCHEME_ROOT}/utils/consts.F90"' in fragment
+    update = (drivers / "test_kessler_update.cmake").read_text()
+    assert "utils/" not in update
+    assert not (drivers / "test_kessler.skipped").exists()
+
+
+def test_driver_needing_a_host_module_is_not_built(tmp_path):
+    # scheme-io-capture-host-module-schemes A: a module found neither in
+    # the repository nor in the support library gets the driver no
+    # fragment (an earlier one is removed) and a report; the capture
+    # stays, and the other scheme's driver builds.
+    scheme = _kessler_repo(tmp_path, "kessler_util", "cam_history, only: history_out_field")
+    drivers = tmp_path / "drivers"
+    drivers.mkdir()
+    (drivers / "test_kessler_update.cmake").write_text("stale\n")
+    drivers, cap = _run_kessler_capture(tmp_path, scheme)
+
+    assert "ccpp_capture_begin('kessler_update_run'" in cap
+    assert (drivers / "test_kessler_update.F90").exists()
+    assert not (drivers / "test_kessler_update.cmake").exists()
+    assert (drivers / "test_kessler.cmake").exists()
+    report = (drivers / "test_kessler_update.skipped").read_text()
+    assert ("kessler_update: test_kessler_update.F90 is not built: it needs modules "
+            "found neither in the scheme's repository nor in the capture support "
+            "library: cam_history (used by kessler_update.F90)") in report
