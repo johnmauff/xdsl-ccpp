@@ -4,7 +4,8 @@
 ! and checks every property, plus an unset pointer left unset. Then the
 ! run's constituent table (scheme-io-capture-constituent-index-table):
 ! captured as table ccpp_constituents, restored into ccpp_scheme_utils, and
-! looked up by standard name, also after a later read of other properties.
+! looked up by standard name (case-insensitively), also after a later read
+! of other properties.
 !
 ! Run from this directory (compiler and netcdf-fortran as for
 ! test_ccpp_capture_mod.F90, e.g. `module load gcc netcdf`):
@@ -90,6 +91,8 @@ program test_ccpp_capture_constituents
   call check_index('ozone_volume_mixing_ratio', 2, 'table lookup')
   call check_index('water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water', 1, 'table lookup')
   call check_index('not_a_constituent', int_unassigned, 'table lookup')
+  ! Case-insensitive, as capgen's (rrtmgp asks for 'O2' and the table holds 'o2').
+  call check_index('Ozone_Volume_Mixing_Ratio', 2, 'table lookup, mixed case')
   ! A later read of a scheme's properties must not disturb the table.
   call ccpp_capture_open_call('const_table', 1, found)
   call ccpp_capture_read_constituents('in', 'cprops', rebuilt)

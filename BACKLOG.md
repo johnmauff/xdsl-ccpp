@@ -97,6 +97,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-host-module-schemes` | 3-5 days (A: scan `use` statements, skip host-model drivers with a message, 1-2 days; B: follow `use` within the scheme repository and add those sources, 2-3 days; unit tests for both) | S |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
+| `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
@@ -2104,7 +2105,50 @@ Supporting items (not tracked elsewhere):
   `schemes/rrtmgp/utils/rrtmgp_dry_static_energy_tendency.{F90,meta}`
   (bit-for-bit); upstream PR to ESCOMP/atmospheric_physics. Check
   `calculate_net_heating` and the other rrtmgp utilities for the same
-  pattern.
+  pattern (done 2026-11-05: `calculate_net_heating` is fine; the other
+  findings are `rrtmgp-intent-out-unassigned`).
+- `rrtmgp-intent-out-unassigned` — **atmospheric_physics: other RRTMGP
+  schemes leave `intent(out)` arguments unassigned.** Audit of
+  `schemes/rrtmgp/*.F90` and `utils/calculate_net_heating.F90`
+  (2026-11-05, while fixing `rrtmgp-dry-static-energy-intent-out`; all
+  are `intent = out` in the `.meta`). "Rad-step" = skipped when
+  `dosw`/`dolw` is false.
+  - Partial extent: `rrtmgp_sw_calculate_heating_rate_run` sets
+    `hrate_clrsky` only for `k = ktopcam..pver` and never zeroes it (the
+    LW scheme zeroes both arrays first).
+  - Early return before any assignment (rad-step):
+    `rrtmgp_sw_solar_var_run` `sfac` (`.not. dosw .or. nday == 0`);
+    `rrtmgp_sw_gas_optics_run` `toa_src_sw`; `rrtmgp_inputs_run` all 19
+    outputs (`.not. dosw .and. .not. dolw`), and its SW/LW derived types
+    are initialized only inside `if (dosw .and. nday > 0)` / `if (dolw)`;
+    `rrtmgp_lw_cloud_optics_run` all 5 outputs; `rrtmgp_sw_cloud_optics_run`
+    all 12 outputs; `rrtmgp_sw_mcica_subcol_gen_run` `cloud_sw` (only
+    inside `if (nday > 0 .and. dosw)`).
+  - Conditional (config): `rrtmgp_lw_rte_run` `lw_Ds` (only with
+    `doLWclrsky`/`use_lw_optimal_angles`); `rrtmgp_lw_cloud_optics_run`
+    `snow_lw_abs`/`grau_lw_abs` (only with `do_snow`/`do_graupel`, no
+    else); `rrtmgp_inputs_setup_init` `nextsw_cday` (not on the first
+    restart step).
+  - errmsg/errflg left unset: `rrtmgp_sw_cloud_optics_run` (never
+    initialized; on the `dosw` path `errflg` is read at L148 after
+    `get_liquid_optics_sw`, which sets it only when some `lamc > 0`),
+    `rrtmgp_sw_mcica_subcol_gen_run` (only on error branches),
+    `rrtmgp_sw_solar_var_setup_init` (only with `do_spectral_scaling`);
+    helper `gam_liquid_lw` returns early without setting them, feeding
+    `rrtmgp_lw_cloud_optics_run`'s check.
+  - Minor: `rrtmgp_constituents_register` `rrtmgp_dyn_consts` entries
+    after the first blank `rad_climate` name are never instantiated.
+  Why it matters: an `intent(out)` value is undefined on entry, so code
+  relying on the previous value is wrong by the standard; on the GPU the
+  intent-aware cap does not copy `intent(out)` data to the device
+  (`gpu-sync-intent-aware`), so a ported scheme would return stale
+  device data; a capture replay of such an argument compares undefined
+  values (and an `intent(out)` derived type's allocatable components are
+  deallocated on entry). Fix per case: `intent(inout)` where later
+  schemes rely on the kept value (rad-step outputs that persist), or
+  assign a value on every path; initialize errmsg/errflg at the top.
+  Decide case by case with the scheme owners (upstream PR to
+  ESCOMP/atmospheric_physics); check each change is bit-for-bit.
 - `gpu-port-rrtmgp-wrapper-schemes` — **atmospheric_physics: OpenACC
   ports of RRTMGP's 21 per-step CPU-only CCPP schemes** (see
   `gpu-port-scheme-checklist`: inputs/pre/post, cloud and aerosol

@@ -2,8 +2,11 @@
 ! examples/shared/ccpp_constituent_prop_mod.F90's own header comment for why
 ! this directory exists. Content unchanged from the copy previously
 ! duplicated in examples/advection and examples/constituents_dim.
+!
+! Names are matched case-insensitively, as capgen's ccpp_scheme_utils does
+! (schemes ask for e.g. 'O2' while the table holds 'o2').
 module ccpp_scheme_utils
-  use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t, int_unassigned
+  use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t, int_unassigned, to_lower
   implicit none
   private
   public :: ccpp_constituent_index, ccpp_constituent_indices
@@ -33,7 +36,7 @@ contains
     if (.not. allocated(lc_constituents)) return
     do i = 1, size(lc_constituents)
       call lc_constituents(i)%standard_name(lc_std_name)
-      if (trim(lc_std_name) == trim(std_name)) then
+      if (to_lower(trim(lc_std_name)) == to_lower(trim(std_name))) then
         cindex = i
         return
       end if
@@ -54,7 +57,7 @@ contains
     do k = 1, size(std_names)
       do i = 1, size(lc_constituents)
         call lc_constituents(i)%standard_name(lc_std_name)
-        if (trim(lc_std_name) == trim(std_names(k))) then
+        if (to_lower(trim(lc_std_name)) == to_lower(trim(std_names(k)))) then
           cindices(k) = i
           exit
         end if
