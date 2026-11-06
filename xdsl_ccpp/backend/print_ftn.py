@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import IO, cast
@@ -214,106 +212,10 @@ def _decl_fortran_type(op) -> str:
     return ftn
 
 
-# ---------------------------------------------------------------------
-# Scheme I/O capture -- generated test-driver rendering (scheme-io-capture
-# backlog item, PR 3). Deliberately standalone, not IR-driven like the
-# rest of this file: scheme_io_capture_pass.py builds one standalone
-# Fortran *program* per captured scheme call site (reads a fixture back,
-# calls the real scheme, compares), which is categorically different from
-# a generated cap's own module/subroutine structure this file's IR walk
-# otherwise renders -- there's no existing dialect for "an arbitrary local
-# scalar/array declaration in a standalone program," and building one
-# solely for this dev-tooling feature would be disproportionate to its
-# scope. What belongs here regardless, per this file's own role as the
-# one place that knows Fortran syntax: the actual text-rendering logic.
-# TestDriverParam is this function's plain, Fortran-agnostic input
-# contract -- scheme_io_capture_pass.py resolves CCPP metadata (intent,
-# optionality, dim_names) into these before calling in; nothing here
-# reads a CCPPArgument or any other CCPP-metadata type directly.
-@dataclass(frozen=True)
-class TestDriverParam:
-    """One real scheme-call keyword argument, already classified by CCPP
-    semantics (scheme_io_capture_pass.py's own _driver_param_category) --
-    "in"/"out"/"inout" (a real captured argument, fixture-backed),
-    "error_arg" (errmsg/errflg -- declared and passed, never compared),
-    "log_unit" (the host's log unit -- set to the driver's standard output
-    unit, passed, never read from the capture or compared), or
-    "unverified" (mandatory but outside the capture pass's v1 type scope
-    -- declared and passed so the call compiles, never compared). `dims`
-    is the resolved list of *other* local parameter names sizing this
-    argument (e.g. ["ncol", "nz"]) when rank > 0, else None. `is_device`
-    (scheme-io-capture-gpu-residency) mirrors the scheme's own
-    memory_space=device attribute for this argument (the same
-    cap_shared._device_arg_names lookup the real cap itself uses) --
-    drives whether the driver establishes/tears down a device copy of it
-    around the call; see _render_driver_enter_data/_render_driver_exit_data.
-    A captured array (in/out/inout) has no `dims`: the driver sizes it
-    from the capture file (ccpp_capture_extents).
-
-    A captured derived-type argument (scheme-io-capture-ddt-args) has
-    `ddt_read`, the procedure (in module `ddt_read_module`) that rebuilds
-    it from the capture file, and `type_module`, the module declaring its
-    type `arg_type`.
-    """
-
-    name: str
-    category: str
-    arg_type: "str | None"
-    kind: "str | None"
-    rank: int
-    dims: "list[str] | None" = None
-    is_device: bool = False
-    ddt_read: "str | None" = None
-    ddt_read_module: "str | None" = None
-    type_module: "str | None" = None
-
-
-# Categories of the arguments a test driver supplies itself, with nothing
-# to read from a capture file.
-_DRIVER_SUPPLIED_CATEGORIES = frozenset({"error_arg", "log_unit"})
-
-
-def is_call_only_phase(params: "list[TestDriverParam]") -> bool:
-    """Whether a phase is replayed as a plain call (scheme-io-capture-
-    uncaptured-phases): nothing of it was captured and every argument is
-    one the driver supplies itself, e.g. an `_init` with only errmsg/errflg
-    that sets module state a later phase reads."""
-    return all(p.category in _DRIVER_SUPPLIED_CATEGORIES for p in params)
-
-
-# The test driver's local name for iso_fortran_env's output_unit (renamed on
-# import so it cannot clash with a scheme argument called output_unit).
-_DRIVER_LOG_UNIT = "ccpp_driver_output_unit"
-
-
-def _test_driver_decl_type(arg_type: "str | None", kind: "str | None") -> str:
-    """Fortran declaration-prefix text (everything before ` :: name`) for
-    one TestDriverParam."""
-    if arg_type == "real":
-        return f"real(kind={kind or 'kind_phys'})"
-    if arg_type == "integer":
-        return "integer"
-    if arg_type == "logical":
-        return "logical"
-    if arg_type == "character":
-        length = "512"
-        if kind and "len" in kind:
-            raw = kind.split("=", 1)[1].strip()
-            if raw not in ("", "*"):
-                length = raw
-        return f"character(len={length})"
-    # Any other/DDT type should never actually reach here in practice --
-    # anything of a type this framework can't resolve would already have
-    # failed host-var matching earlier in the pipeline. Fall back to
-    # something that at least compiles; the driver simply won't verify it.
-    return "real(kind=kind_phys)"
-
-
 def format_fortran_real_literal(value: float, kind: str = "kind_phys") -> str:
     """Format a Python float as a safe, portable Fortran real(kind=`kind`)
-    literal -- used by scheme_io_capture_pass.py to turn a user-supplied
-    --capture-tolerance value into the generated test driver's own
-    `tolerance` PARAMETER (scheme-io-capture-tolerance-config). Always
+    literal -- how a real arith.ConstantOp with a `kind` attribute prints
+    (e.g. a capture test driver's default tolerance). Always
     includes an explicit decimal point: Python's own repr() of a small or
     large float (e.g. repr(1e-10) == '1e-10') omits one, and while a bare
     mantissa + exponent letter is technically unambiguous Fortran, adding
@@ -328,488 +230,6 @@ def format_fortran_real_literal(value: float, kind: str = "kind_phys") -> str:
         else:
             text = text[:e_idx] + ".0" + text[e_idx:]
     return f"{text}_{kind}"
-
-
-def _render_driver_enter_data(directive: str, copyin_names: "list[str]", create_names: "list[str]") -> "str | None":
-    """One `!$acc enter data`/`!$omp target enter data` line establishing
-    device residency for this phase's own memory_space=device arguments,
-    for scheme-io-capture-gpu-residency -- a generated test driver is a
-    standalone program with no surrounding suite-level device residency
-    to rely on (unlike a real cap, which assumes it's already established
-    elsewhere and only needs an `update self` sync before reading a value
-    back for capture -- see scheme_io_capture_pass.py's own
-    _insert_capture docstring), so it must create its own device copies
-    around each call. `copyin_names` (intent in/inout -- a real captured
-    value worth transferring) and `create_names` (intent out -- nothing
-    useful to transfer yet, device allocation only) mirror the same
-    needs_in/needs_out distinction the real cap's own AccEnterDataOp
-    printer makes (ccpp_utils.py/print_ftn.py's own module-level case).
-    Returns None when both lists are empty (no device-resident args this
-    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: the
-    capture pass always asks for directives (OpenACC by default), which
-    are comments unless the driver is compiled with OpenACC/OpenMP, so
-    one driver serves a CPU and a GPU replay.
-    """
-    if directive == "acc":
-        clauses = []
-        if copyin_names:
-            clauses.append(f"copyin({', '.join(copyin_names)})")
-        if create_names:
-            clauses.append(f"create({', '.join(create_names)})")
-        if not clauses:
-            return None
-        return "!$acc enter data " + " ".join(clauses)
-    clauses = []
-    if copyin_names:
-        clauses.append(f"map(to:{', '.join(copyin_names)})")
-    if create_names:
-        clauses.append(f"map(alloc:{', '.join(create_names)})")
-    if not clauses:
-        return None
-    return "!$omp target enter data " + " ".join(clauses)
-
-
-def _render_driver_exit_data(directive: str, copyout_names: "list[str]", delete_names: "list[str]") -> "str | None":
-    """The exit half of _render_driver_enter_data, above -- emitted after
-    the call (and after the errflg check) so that `copyout_names`
-    (intent out/inout -- the scheme's own device-side result) are back in
-    the driver's host-side variable BEFORE the after/compare steps read
-    it; `delete_names` (intent in -- never read again) just releases the
-    device copy with no transfer back. Returns None when both lists are
-    empty.
-    """
-    if directive == "acc":
-        clauses = []
-        if copyout_names:
-            clauses.append(f"copyout({', '.join(copyout_names)})")
-        if delete_names:
-            clauses.append(f"delete({', '.join(delete_names)})")
-        if not clauses:
-            return None
-        return "!$acc exit data " + " ".join(clauses)
-    clauses = []
-    if copyout_names:
-        clauses.append(f"map(from:{', '.join(copyout_names)})")
-    if delete_names:
-        clauses.append(f"map(release:{', '.join(delete_names)})")
-    if not clauses:
-        return None
-    return "!$omp target exit data " + " ".join(clauses)
-
-
-def _render_test_driver_phase_block(
-    table_name: str,
-    params: "list[TestDriverParam]",
-    declared: set,
-    directive: "str | None" = None,
-) -> "tuple[list[str], list[str]]":
-    """Render one phase's own declarations and body lines for
-    render_scheme_io_capture_test_driver, below. `declared` is the set of
-    local variable names already declared by an earlier phase block in
-    the same driver (mutated in place) -- a scheme's own phases routinely
-    share argument names for CCPP-mandated roles (errmsg/errflg above
-    all), and Fortran rejects a duplicate declaration, so a name already
-    declared is simply reused rather than redeclared. Returns
-    (decls, body_lines) -- decls only for names first introduced by this
-    phase, body_lines this phase's own read/call/compare sequence.
-
-    Replays every captured call of this phase, not just the first: a
-    shared `call_count`/`found` pair (declared once by the caller, reused
-    across every phase's own loop) drives a `do ... exit` loop that opens
-    the call's capture file (ccpp_capture_open_call: <table>_<n>.nc,
-    scheme-io-capture-netcdf) for call_count=1, 2, 3, ..., reads its `in`
-    group, calls the scheme, reads the `out` group, and stops at the
-    first call with no file. No file at all for call 1 is a FAIL (the
-    driver would otherwise pass without testing anything). A real
-    FPHYStest run produces several calls per table (one per
-    chunk/timestep). Array
-    allocations move inside the loop with an `allocated()` guard (not
-    allocated once up front): a real scheme's own column count can
-    legitimately differ from one captured call to the next (different
-    chunks), so each iteration must be free to reallocate.
-
-    A call-only phase (is_call_only_phase: nothing captured, every
-    argument supplied by the driver) has no capture file: it is called
-    once, with no loop, read or compare; a nonzero errflg is still a FAIL.
-    """
-    decls: list[str] = []
-    allocates: list[str] = []
-    # Scalar "before" reads (dimension-bound args like ncol/nz, per CCPP's
-    # own dim_names convention) must run before any allocate(...) that
-    # depends on their value -- kept separate from array reads so the
-    # final emission order below can put every scalar read ahead of every
-    # allocate, which must in turn come ahead of every array read.
-    scalar_before_reads: list[str] = []
-    array_before_reads: list[str] = []
-    after_reads: list[str] = []
-    compares: list[str] = []
-    call_kwargs: list[str] = []
-    errmsg_param = None
-    errflg_param = None
-    # scheme-io-capture-gpu-residency: a memory_space=device argument needs
-    # its own device copy established before the call and torn down after
-    # -- which transfer direction depends on intent, same needs_in/needs_out
-    # split the real cap's own AccEnterDataOp/AccExitDataOp construction
-    # uses (see _render_driver_enter_data/_render_driver_exit_data above).
-    enter_copyin: list[str] = []
-    enter_create: list[str] = []
-    exit_copyout: list[str] = []
-    exit_delete: list[str] = []
-
-    def _declare(name: str, decl_line: str) -> None:
-        if name in declared:
-            return
-        declared.add(name)
-        decls.append(decl_line)
-
-    def _read_lines(group: str, captured_name: str, var_name: str) -> list:
-        return [f'call ccpp_capture_read("{group}", "{captured_name}", {var_name})']
-
-    def _allocate_lines(var_name: str, rank: int, extents: "list[str] | None", group: str,
-                        captured_name: str) -> list:
-        """(Re)allocate an array to `extents`, or, without them, to the
-        shape of `captured_name` in `group` of the open capture file."""
-        lines = [f"if (allocated({var_name})) deallocate({var_name})"]
-        if extents is None:
-            lines.append(
-                f'call ccpp_capture_extents("{group}", "{captured_name}", '
-                f"extents{rank}, extents_found)"
-            )
-            extents = [f"extents{rank}({i})" for i in range(1, rank + 1)]
-        lines.append(f"allocate({var_name}({', '.join(extents)}))")
-        return lines
-
-    for p in params:
-        call_kwargs.append(f"{p.name}={p.name}")
-        decl_type = _test_driver_decl_type(p.arg_type, p.kind)
-
-        if p.ddt_read is not None:
-            # A derived type: rebuilt from the capture file (its read
-            # allocates it), never compared.
-            colons = ", ".join(":" for _ in range(p.rank))
-            _declare(p.name, f"type({p.arg_type}), allocatable :: {p.name}({colons})")
-            array_before_reads.append(f'call {p.ddt_read}("in", "{p.name}", {p.name})')
-            continue
-
-        if p.category == "error_arg":
-            _declare(p.name, f"{decl_type} :: {p.name}")
-            if p.arg_type == "character":
-                errmsg_param = p.name
-            elif p.arg_type == "integer":
-                errflg_param = p.name
-            continue
-
-        if p.category == "log_unit":
-            # The captured unit is the host's, not open here: write to
-            # standard output instead (scheme-io-capture-log-unit).
-            _declare(p.name, f"integer :: {p.name}")
-            scalar_before_reads.append(f"{p.name} = {_DRIVER_LOG_UNIT}")
-            continue
-
-        if p.rank == 0:
-            _declare(p.name, f"{decl_type} :: {p.name}")
-        else:
-            colons = ", ".join(":" for _ in range(p.rank))
-            _declare(p.name, f"{decl_type}, allocatable :: {p.name}({colons})")
-            group = "out" if p.category == "out" else "in"
-            allocates += _allocate_lines(p.name, p.rank, p.dims, group, p.name)
-
-        if p.category == "unverified":
-            continue
-
-        # category in ("in", "out", "inout") -- a real captured argument.
-        if directive and p.is_device:
-            if p.category in ("in", "inout"):
-                enter_copyin.append(p.name)
-            else:
-                enter_create.append(p.name)
-            if p.category in ("out", "inout"):
-                exit_copyout.append(p.name)
-            else:
-                exit_delete.append(p.name)
-
-        if p.category in ("in", "inout"):
-            lines = _read_lines("in", p.name, p.name)
-            if p.rank == 0:
-                scalar_before_reads += lines
-            else:
-                array_before_reads += lines
-        if p.category in ("out", "inout"):
-            expected = f"{p.name}_expected"
-            if p.rank == 0:
-                _declare(expected, f"{decl_type} :: {expected}")
-            else:
-                colons = ", ".join(":" for _ in range(p.rank))
-                _declare(expected, f"{decl_type}, allocatable :: {expected}({colons})")
-                allocates += _allocate_lines(expected, p.rank, None, "out", p.name)
-            after_reads += _read_lines("out", p.name, expected)
-            if p.rank == 0:
-                # Scalar: no "which index" diagnostic makes sense, and the
-                # driver already has both values in scope -- print them
-                # directly on FAIL rather than asking ccpp_capture_mod.F90
-                # for anything.
-                if p.arg_type == "real":
-                    compares.append(f"ok = ccpp_capture_compare({p.name}, {expected}, tolerance)")
-                else:
-                    compares.append(f"ok = ccpp_capture_compare({p.name}, {expected})")
-                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
-                compares.append(
-                    f"if (.not. ok) write(*,*) '  actual=', {p.name}, ' expected=', {expected}"
-                )
-            elif p.arg_type == "real":
-                compares.append(
-                    f"ok = ccpp_capture_compare({p.name}, {expected}, tolerance, "
-                    "diag_max_abs_diff, diag_mean_abs_diff, diag_first_mismatch_index)"
-                )
-                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
-                compares.append(
-                    "if (.not. ok) write(*,*) '  max abs diff=', diag_max_abs_diff, "
-                    "' mean abs diff=', diag_mean_abs_diff, "
-                    "' first mismatch at linear index=', diag_first_mismatch_index"
-                )
-            else:
-                compares.append(
-                    f"ok = ccpp_capture_compare({p.name}, {expected}, diag_first_mismatch_index)"
-                )
-                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
-                compares.append(
-                    "if (.not. ok) write(*,*) '  first mismatch at linear index=', "
-                    "diag_first_mismatch_index"
-                )
-
-    errflg_check = []
-    if errflg_param is not None:
-        errflg_check = [
-            f"if ({errflg_param} /= 0) then",
-            f"  write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}, "
-            "' (call ', call_count, ')'"
-            + (f", ' errmsg=', trim({errmsg_param})" if errmsg_param else ""),
-            "  n_failed = n_failed + 1",
-            "end if",
-        ]
-
-    if is_call_only_phase(params):
-        body = [f"  ! -- {table_name} (nothing captured: called once, not compared) --"]
-        body += [f"  {r}" for r in scalar_before_reads]
-        body += ["  call_count = 1", f"  call {table_name}({', '.join(call_kwargs)})"]
-        body += [f"  {line}" for line in errflg_check]
-        return decls, body
-
-    enter_data_line = (
-        _render_driver_enter_data(directive, enter_copyin, enter_create) if directive else None
-    )
-    exit_data_line = (
-        _render_driver_exit_data(directive, exit_copyout, exit_delete) if directive else None
-    )
-
-    body: list[str] = [
-        f"  ! -- {table_name} --",
-        "  call_count = 1",
-        "  do",
-        f'    call ccpp_capture_open_call("{table_name}", call_count, found)',
-        "    if (.not. found) exit",
-    ]
-    # Order matters: scalar "before" reads must land before the
-    # allocate()s that size arrays off of them, which must in turn land
-    # before the array "before" reads they size. The enter-data directive
-    # (when present) comes last of all, right before the call, so every
-    # device-resident array's host side already holds its captured
-    # "before" value (or is at least allocated, for an out-only array)
-    # before it's transferred to the device.
-    body += [f"    {r}" for r in scalar_before_reads]
-    body += [f"    {a}" for a in allocates]
-    body += [f"    {r}" for r in array_before_reads]
-    if enter_data_line is not None:
-        body += [f"    {enter_data_line}"]
-    body += ["", f"    call {table_name}({', '.join(call_kwargs)})", ""]
-    if errflg_check:
-        body += [f"    {line}" for line in errflg_check] + [""]
-    # The exit-data directive comes first of all here, before any
-    # after/compare step -- it's what actually brings a device-resident
-    # out/inout array's real, scheme-computed result back into the host
-    # variable those later steps read; without it they'd silently compare
-    # against the array's unchanged pre-call host value on every GPU build.
-    if exit_data_line is not None:
-        body += [f"    {exit_data_line}"]
-    body += [f"    {r}" for r in after_reads]
-    body += ["    call ccpp_capture_close()"]
-    body += [f"    {c}" for c in compares]
-    body += [
-        "    call_count = call_count + 1",
-        "  end do",
-        "  if (call_count == 1) then",
-        f"    write(*,*) 'FAIL: no captured calls of {table_name} found'",
-        "    n_failed = n_failed + 1",
-        "  end if",
-    ]
-    return decls, body
-
-
-def render_scheme_io_capture_test_driver(
-    scheme_name: str,
-    phase_tables: "list[tuple[str, list[TestDriverParam], str]]",
-    tolerance: str,
-    directive: "str | None" = None,
-) -> str:
-    """Render a standalone Fortran test-driver program (`test_<scheme_name>
-    .F90`'s own content) replaying every captured phase of one scheme, in
-    the lifecycle order the caller already sorted `phase_tables` into
-    (register/initialize/timestep_initial/run/timestep_final/finalize --
-    see scheme_io_capture_pass.py's own phase-ordering logic, a CCPP
-    semantics decision this function doesn't make). A scheme's `_run`
-    phase routinely depends on module-private state only its own
-    `_initialize` phase sets (confirmed directly: kessler_run reads
-    module-level lv/pref/rhoqr that only kessler_init sets) -- replaying
-    a scheme as this whole, ordered unit, not one isolated phase at a
-    time, is what makes the comparison meaningful instead of spuriously
-    failing on uninitialized state.
-
-    Each `phase_tables` entry is (table name, params, Fortran module of
-    the table's subroutine -- not always the scheme name: CAM-SIMA's
-    state_converters module holds several schemes).
-
-    Each `TestDriverParam` list in `phase_tables` is already fully
-    resolved and filtered by the caller (no `optional` entries, every
-    array's `dims` already a resolved local-name list) -- this function
-    only knows Fortran syntax, not why a given param has the category it
-    has.
-
-    `tolerance` is a pre-formatted Fortran real literal (the caller's
-    job, via `format_fortran_real_literal`) used as the compiled-in
-    default passed to `ccpp_capture_tolerance_override` at program
-    startup -- NOT a `parameter` anymore. That lets the generated binary
-    be re-run with a different tolerance (the `CCPP_CAPTURE_TOLERANCE`
-    environment variable) without regenerating or recompiling, which
-    matters for cross-compiler/GPU-port comparisons where the right
-    tolerance is discovered by iterating, not known up front.
-
-    `directive` ("acc", "omp", or None -- scheme-io-capture-gpu-residency)
-    is the same CLI choice `--directive` makes for the real cap; when set,
-    every `TestDriverParam.is_device` argument gets its own
-    `!$acc enter data`/`!$omp target enter data` before the call and the
-    matching exit-data after it, since this standalone driver has no
-    surrounding suite-level device residency to lean on the way a real
-    cap does. None (the default) emits no directive text at all, exactly
-    like today for every existing CPU-only driver.
-    """
-    declared: set = set()
-    all_decls: list[str] = []
-    all_body: list[str] = []
-    for table_name, params, _module in phase_tables:
-        decls, body = _render_test_driver_phase_block(table_name, params, declared, directive)
-        all_decls += decls
-        all_body += body
-
-    table_names = [t for t, _, _ in phase_tables]
-    # Real kinds other than kind_phys the declarations use (e.g. PUMAS's
-    # pumas_r8, scheme-io-capture-real-kinds), all from ccpp_kinds.
-    other_kinds = sorted({
-        p.kind for _, params, _m in phase_tables for p in params
-        if p.arg_type == "real" and p.kind and p.kind != "kind_phys"
-        and not p.kind.isdigit() and p.ddt_read is None
-    })
-    use_lines = [f"  use {module}, only: {t}" for t, _, module in phase_tables]
-    # Derived types: their declaring module and the procedure rebuilding them.
-    ddt_uses: list[str] = []
-    for _, params, _module in phase_tables:
-        for p in params:
-            if p.ddt_read is None:
-                continue
-            for line in (f"  use {p.type_module}, only: {p.arg_type}",
-                         f"  use {p.ddt_read_module}, only: {p.ddt_read}"):
-                if line not in ddt_uses:
-                    ddt_uses.append(line)
-    use_lines = ddt_uses + use_lines
-    if any(p.category == "log_unit" for _, params, _m in phase_tables for p in params):
-        use_lines = [
-            f"  use, intrinsic :: iso_fortran_env, only: {_DRIVER_LOG_UNIT} => output_unit"
-        ] + use_lines
-
-    lines = [
-        "! Generated by xdsl_ccpp's --capture-test-driver-dir -- reads back a",
-        f"! fixture captured from a real run of {scheme_name} (via --capture-scheme",
-        f"! {scheme_name}), replays each captured phase ({', '.join(table_names)})",
-        "! against it in lifecycle order, and compares outputs against the captured",
-        "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
-        f"program test_{scheme_name}",
-        f"  use ccpp_kinds, only: {', '.join(['kind_phys'] + other_kinds)}",
-        "  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &",
-        "                              ccpp_capture_read, ccpp_capture_compare, &",
-        "                              ccpp_capture_extents, ccpp_capture_tolerance_override",
-        "  use ccpp_capture_replay_mod, only: ccpp_capture_restore_constituents",
-    ]
-    lines += use_lines
-    lines += [
-        "",
-        "  implicit none",
-        "",
-        "  real(kind=kind_phys) :: tolerance",
-        "  integer :: n_failed",
-        "  integer :: call_count",
-        "  logical :: found",
-        "  logical :: ok",
-        "  real(kind=kind_phys) :: diag_max_abs_diff, diag_mean_abs_diff",
-        "  integer :: diag_first_mismatch_index",
-        "  integer :: extents1(1), extents2(2), extents3(3)",
-        "  logical :: extents_found",
-    ]
-    lines += [f"  {d}" for d in all_decls]
-    lines += [
-        "",
-        f"  tolerance = ccpp_capture_tolerance_override({tolerance})",
-        "  n_failed = 0",
-        "  ! The run's constituent table, for ccpp_constituent_index lookups",
-        "  ! (nothing when the capture has none).",
-        "  call ccpp_capture_restore_constituents()",
-        "",
-    ]
-    lines += all_body
-    lines += [
-        "",
-        "  if (n_failed == 0) then",
-        "    write(*,*) 'ALL TESTS PASSED'",
-        "  else",
-        "    write(*,*) n_failed, ' TEST(S) FAILED'",
-        "    call exit(1)",
-        "  end if",
-        "",
-        "contains",
-        "",
-        "  subroutine report(name, call_count, ok, n_failed)",
-        "    character(len=*), intent(in) :: name",
-        "    integer, intent(in) :: call_count",
-        "    logical, intent(in) :: ok",
-        "    integer, intent(inout) :: n_failed",
-        "",
-        "    if (ok) then",
-        "      write(*,*) 'PASS: ', trim(name), ' (call ', call_count, ')'",
-        "    else",
-        "      write(*,*) 'FAIL: ', trim(name), ' (call ', call_count, ')'",
-        "      n_failed = n_failed + 1",
-        "    end if",
-        "  end subroutine report",
-        "",
-        f"end program test_{scheme_name}",
-    ]
-    return _continue_long_lines(lines)
-
-
-def _continue_long_lines(lines: "list[str]") -> str:
-    """The test driver's text, its over-long statements continuation-split
-    by ftnPrintContext's own splitter (the one every generated cap goes
-    through): a scheme call with ~140 arguments
-    (micro_pumas_ccpp_dimensions_post) is one 3955-character line otherwise.
-    Each line keeps its indentation; comment lines are left whole."""
-    out = io.StringIO()
-    ctx = ftnPrintContext(out)
-    for line in lines:
-        text = line.lstrip()
-        if not text or text.startswith("!"):
-            print(line, file=out)
-            continue
-        ctx._prefix = line[: len(line) - len(text)]
-        ctx.print(text)
-    return out.getvalue()
 
 
 def classify_arg_intent(
@@ -1217,8 +637,17 @@ class ftnPrintContext:
         if val in self.variables:
             return self.variables[val]
         if isa(val.owner, arith.ConstantOp):
-            return self.attribute_value_to_str(val.owner.value)
+            return self._constant_text(val.owner)
         return self._get_variable_name_for(val)
+
+    def _constant_text(self, op: arith.ConstantOp) -> str:
+        """An arith.ConstantOp's literal. A real constant with a `kind`
+        attribute is written with that kind (e.g. 1.0e-10_kind_phys): a
+        plain real literal is default (single-precision) real in Fortran."""
+        kind = op.attributes.get("kind")
+        if kind is not None and isa(op.value, FloatAttr):
+            return format_fortran_real_literal(op.value.value.data, kind.data)
+        return self.attribute_value_to_str(op.value)
 
     def print_expr(self, op: Operation):
         """Recursively print op as an inline Fortran expression (no newline).
@@ -1354,9 +783,9 @@ class ftnPrintContext:
         Statement-level operations are handled by print_op instead.
         """
         match op:
-            case arith.ConstantOp(value=v):
+            case arith.ConstantOp():
                 # Emit the literal value of the constant
-                return self.attribute_value_to_str(v)
+                return self._constant_text(op)
             case memref.LoadOp(memref=arr):
                 # A load from a memref is represented by the variable name itself
                 return self._get_variable_name_for(arr)
@@ -2360,17 +1789,25 @@ class ftnPrintContext:
             self._print_cxx_interface_blocks(cxx_fns)
 
     def _print_program(self, op):
-        """Print a ProgramOp: ``program`` with the shared use statements, a
-        call of its main procedure, and its procedures after CONTAINS."""
+        """Print a ProgramOp: its leading comments as the file header, then
+        ``program`` with the shared use statements, a call of its main
+        procedure, and its procedures after CONTAINS."""
         name = op.sym_name.data
+        body = op.body.block
+        for child in body.ops:
+            if not isa(child, CCPPCommentOp):
+                break
+            self.print_op(child)
         self.print(f"program {name}")
-        self._print_use_statements(op.body.block)
+        self._print_use_statements(body)
         self.print("\nimplicit none", prefix="  ")
         self.print("")
         self.print(f"call {op.main.data}()", prefix="  ")
         self.print("\nCONTAINS")
         with self.descend() as inner:
-            inner.print_block(op.body.block)
+            for child in body.ops:
+                if isa(child, func.FuncOp) and not child.is_declaration:
+                    inner.print_op(child)
         self.print(f"end program {name}")
 
     def _print_module(self, module_name, body):

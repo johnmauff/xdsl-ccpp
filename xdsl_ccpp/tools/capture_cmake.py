@@ -78,8 +78,9 @@ _TOP_TEMPLATE = """\
 # PATH, or -DNF_CONFIG=...). -DOPENACC=ON builds with OpenACC
 # (CCPP_CAPTURE_ACC_FLAGS, default -acc; with nvfortran
 # -gpu=nofma,math_uniform is added) for GPU replay of the same captures:
-# the drivers always carry their own enter/exit data directives (comments
-# in a CPU build). With nvfortran a CPU build gets -noacc -- nvfortran
+# the drivers always carry their own enter/exit data directives, inside
+# #ifdef USE_GPU as in the caps, and an OpenACC build defines USE_GPU (as
+# CAM-SIMA's nvhpc GPU builds do). With nvfortran a CPU build gets -noacc -- nvfortran
 # otherwise compiles a scheme's !$acc directives and the "CPU" replay runs
 # them on the GPU -- and every build gets -Mnofma, as CAM-SIMA's nvhpc
 # builds do, so a replay can match a capture bit for bit.
@@ -112,7 +113,8 @@ execute_process(COMMAND ${{NF_CONFIG}} --flibs OUTPUT_VARIABLE _nf_flibs
 separate_arguments(_nf_fflags UNIX_COMMAND "${{_nf_fflags}}")
 separate_arguments(_nf_flibs UNIX_COMMAND "${{_nf_flibs}}")
 
-# Generated drivers have long lines.
+# Scheme sources may have lines over gfortran's 132-column default (the
+# generated drivers do not: the printer continues long lines).
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-ffree-line-length-none)
 endif()
@@ -126,6 +128,7 @@ if(OPENACC)
   endif()
   add_compile_options(${{_acc_flags}})
   add_link_options(${{_acc_flags}})
+  add_compile_definitions(USE_GPU)
 elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   add_compile_options(-noacc)
   add_link_options(-noacc)

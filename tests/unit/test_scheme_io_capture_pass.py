@@ -412,8 +412,8 @@ def test_no_guard_when_host_lacks_mpi_root_flag(run_host_match, ccpp_context):
 
 
 # scheme-io-capture-tolerance-config: end-to-end through the real pass,
-# not just render_scheme_io_capture_test_driver in isolation (that's
-# already covered by test_print_ftn_scheme_io_capture_driver.py) --
+# not just build_test_driver in isolation (that's already covered by
+# test_capture_driver_ir.py) --
 # confirms the full chain self.tolerance (a string, set from the CLI's
 # --capture-tolerance) -> float() -> format_fortran_real_literal() ->
 # embedded literal in the written test_<scheme>.F90 file actually wires
@@ -661,7 +661,7 @@ def test_constituent_properties_rebuilt_in_the_driver(run_host_match, ccpp_conte
     assert "use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t\n" in driver
     assert "use ccpp_capture_constituents_mod, only: ccpp_capture_read_constituents\n" in driver
     assert "type(ccpp_constituent_prop_ptr_t), allocatable :: cprops(:)" in driver
-    assert 'call ccpp_capture_read_constituents("in", "cprops", cprops)' in driver
+    assert "call ccpp_capture_read_constituents('in', 'cprops', cprops)" in driver
     assert "cprops=cprops" in driver
     assert "cprops_expected" not in driver  # rebuilt, never compared
 
@@ -883,10 +883,10 @@ def test_uncaptured_init_is_called_once_before_the_run_replay(run_host_match, cc
     assert driver is not None
     init_call = driver.index("  call test_io_capture_scheme_init(")
     assert "! -- test_io_capture_scheme_init (nothing captured: called once, not compared) --" in driver
-    assert 'ccpp_capture_open_call("test_io_capture_scheme_init"' not in driver
-    assert init_call < driver.index('ccpp_capture_open_call("test_io_capture_scheme_run"')
-    after_init = driver[init_call:driver.index("  ! -- test_io_capture_scheme_run --")]
-    assert "if (errflg /= 0) then" in after_init
+    assert "ccpp_capture_open_call('test_io_capture_scheme_init'" not in driver
+    assert init_call < driver.index("ccpp_capture_open_call('test_io_capture_scheme_run'")
+    after_init = driver[init_call:driver.index("! -- test_io_capture_scheme_run --")]
+    assert "if (errflg .ne. 0) then" in after_init
     assert "n_failed = n_failed + 1" in after_init
     assert "use test_io_capture_scheme, only: test_io_capture_scheme_init" in driver
 
@@ -924,7 +924,7 @@ def test_uncaptured_phase_needing_other_arguments_is_left_out(run_host_match, cc
     _run_with_other_kind_init(run_host_match, ccpp_context, tmp_path)
     driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
     assert "test_io_capture_scheme_init" not in driver
-    assert 'ccpp_capture_open_call("test_io_capture_scheme_run"' in driver
+    assert "ccpp_capture_open_call('test_io_capture_scheme_run'" in driver
 
 
 def test_no_driver_with_only_a_call_only_phase(run_host_match, ccpp_context, tmp_path):
@@ -1052,6 +1052,6 @@ def test_kind_spec_real_captured_and_compared(run_host_match, ccpp_context, tmp_
     print_to_ftn(module, out)
     assert "'in_var', in_var" in _block(out.getvalue(), _BEGIN_BEFORE)
     driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
-    assert "  use ccpp_kinds, only: kind_phys, my_r8\n" in driver
+    assert "  use ccpp_kinds, only: my_r8\n" in driver
     assert "real(kind=my_r8) :: in_var" in driver
-    assert 'ccpp_capture_read("in", "in_var", in_var)' in driver
+    assert "ccpp_capture_read('in', 'in_var', in_var)" in driver

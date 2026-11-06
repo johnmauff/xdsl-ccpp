@@ -14219,3 +14219,52 @@ recaptured and drivers regenerated: `test_micro_pumas_ccpp_dimensions_post`
 (71 compares) and `test_micro_pumas_ccpp_dimensions_pre` (run phase, 36
 compares) pass (CPU). `pumas_post_main` still needs `pumas_gamma_function`
 (`scheme-io-capture-host-module-schemes`).
+
+## `scheme-io-capture-driver-as-ir`: the capture test driver is built as IR (PR #199, 2026-11-06)
+
+Resolves `scheme-io-capture-driver-as-ir`. `test_<scheme>.F90` was
+assembled from hand-written Fortran strings in the printer
+(`render_scheme_io_capture_test_driver`), outside the IR -> printer path
+the caps use, so each Fortran rule the printer already gets right had to be
+relearned there (the 3955-character call line, the missing `pumas_r8`
+import, the log unit's `use` line, duplicate errmsg/errflg declarations).
+The pass now builds the driver as a program in IR and the printer prints
+it.
+
+- `xdsl_ccpp/dialects/ccpp_utils.py`: new `ProgramOp` (a main program
+  unit: use declarations, the main subroutine, other procedures).
+- `xdsl_ccpp/transforms/capture_driver_ir.py` (new): `build_test_driver`
+  returns a `ProgramOp` made of existing ops -- named allocas for locals,
+  external `func.FuncOp`s and `llvm.GlobalOp` stubs with `module` for the
+  `use` lines, `CallStatementOp`/`KeywordArgExprOp`, `AssignOp`/`CallExprOp`,
+  `SafeDeallocOp`/`AllocateOp`, `DoLoopOp` over the new
+  `ccpp_capture_call_count`, `scf.if`, `PrintStmtOp`, `CommentOp`, and the
+  `Acc*`/`Omp*` enter/exit data ops. `TestDriverParam` and
+  `is_call_only_phase` moved here from the printer.
+- `xdsl_ccpp/backend/print_ftn.py`: `ProgramOp` printing
+  (`print_fortran_unit`, `print_to_ftn`); static-shape local arrays
+  (`integer :: extents2(2)`); comment and blank lines; a real
+  `arith.ConstantOp` with a `kind` attribute prints with that kind
+  (`1.0e-10_kind_phys`). The string renderer, its helpers and
+  `_continue_long_lines` are deleted; long lines go through the printer's
+  usual splitter.
+- `xdsl_ccpp/framework_src/ccpp_capture_mod.F90`: `ccpp_capture_call_count`,
+  `ccpp_capture_report` and the public `ccpp_capture_output_unit`, so the
+  driver needs no `contains`-ed helper or `iso_fortran_env` of its own.
+- `xdsl_ccpp/tools/capture_cmake.py`: `OPENACC=ON` defines `USE_GPU`; the
+  driver's device data directives are inside `#ifdef USE_GPU` like the
+  caps' (CAM-SIMA's nvhpc GPU build defines it too).
+- Behaviour changes: derived-type arguments outside the capture's scope
+  are declared with their type, not the old (wrong) `real(kind_phys)`;
+  unused `diag_*` locals are no longer declared.
+- Tests: `tests/unit/test_capture_driver_ir.py` (24 tests, replacing
+  `test_print_ftn_scheme_io_capture_driver.py`, every old behaviour plus
+  the derived-type declaration), `tests/unit/test_print_ftn_program_unit.py`
+  (5), `tests/fortran/test_ccpp_capture_mod.F90` (`test_driver_helpers`);
+  pass tests updated to the printer's spelling.
+
+Verification: pytest 1403 passed; the Fortran capture-module test passed;
+all 48 c03 drivers (rrtmgp 24, rk_stratiform 17, pumas 7) regenerated with
+the old and new code and compared after normalizing: same scheme calls,
+reads, compares, reports and device directives, apart from the two
+behaviour changes above. CI passed (PR #199).
