@@ -149,6 +149,7 @@ from xdsl_ccpp.backend.print_ftn import (
     is_call_only_phase,
     render_scheme_io_capture_test_driver,
 )
+from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
     AssignOp,
@@ -312,26 +313,60 @@ def _generator_version() -> str:
     return f"{text} ({commit})" if commit else text
 
 
-def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int) -> bool:
+# Real kinds captured by default: kind_phys only (see _phys_real_kinds).
+_PHYS_REAL_KINDS = frozenset({CCPP_KIND_PHYS})
+
+
+def _phys_real_kinds(ccpp_mod) -> "frozenset[str]":
+    """The real kinds the capture handles as kind_phys
+    (scheme-io-capture-real-kinds), from the @ccpp module's `ccpp.kinds`
+    (generate-meta-kinds): kind_phys, any kind with kind_phys's
+    iso_fortran_env value (e.g. r8 => REAL64), and any kind a metadata
+    kind_spec imports from a module (e.g. PUMAS's pumas_r8 =>
+    pumas_kinds:kind_r8). A kind_spec kind's value is not known here: the
+    capture calls are generic over kind_phys, so if it differs, a capture
+    build (never a normal one) stops at compile time with no matching
+    specific procedure."""
+    kinds = {CCPP_KIND_PHYS}
+    if ccpp_mod is None:
+        return frozenset(kinds)
+    kind_ops = [op for op in ccpp_mod.walk() if isinstance(op, ccpp.KindOp)]
+    values = {
+        op.kind_name.data: (op.kind_value.data, op.kind_module.data) for op in kind_ops
+    }
+    phys = values.get(CCPP_KIND_PHYS)
+    for name, (value, module) in values.items():
+        if module.lower() != "iso_fortran_env":
+            kinds.add(name)
+        elif phys is not None and phys[1].lower() == "iso_fortran_env" and value == phys[0]:
+            kinds.add(name)
+    return frozenset(kinds)
+
+
+def _is_capture_supported(
+    arg_type: "str | None", kind: "str | None", rank: int,
+    real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
+) -> bool:
     """True iff this argument's (type, kind, rank) is within v1's capture
-    scope -- {integer, logical, real(kind_phys)} x {rank 0..3}. The
+    scope -- {integer, logical, real of a kind in *real_kinds*} x
+    {rank 0..3}; *real_kinds* are kind_phys and the kinds equal to it
+    (_phys_real_kinds). The
     emitted capture call always uses ccpp_capture_mod's generic
     `ccpp_capture` name (Fortran's own overload resolution picks the
     right concrete procedure from the argument's static type and rank;
-    there's exactly one real-kind member per rank since this function
-    already rejects any kind but CCPP_KIND_PHYS, so there's no ambiguity
-    to resolve) -- this function only gates whether to capture at all,
+    there's exactly one real-kind member per rank, kind_phys, which a real
+    of an equal kind resolves to) -- this function only gates whether to capture at all,
     it no longer needs to name a concrete procedure itself."""
     if arg_type == "character":
         return rank <= _MAX_CHARACTER_RANK
     if rank > _MAX_SUPPORTED_RANK:
         return False
     if arg_type == "real":
-        return kind == CCPP_KIND_PHYS
+        return kind in real_kinds
     return arg_type in _TYPE_CODE
 
 
-def _driver_param_category(arg) -> str:
+def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS) -> str:
     """Classify one real call argument for test-driver generation:
     "optional" (omit from the generated call entirely), "error_arg"
     (errmsg/errflg -- always declared and passed, never compared),
@@ -354,7 +389,7 @@ def _driver_param_category(arg) -> str:
     arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
     kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-    if not _is_capture_supported(arg_type, kind, rank) and _ddt_capture(arg) is None:
+    if not _is_capture_supported(arg_type, kind, rank, real_kinds) and _ddt_capture(arg) is None:
         return "unverified"
     return intent
 
@@ -485,6 +520,7 @@ def _enclosing_module(op) -> "builtin.ModuleOp | None":
 
 def _build_test_driver_params(
     param_names: list, args_by_name: dict, device_names: "set[str]",
+    real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
 ) -> "tuple[list[TestDriverParam] | None, str]":
     """Resolve CCPP metadata for one real scheme call site into the
     plain, Fortran-agnostic TestDriverParam list print_ftn.py's
@@ -520,7 +556,7 @@ def _build_test_driver_params(
         arg = args_by_name.get(pname)
         if arg is None:
             return None, f"argument '{pname}' has no metadata"
-        category = _driver_param_category(arg)
+        category = _driver_param_category(arg, real_kinds)
         if category == "optional":
             continue
 
@@ -635,9 +671,11 @@ class SchemeIOCapturePass(ModulePass):
 
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         meta_data = {}
+        real_kinds = _PHYS_REAL_KINDS
         mpi_root_ref = None
         step_ref = None
         if ccpp_mod is not None:
+            real_kinds = _phys_real_kinds(ccpp_mod)
             bmdd = BuildMetaDataDescriptions()
             bmdd.traverse(ccpp_mod)
             meta_data = bmdd.meta_data
@@ -712,7 +750,7 @@ class SchemeIOCapturePass(ModulePass):
                 kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                 handler = _ddt_capture(arg)
-                if not _is_capture_supported(arg_type, kind, rank) and handler is None:
+                if not _is_capture_supported(arg_type, kind, rank, real_kinds) and handler is None:
                     continue
                 # A character(len=*) argument arrives through a cast of the
                 # fixed-length variable; capture that variable.
@@ -750,7 +788,7 @@ class SchemeIOCapturePass(ModulePass):
                     p for p in param_names if p.lower() in self._driver_device_names(table_name)
                 }
                 params, reason = _build_test_driver_params(
-                    param_names, args_by_name, driver_device,
+                    param_names, args_by_name, driver_device, real_kinds,
                 )
                 if params is None:
                     skipped[table_name] = reason

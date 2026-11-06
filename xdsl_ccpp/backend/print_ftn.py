@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import IO, cast
@@ -696,6 +698,13 @@ def render_scheme_io_capture_test_driver(
         all_body += body
 
     table_names = [t for t, _, _ in phase_tables]
+    # Real kinds other than kind_phys the declarations use (e.g. PUMAS's
+    # pumas_r8, scheme-io-capture-real-kinds), all from ccpp_kinds.
+    other_kinds = sorted({
+        p.kind for _, params, _m in phase_tables for p in params
+        if p.arg_type == "real" and p.kind and p.kind != "kind_phys"
+        and not p.kind.isdigit() and p.ddt_read is None
+    })
     use_lines = [f"  use {module}, only: {t}" for t, _, module in phase_tables]
     # Derived types: their declaring module and the procedure rebuilding them.
     ddt_uses: list[str] = []
@@ -720,7 +729,7 @@ def render_scheme_io_capture_test_driver(
         "! against it in lifecycle order, and compares outputs against the captured",
         "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
         f"program test_{scheme_name}",
-        "  use ccpp_kinds, only: kind_phys",
+        f"  use ccpp_kinds, only: {', '.join(['kind_phys'] + other_kinds)}",
         "  use ccpp_capture_mod, only: ccpp_capture_open_call, ccpp_capture_close, &",
         "                              ccpp_capture_read, ccpp_capture_compare, &",
         "                              ccpp_capture_extents, ccpp_capture_tolerance_override",
@@ -779,7 +788,25 @@ def render_scheme_io_capture_test_driver(
         "",
         f"end program test_{scheme_name}",
     ]
-    return "\n".join(lines) + "\n"
+    return _continue_long_lines(lines)
+
+
+def _continue_long_lines(lines: "list[str]") -> str:
+    """The test driver's text, its over-long statements continuation-split
+    by ftnPrintContext's own splitter (the one every generated cap goes
+    through): a scheme call with ~140 arguments
+    (micro_pumas_ccpp_dimensions_post) is one 3955-character line otherwise.
+    Each line keeps its indentation; comment lines are left whole."""
+    out = io.StringIO()
+    ctx = ftnPrintContext(out)
+    for line in lines:
+        text = line.lstrip()
+        if not text or text.startswith("!"):
+            print(line, file=out)
+            continue
+        ctx._prefix = line[: len(line) - len(text)]
+        ctx.print(text)
+    return out.getvalue()
 
 
 def classify_arg_intent(

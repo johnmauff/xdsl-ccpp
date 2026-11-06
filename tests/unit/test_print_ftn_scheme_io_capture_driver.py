@@ -11,6 +11,8 @@ pass/fail: max/mean abs diff and a mismatch location for array compares,
 the actual/expected values directly for scalar compares).
 """
 
+import re
+
 from xdsl_ccpp.backend.print_ftn import (
     TestDriverParam,
     format_fortran_real_literal,
@@ -18,6 +20,13 @@ from xdsl_ccpp.backend.print_ftn import (
 )
 
 _TOLERANCE = "1.0e-10_kind_phys"
+
+
+def _joined(source: str) -> str:
+    """The driver text with continuation lines joined (the long-line
+    splitter breaks a statement at a comma: `,` + padding + `&`, newline,
+    indentation)."""
+    return re.sub(r",\s*&\n\s*", ", ", source)
 
 
 def test_single_phase_replays_in_a_loop_not_just_call_one():
@@ -95,7 +104,8 @@ def test_errflg_check_reports_call_count():
     source = render_scheme_io_capture_test_driver(
         "kessler", [("kessler_init", params, "kessler")], _TOLERANCE,
     )
-    assert "write(*,*) 'FAIL: kessler_init returned errflg=', errflg, ' (call ', call_count, ')', ' errmsg=', trim(errmsg)" in source
+    assert ("write(*,*) 'FAIL: kessler_init returned errflg=', errflg, ' (call ', call_count, ')', "
+            "' errmsg=', trim(errmsg)") in _joined(source)
 
 
 def test_multi_phase_still_shares_one_call_count_declaration():
@@ -485,3 +495,32 @@ def test_call_only_phase_called_once_before_the_compared_phase():
     assert "FAIL: s_init returned errflg=" in source
     # errmsg/errflg declared once, shared by both phases.
     assert source.count("integer :: errflg") == 1
+
+
+def test_other_real_kinds_imported_from_ccpp_kinds():
+    """scheme-io-capture-real-kinds: a real of another kind (e.g. PUMAS's
+    pumas_r8) is declared with it, imported from ccpp_kinds."""
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("x", "inout", "real", "pumas_r8", 2),
+        TestDriverParam("y", "out", "real", "kind_phys", 2),
+    ]
+    source = render_scheme_io_capture_test_driver("s", [("s_run", params, "s")], _TOLERANCE)
+    assert "  use ccpp_kinds, only: kind_phys, pumas_r8\n" in source
+    assert "real(kind=pumas_r8), allocatable :: x(:, :)" in source
+    source = render_scheme_io_capture_test_driver("s", [("s_run", params[:1], "s")], _TOLERANCE)
+    assert "  use ccpp_kinds, only: kind_phys\n" in source
+
+
+def test_long_scheme_call_is_continuation_wrapped():
+    """A scheme with many arguments (micro_pumas_ccpp_dimensions_post: ~140,
+    a 3955-character call nvfortran rejects) gets a wrapped call."""
+    params = [TestDriverParam("ncol", "in", "integer", None, 0)] + [
+        TestDriverParam(f"field_{i:03d}", "out", "real", "kind_phys", 2) for i in range(140)
+    ]
+    source = render_scheme_io_capture_test_driver("s", [("s_run", params, "s")], _TOLERANCE)
+    assert max(len(line) for line in source.splitlines()) <= 99
+    call = "call s_run(" + ", ".join(
+        ["ncol=ncol"] + [f"field_{i:03d}=field_{i:03d}" for i in range(140)]
+    ) + ")"
+    assert call in _joined(source)

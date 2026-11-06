@@ -990,3 +990,68 @@ def test_unresolved_dimension_named_in_the_reason():
         "scope, so the driver must size it from the other arguments, but its dimension "
         "'microphysics_vertical_layer_dimension' is not an argument of the call"
     )
+
+
+# scheme-io-capture-real-kinds: reals of a kind equal to kind_phys (a
+# metadata kind_spec kind such as PUMAS's pumas_r8, or an iso_fortran_env
+# alias with kind_phys's value) are captured and compared.
+
+def test_phys_real_kinds_rule():
+    from xdsl.dialects import builtin
+    from xdsl_ccpp.dialects import ccpp
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _phys_real_kinds
+
+    kinds = ccpp.KindsOp([
+        ccpp.KindOp("kind_phys", "REAL64"),
+        ccpp.KindOp("r8", "REAL64"),
+        ccpp.KindOp("r4", "REAL32"),
+        ccpp.KindOp("pumas_r8", "kind_r8", "pumas_kinds"),
+    ])
+    mod = builtin.ModuleOp([kinds], sym_name=builtin.StringAttr("ccpp"))
+    assert _phys_real_kinds(mod) == frozenset({"kind_phys", "r8", "pumas_r8"})
+    assert _phys_real_kinds(None) == frozenset({"kind_phys"})
+
+
+def test_capture_scope_takes_the_equal_kinds():
+    kinds = frozenset({"kind_phys", "pumas_r8"})
+    assert _is_capture_supported("real", "pumas_r8", 2, kinds)
+    assert not _is_capture_supported("real", "pumas_r8", 2)
+    assert not _is_capture_supported("real", "r4", 2, kinds)
+
+
+def test_kind_spec_real_captured_and_compared(run_host_match, ccpp_context, tmp_path):
+    """A real of a kind_spec kind is captured in the cap and compared in the
+    driver, which imports the kind from ccpp_kinds."""
+    meta = _SCHEME_META.replace(
+        "  name = test_io_capture_scheme\n  type = scheme\n",
+        "  name = test_io_capture_scheme\n  type = scheme\n"
+        "  kind_spec = my_kinds:my_r8=>kind_r8\n", 1,
+    ).replace(
+        "[ in_var ]\n  standard_name = test_capture_in_var\n  units = K\n"
+        "  type = real | kind = kind_phys",
+        "[ in_var ]\n  standard_name = test_capture_in_var\n  units = K\n"
+        "  type = real | kind = my_r8",
+    )
+    host = _HOST_META.replace(
+        "[ in_var ]\n  standard_name = test_capture_in_var\n  units = K\n"
+        "  type = real | kind = kind_phys",
+        "[ in_var ]\n  standard_name = test_capture_in_var\n  units = K\n"
+        "  type = real | kind = my_r8",
+    )
+    assert meta.count("kind = my_r8") == 2 and host.count("kind = my_r8") == 1
+    module = run_host_match(scheme_metas=[meta], host_metas=[host], suite_xml=_SUITE_XML)
+    from xdsl_ccpp.transforms.suite_kinds import MetaKind
+    MetaKind().apply(ccpp_context, module)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme", test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    assert "'in_var', in_var" in _block(out.getvalue(), _BEGIN_BEFORE)
+    driver = (tmp_path / "test_test_io_capture_scheme.F90").read_text()
+    assert "  use ccpp_kinds, only: kind_phys, my_r8\n" in driver
+    assert "real(kind=my_r8) :: in_var" in driver
+    assert 'ccpp_capture_read("in", "in_var", in_var)' in driver
