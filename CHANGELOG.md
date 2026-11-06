@@ -14457,3 +14457,65 @@ satisfy (`scheme-io-capture-callee-device-args`).
 `rrtmgp_sw_solar_var`'s setter (`rrtmgp_sw_solar_var_setup_init`) is
 detected but reported: its sources need `interpolate_data`.
 CI passed (PR #202).
+
+## `scheme-io-capture-ddt-args`: capture drivers record and replay derived-type arguments component by component (PR #203, 2026-11-06)
+
+Resolves `scheme-io-capture-ddt-args` for flat derived types. A
+derived-type argument (other than the constituent properties, which have
+their own handler) was left out of the driver (the stop-gap of PR #201).
+Now a type whose components are all public, not pointers, and integer,
+logical or `kind_phys` real of rank 3 or less is captured and replayed
+component by component. Covers `coords1d` (vertical diffusion,
+gravity-wave drag, Beljaars, diffusion solver) and PUMAS's
+`proc_rates_type` (`micro_pumas_ccpp`).
+
+- `xdsl_ccpp/transforms/module_dependency_resolver.py`:
+  - The statement scanner reads derived-type definitions (`TypeFacts`,
+    `ComponentFacts`: type, kind, rank, `allocatable`/`pointer`,
+    accessibility with the type's `private` default, `extends`;
+    type-bound procedures skipped) and module named constants. It now
+    also recognizes declarations written without a space
+    (`integer,parameter ::`).
+  - `resolve_real_kind`: a real kind through named constants and USE
+    renames (`r8 => shr_kind_r8 = selected_real_kind(12)`; `kind_phys`
+    itself).
+  - `capture_layout`: whether the capture can record a type, else why
+    (private, pointer, character or derived-type component, a kind other
+    than `kind_phys`, `extends`).
+  - `module_state_access` follows procedures USEd under another name
+    (PUMAS's `qsat_ice => wv_sat_qsat_ice_vect`).
+- `xdsl_ccpp/tools/ccpp_dsl.py`: `_plan_ddt_layouts` reads the
+  definitions of the captured schemes' derived-type arguments from their
+  sources and passes the layouts to every capture pass (`ddt_layouts`);
+  why a type is not recorded goes to `test_<scheme>.skipped`, with or
+  without a driver.
+- `xdsl_ccpp/transforms/scheme_io_capture_pass.py`: an argument of a
+  recorded type is captured in sub-group `<arg>` (`ccpp_capture_begin_ddt`),
+  one `ccpp_capture` per component from IR member accesses, an
+  allocatable one under `allocated(...)`; the stop-gap now applies only
+  to types without a layout.
+- `xdsl_ccpp/transforms/capture_driver_ir.py`: the driver declares the
+  object (USEing its type), reads its components from `in/<arg>`
+  (allocating each to the captured shape) and compares an out/inout one
+  with `<arg>_expected` from `out/<arg>` component by component
+  (`p%ifc`), failing when the call left an expected component
+  unallocated.
+- Tests: type discovery, kind resolution, layouts and their reasons, the
+  layout option, the driver's reads and compares, the renamed-procedure
+  read; end-to-end on examples/ddthost (a flat `vmr_type` captured and
+  replayed; the nested original and `ccpp_info_t`, with a character
+  component, reported).
+
+Not covered: nested types and `extends` -- every RRTMGP type also has
+private components or pointer components, so generic recursion would
+record none of them (`scheme-io-capture-rte-objects`).
+
+Verification: pytest 1444 passed. c03e (F2000_C4, cam4 list),
+recaptured: 33/33 on CPU (the five vertical-diffusion schemes that take
+`coords1d` replay). pumas (c03d), recaptured with `micro_pumas_ccpp`
+added: its driver builds and its 119 `proc_rates_type` components are
+compared, but it fails, because PUMAS's `qsat_ice` reads `wv_sat_methods`'
+constants, set by `to_be_ccppized_temporary`'s init through
+`wv_saturation`, which needs CAM host modules (reported in
+`test_micro_pumas_ccpp.skipped`; kept on the list as a reminder,
+`wv-saturation-ccppize`). CI passed (PR #203).

@@ -91,7 +91,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
-| `scheme-io-capture-ddt-args` | 4-8 days (generic: component discovery, recursive capture/restore of allocatable and fixed-size numeric components; the constituent-properties case is done) | S-M |
+| `scheme-io-capture-rte-objects` | 4-6 days (handlers for the RTE optical-property, source-function and flux types through their public procedures; then `ty_gas_concs`; `kdist` later; tests; recapture rrtmgp and c03e) | S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
@@ -1300,59 +1300,30 @@ scope (the write race AND unbounded multi-task volume, by restricting
 capture to one task) with a simpler mechanism than the task-id-in-
 filename approach originally envisioned. CHANGELOG.md L12426.
 
-**ID: `scheme-io-capture-ddt-args`. Capture derived-type arguments.**
-Added 2026-10-28. The constituent-properties case is done (2026-11-01,
-CHANGELOG.md L13800: `_DDT_CAPTURES` in the pass, captured as subgroup
-`in/<arg>` and rebuilt in the driver); the generic case below is open.
-Update 2026-11-06 (PR #201, CHANGELOG.md L14333): a phase with a
-derived-type argument the capture does not record is now left out of the
-driver, with the argument and type in `test_<scheme>.skipped`. On the
-c03e cam4 list this leaves out the 11 RRTMGP schemes whose sources now
-build (all take RTE-RRTMGP objects; only `rrtmgp_pre`'s
-`timestep_init` phase replays) and 5 vertical-diffusion schemes taking
-`coords1d` (`vertical_diffusion_prepare_inputs`,
-`_diffuse_dry_static_energy`, `_wind_damping_rate`, and the `run`
-phases of `_diffuse_horizontal_momentum`, `_diffuse_tracers`).
-`coords1d` (`to_be_ccppized/coords_1d.F90`: two integers and six
-allocatable `real(r8)` rank-2 arrays, not polymorphic) is a good first
-generic case. The capture pass's type scope is {integer, logical,
-real(kind_phys)} x rank 0-3 (`scheme_io_capture_pass.py`, module
-docstring); a derived-type argument is skipped, and the generated driver
-declares and passes it uninitialized, so a scheme that reads one replays
-wrong. First case: `geopotential_temp_run`'s `cprops`
-(`ccpp_constituent_prop_ptr_t`), one of the 12 Kessler GPU ports
-(`gpu-fphystest-kessler`); `qneg`'s properties appear only in its
-timestep-final/final phases. Update 2026-11-05 (c02i `rrtmgp`
-capture): the generated driver now declares a derived-type argument as
-`real(kind_phys)` (e.g. `rrtmgp_sw_aerosols`' `aer_sw`, a
-`class(ty_optical_props_2str_ccpp)`), so the driver does not compile at
-all; until the generic case is done, the generator should skip such a
-driver with a message naming the argument and its type (the capture
-itself stays), as `scheme-io-capture-host-module-schemes` A does for
-host modules. Later cases: PUMAS's `micro_proc_rates`
-(`proc_rates_type`, 119 allocatable components) and the rte-rrtmgp
-objects (`gpu-fphystest-pumas`, `gpu-fphystest-rrtmgp`). Approach:
-capture the components the scheme can read, found from the type's
-definition (DDT `.meta` table, or fparser2 on the defining module):
-allocatable and fixed-size numeric components recursively, allocation
-status and bounds included; rebuild the object in the driver before the
-call. The constituent properties are a pointer type wrapping
-`ccpp_constituent_properties_t`, whose fields are set through
-type-bound procedures, so a special case that captures the property
-values (standard name, molar mass, water-species and dry/moist flags,
-minimum value) and reconstructs them through the same setters may be
-simpler than generic recursion. Polymorphic (`class(...)`) components
-are out of scope at first. RRTMGP does not fit that scope: in c02i, 13 of
-the 22 rrtmgp host schemes on the capture list (`rrtmgp_pre`,
-`rrtmgp_inputs`, `rrtmgp_post`, and the sw/lw `cloud_optics`,
-`mcica_subcol_gen`, `gas_optics_pre`, `aerosols`, `calculate_fluxes`)
-take arguments that are themselves polymorphic
-(`class(ty_optical_props_{1scl,2str}_ccpp)`, `ty_gas_concs_ccpp`,
-`ty_fluxes_{byband,broadband}_ccpp`, `ty_source_func_lw_ccpp`,
-`ty_gas_optics_rrtmgp_ccpp`), with nested allocatable components and, for
-`kdist`, lookup tables read from a file at init. Without polymorphic
-support they are tested by the full rrtmgp GPU testmod against its CPU
-reference, not by replay.
+**ID: `scheme-io-capture-ddt-args`. Resolved (2026-11-06, PR #203).** CHANGELOG.md L14461.
+
+**ID: `scheme-io-capture-rte-objects`. Capture the RTE-RRTMGP derived
+types.** Added 2026-11-06 (from `scheme-io-capture-ddt-args`). The
+generic capture records flat types only; every RRTMGP type is out of
+its reach: the optical properties and the longwave source functions
+(`ty_optical_props_{1scl,2str}`, `ty_source_func_lw`) have private
+components in their base types (`ty_optical_props%band2gpt`,
+`gpt2band`, `band_lims_wvn`, `ty_optical_props_arry%top_at_1`); the
+fluxes (`ty_fluxes_{broadband,byband}`) have pointer components
+(`flux_up`, `flux_dn`, ...); `ty_gas_concs` has private components and
+character names; `kdist` (`ty_gas_optics_rrtmgp`) has private lookup
+tables read from files at init. In c03e this leaves 11 RRTMGP schemes
+(most phases of `rrtmgp_pre`, `_inputs`, `_post`, the sw/lw
+`gas_optics`, `aerosols`, `rte`, `calculate_fluxes`, `cloud_optics`,
+`mcica_subcol_gen`) without a replay. Wanted: handlers per type, as for
+the constituent properties (`_DDT_CAPTURES`), through RTE's public
+procedures -- the optical properties' public `tau`/`ssa`/`g` and their
+band limits (`get_band_lims_wavenumber`, `get_band_lims_gpoint`),
+rebuilt with `init` and `alloc_1scl`/`alloc_2str`; the fluxes' targets
+as arrays the driver allocates and points the components at;
+`ty_gas_concs` through `get_vmr`/`set_vmr`. `kdist` comes last (its
+init reads files; replaying the setup scheme may be simpler). Needed for
+scheme-by-scheme GPU checks of `gpu-fphystest-rrtmgp`.
 
 **ID: `scheme-io-capture-group-replay`. Replay a whole generated group
 subroutine.** Added 2026-10-28. Per-scheme replay checks one scheme's
@@ -1377,8 +1348,8 @@ residency and constituent views) vs at `ccpp_physics_run` (covers the
 host cap's own directives, but its inputs are host-model module
 variables); suite state that crosses phases (capture it at group entry,
 or replay timestep_init -> run -> timestep_final). Needs
-`scheme-io-capture-ddt-args` for groups with derived-type arguments other
-than the constituent properties. A flattened composite
+`scheme-io-capture-rte-objects` for groups with RTE-RRTMGP
+derived-type arguments. A flattened composite
 has no subroutine of its own; package caps (2f) would allow
 package-scoped replay later.
 Not in the Kessler GPU plan (2026-11-02, see `gpu-fphystest-kessler`):
