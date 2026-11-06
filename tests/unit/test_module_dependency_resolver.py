@@ -193,3 +193,104 @@ def test_whole_examples_tree_is_too_broad_a_root():
     # whole examples/ tree must raise, not silently pick one.
     with pytest.raises(ValueError, match="defined in more than one file"):
         build_module_index("examples")
+
+
+# ── scan_fortran_source / source_closure (scheme-io-capture-host-module-
+#    schemes: the capture drivers' sources, and MPI use) ─────────────────────
+
+from xdsl_ccpp.transforms.module_dependency_resolver import (  # noqa: E402
+    scan_fortran_source,
+    source_closure,
+)
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return str(path)
+
+
+def test_scan_reads_statements_a_whole_file_parse_rejects(tmp_path):
+    # USE_CONTIGUOUS is a macro (coords_1d.F90): the file does not parse
+    # as Fortran, its statements still do.
+    f = _write(tmp_path / "c.F90", (
+        "module Coords\n"
+        "  use, intrinsic :: iso_fortran_env, only: &\n"
+        "       real64\n"
+        "  USE Shr_Kind_Mod ! comment\n"
+        "  interface c\n"
+        "     module procedure c_one\n"
+        "  end interface\n"
+        "contains\n"
+        "  subroutine c_one(x)\n"
+        "    real(real64), USE_CONTIGUOUS intent(in) :: x(:)\n"
+        "    include 'mpif.h'\n"
+        "    user = 1\n"
+        "    msg = 'use foo'\n"
+        "  end subroutine\n"
+        "end module\n"
+    ))
+    facts = scan_fortran_source(f)
+    assert facts.uses == {"iso_fortran_env", "shr_kind_mod"}
+    assert facts.modules == {"coords"}
+    assert facts.includes == {"mpif.h"}
+
+
+def test_scan_with_defines_leaves_out_excluded_branches(tmp_path):
+    f = _write(tmp_path / "m.F90", (
+        "module m\n#ifdef SPMD\n  use mpi\n#else\n  use serial_stub\n#endif\nend module\n"
+    ))
+    assert scan_fortran_source(f).uses == {"mpi", "serial_stub"}
+    assert scan_fortran_source(f, {}).uses == {"serial_stub"}
+    assert scan_fortran_source(f, {"SPMD": None}).uses == {"mpi"}
+
+
+def _repo(tmp_path):
+    root = tmp_path / "repo"
+    scheme = _write(root / "schemes" / "s.F90",
+                    "module s\n  use ccpp_kinds\n  use util_a\n  use host_only\nend module\n")
+    _write(root / "utils" / "util_a.F90", "module util_a\n  use util_b\nend module\n")
+    _write(root / "utils" / "b.F90", "module util_b\n  use, intrinsic :: iso_c_binding\nend module\n")
+    _write(root / "utils" / "unused.F90", "module unused\nend module\n")
+    return str(root), scheme
+
+
+def test_closure_follows_uses_through_the_tree(tmp_path):
+    root, scheme = _repo(tmp_path)
+    closure = source_closure([scheme], root, provided={"ccpp_kinds"})
+    assert [os.path.relpath(p, root) for p in closure.sources] == [
+        "schemes/s.F90", "utils/util_a.F90", "utils/b.F90",
+    ]
+    assert closure.unresolved == {"host_only": "used by s.F90"}
+    assert closure.mpi == []
+
+
+def test_closure_prefers_a_file_already_in_it_and_reports_ambiguity(tmp_path):
+    root, scheme = _repo(tmp_path)
+    _write(tmp_path / "repo" / "other" / "util_b.F90", "module util_b\nend module\n")
+    dup = source_closure([scheme], root, provided={"ccpp_kinds", "host_only"})
+    assert "util_b" in dup.unresolved and "defined in 2 files" in dup.unresolved["util_b"]
+    # A start file (e.g. a metadata dependency) that defines the module wins.
+    named = os.path.join(root, "utils", "b.F90")
+    picked = source_closure([scheme, named], root, provided={"ccpp_kinds", "host_only"})
+    assert picked.unresolved == {}
+    assert named in picked.sources
+
+
+def test_closure_finds_mpi_in_a_used_module(tmp_path):
+    root, scheme = _repo(tmp_path)
+    _write(tmp_path / "repo" / "utils" / "b.F90",
+           "module util_b\ncontains\n subroutine r()\n  use mpi, only: mpi_sum\n end subroutine\nend module\n")
+    _write(tmp_path / "repo" / "utils" / "util_a.F90",
+           "module util_a\n  use util_b\n  include 'mpif.h'\nend module\n")
+    closure = source_closure([scheme], root, provided={"ccpp_kinds"})
+    found = sorted((os.path.basename(p), what) for p, what in closure.mpi)
+    assert found == [("b.F90", "use mpi"), ("util_a.F90", "include 'mpif.h'")]
+    assert "mpi" not in closure.unresolved
+
+
+def test_closure_without_a_root_resolves_only_the_given_files(tmp_path):
+    root, scheme = _repo(tmp_path)
+    closure = source_closure([scheme], None, provided={"ccpp_kinds"})
+    assert closure.sources == [scheme]
+    assert set(closure.unresolved) == {"util_a", "host_only"}

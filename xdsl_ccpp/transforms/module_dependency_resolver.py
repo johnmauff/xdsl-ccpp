@@ -28,13 +28,15 @@ coherent build (a single example directory here; the whole
 
 from __future__ import annotations
 
+import functools
 import os
+from dataclasses import dataclass, field
 
 # Framework-provided modules the generator itself unconditionally supplies
 # (confirmed this session: real capgen-v1's `utility_paths` in
 # ccpp_capgen.py, and xdsl_ccpp's own `_resolve_framework_f90_files()` in
 # ccpp_datatable.py) -- never a scheme's own dependency to declare.
-_FRAMEWORK_MODULES = {
+FRAMEWORK_MODULES = {
     "ccpp_kinds",
     "ccpp_constituent_prop_mod",
     "ccpp_scheme_utils",
@@ -58,15 +60,89 @@ _INTRINSIC_MODULES = {
 }
 
 
-def _parse(f90_path: str):
+# MPI, which a captured scheme must not use (scheme-io-capture-host-module-
+# schemes): its replay driver runs as one serial process.
+MPI_MODULES = frozenset({"mpi", "mpi_f08"})
+MPI_INCLUDE_FILES = frozenset({"mpif.h"})
+
+
+@dataclass(frozen=True)
+class FortranSourceFacts:
+    """What one Fortran file declares and needs (lowercased names)."""
+
+    uses: frozenset  # modules USEd anywhere in the file
+    modules: frozenset  # modules the file defines
+    includes: frozenset  # files named by Fortran INCLUDE lines
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     import fparser.two.Fortran2003 as f03
+    from fparser.common.readfortran import FortranStringReader, Line
     from fparser.two.parser import ParserFactory
-    from fparser.common.readfortran import FortranStringReader
 
     ParserFactory().create(std="f2003")
-    with open(f90_path, errors="replace") as f:
+    with open(path, errors="replace") as f:
         source = f.read()
-    return f03.Program(FortranStringReader(source))
+    if defines_key is not None:
+        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+
+        source = preprocess_fortran_source(source, path, dict(defines_key))
+    uses: set = set()
+    modules: set = set()
+    includes: set = set()
+    # Statement by statement (the reader joins continuation lines and drops
+    # comments), each matched against fparser's own grammar for that
+    # statement: a whole-file parse fails on files that build fine (macros
+    # such as coords_1d.F90's USE_CONTIGUOUS, F2008 specifiers), and such a
+    # file would hide all its USEs.
+    for item in FortranStringReader(source, ignore_comments=True):
+        if not isinstance(item, Line):
+            continue
+        keyword = item.line.lstrip()[:7].lower()
+        try:
+            if keyword.startswith("use"):
+                uses.add(str(f03.Use_Stmt(item.line).children[2]).lower())
+            elif keyword.startswith("module"):
+                # "module procedure ..." is not a Module_Stmt.
+                modules.add(str(f03.Module_Stmt(item.line).children[1]).lower())
+            elif keyword.startswith("include"):
+                includes.add(str(f03.Include_Stmt(item.line).children[0]).lower())
+        except Exception:  # noqa: BLE001 -- not that statement (e.g. "user = 1")
+            continue
+    return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes))
+
+
+def scan_fortran_source(
+    f90_path: str, preproc_defs: "dict[str, str | None] | None" = None,
+) -> FortranSourceFacts:
+    """The modules *f90_path* USEs and defines and the files it INCLUDEs.
+    With *preproc_defs* (fortran_preprocess.parse_preproc_defines), code
+    the C preprocessor would exclude is left out; without, every branch
+    counts. Cached per file (and its modification time) and defines."""
+    key = None if preproc_defs is None else tuple(sorted(preproc_defs.items()))
+    stat = os.stat(f90_path)
+    return _scan_cached(os.path.abspath(f90_path), (stat.st_mtime_ns, stat.st_size), key)
+
+
+def module_definitions(root_dir: str) -> "dict[str, list[str]]":
+    """``{module_name_lowercased: [files defining it]}`` over every ``.F90``
+    file under *root_dir* (more than one file: an ambiguity the caller
+    decides about)."""
+    index: dict = {}
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            if not fname.lower().endswith(".f90"):
+                continue
+            path = os.path.join(dirpath, fname)
+            try:
+                facts = scan_fortran_source(path)
+            except (OSError, ValueError):
+                continue
+            for name in facts.modules:
+                index.setdefault(name, []).append(path)
+    return index
 
 
 def build_module_index(root_dir: str) -> dict[str, str]:
@@ -78,44 +154,96 @@ def build_module_index(root_dir: str) -> dict[str, str]:
     should resolve by narrowing *root_dir*, not something to silently
     pick-one on.
     """
-    import fparser.two.Fortran2003 as f03
-    from fparser.two.utils import walk
-
     index: dict[str, str] = {}
-    for dirpath, _dirnames, filenames in os.walk(root_dir):
-        for fname in filenames:
-            if not fname.lower().endswith(".f90"):
-                continue
-            path = os.path.join(dirpath, fname)
-            try:
-                tree = _parse(path)
-            except Exception:
-                # Not every .F90 under root_dir need parse cleanly (e.g. a
-                # file this project doesn't own, like a vendored external
-                # library source) -- it simply can't contribute to the
-                # index, not a reason to abort the whole scan.
-                continue
-            for module in walk(tree, f03.Module):
-                module_stmt = module.children[0]
-                name = str(module_stmt.children[1]).lower()
-                if name in index and os.path.abspath(index[name]) != os.path.abspath(path):
-                    raise ValueError(
-                        f"module '{name}' is defined in more than one file "
-                        f"within '{root_dir}': '{index[name]}' and '{path}' "
-                        "-- narrow root_dir to resolve the ambiguity"
-                    )
-                index[name] = path
+    for name, paths in module_definitions(root_dir).items():
+        if len(paths) > 1:
+            raise ValueError(
+                f"module '{name}' is defined in more than one file "
+                f"within '{root_dir}': '{paths[0]}' and '{paths[1]}' "
+                "-- narrow root_dir to resolve the ambiguity"
+            )
+        index[name] = paths[0]
     return index
 
 
 def extract_used_modules(f90_path: str) -> set[str]:
     """Return the (lowercased) set of module names *f90_path* itself
     ``USE``s, anywhere in the file."""
-    import fparser.two.Fortran2003 as f03
-    from fparser.two.utils import walk
+    return set(scan_fortran_source(f90_path).uses)
 
-    tree = _parse(f90_path)
-    return {str(u.children[2]).lower() for u in walk(tree, f03.Use_Stmt)}
+
+@dataclass
+class SourceClosure:
+    """The Fortran sources a set of files needs, found by following USE
+    statements through one source tree (source_closure)."""
+
+    sources: list = field(default_factory=list)  # absolute paths, starting files first
+    unresolved: dict = field(default_factory=dict)  # module -> reason (who uses it, why missing)
+    mpi: list = field(default_factory=list)  # (file, "use mpi" / "include 'mpif.h'")
+
+
+def source_closure(
+    start_files, root_dir: "str | None", provided=frozenset(),
+    preproc_defs: "dict[str, str | None] | None" = None,
+) -> SourceClosure:
+    """Follow the USE statements of *start_files* (and of each file added)
+    through the ``.F90`` files under *root_dir*: every module they use that
+    is not intrinsic, not MPI and not in *provided* (lowercased names the
+    build supplies otherwise) must be defined by a file already in the
+    closure, or by exactly one file under *root_dir*, which is added.
+    Modules found nowhere, or in several files, are *unresolved*; MPI use
+    (MPI_MODULES, MPI_INCLUDE_FILES) is listed in *mpi*. The index of
+    *root_dir* is built only when a module is not defined by the files at
+    hand."""
+    result = SourceClosure()
+    seen: set = set()
+    queue = []
+    for path in start_files:
+        path = os.path.abspath(path)
+        if path not in seen:
+            seen.add(path)
+            queue.append(path)
+    facts: dict = {}
+    defined: dict = {}  # module -> file in the closure
+    index = None
+    pos = 0
+    while pos < len(queue):
+        # Scan everything queued so far before resolving, so a module
+        # defined by a file already in the closure wins over the index.
+        for path in queue[pos:]:
+            facts[path] = scan_fortran_source(path, preproc_defs)
+            for name in facts[path].modules:
+                defined.setdefault(name, path)
+        batch, pos = queue[pos:], len(queue)
+        for path in batch:
+            base = os.path.basename(path)
+            for name in sorted(facts[path].uses):
+                if name in MPI_MODULES:
+                    result.mpi.append((path, f"use {name}"))
+                    continue
+                if (name in _INTRINSIC_MODULES or name in provided
+                        or name in defined or name in result.unresolved):
+                    continue
+                if index is None:
+                    index = module_definitions(root_dir) if root_dir else {}
+                found = index.get(name, [])
+                if len(found) == 1:
+                    target = os.path.abspath(found[0])
+                    defined[name] = target
+                    if target not in seen:
+                        seen.add(target)
+                        queue.append(target)
+                elif found:
+                    result.unresolved[name] = (
+                        f"used by {base}; defined in {len(found)} files under {root_dir}"
+                    )
+                else:
+                    result.unresolved[name] = f"used by {base}"
+            for name in sorted(facts[path].includes):
+                if name in MPI_INCLUDE_FILES:
+                    result.mpi.append((path, f"include '{name}'"))
+    result.sources = list(queue)
+    return result
 
 
 def _is_ddt_or_host_table(f90_path: str) -> bool:
@@ -176,7 +304,7 @@ def resolve_scheme_dependencies(f90_path: str, root_dir: str) -> list[str]:
     deps: list[str] = []
     unresolved: list[str] = []
     for module_name in sorted(used):
-        if module_name in _FRAMEWORK_MODULES or module_name in _INTRINSIC_MODULES:
+        if module_name in FRAMEWORK_MODULES or module_name in _INTRINSIC_MODULES:
             continue
         target = index.get(module_name)
         if target is None:

@@ -424,3 +424,31 @@ def test_kind_module_sources_come_before_ccpp_kinds_in_the_support_library():
     assert (text.index('"/phys/pumas/pumas_kinds.F90"')
             < text.index('"/out/ccpp_kinds.F90"')
             < text.index("ccpp_capture_mod.F90"))
+
+
+def test_a_scheme_using_mpi_is_not_captured(tmp_path):
+    # scheme-io-capture-host-module-schemes: a replay runs as one serial
+    # process, so a scheme that uses MPI gets no capture calls and no
+    # driver; a report says why, and an earlier generation's driver and
+    # fragment are removed. The other schemes are unaffected.
+    scheme = _kessler_without_memory_space(tmp_path)
+    source = (scheme / "kessler_update.F90").read_text()
+    marker = "      !Local variables\n"
+    assert marker in source
+    (scheme / "kessler_update.F90").write_text(
+        source.replace(marker, "      include 'mpif.h'\n" + marker, 1))
+    drivers = tmp_path / "drivers"
+    drivers.mkdir()
+    (drivers / "test_kessler_update.F90").write_text("stale\n")
+    (drivers / "test_kessler_update.cmake").write_text("stale\n")
+
+    drivers, cap = _run_kessler_capture(tmp_path, scheme)
+
+    assert "ccpp_capture_begin('kessler_update_run'" not in cap
+    assert "ccpp_capture_begin('kessler_run'" in cap
+    assert sorted(os.listdir(drivers)) == [
+        "CMakeLists.txt", "test_kessler.F90", "test_kessler.cmake",
+        "test_kessler_update.skipped",
+    ]
+    report = (drivers / "test_kessler_update.skipped").read_text()
+    assert "kessler_update: not captured: it uses MPI (kessler_update.F90 has include 'mpif.h')" in report
