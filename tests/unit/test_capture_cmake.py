@@ -62,7 +62,8 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     # nvfortran: no FMA (as CAM-SIMA builds), and a CPU build must not
     # compile the schemes' !$acc directives (nvfortran does by default).
     assert "add_compile_options(-Mnofma)" in text
-    assert "list(APPEND _acc_flags -gpu=nofma,math_uniform)" in text
+    assert "list(APPEND _acc_flags -gpu=${CCPP_CAPTURE_GPU_TARGET},nofma,math_uniform)" in text
+    assert 'set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING' in text
     assert "add_compile_options(-noacc)" in text
     # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
     assert "add_compile_definitions(USE_CONTIGUOUS=)" in text

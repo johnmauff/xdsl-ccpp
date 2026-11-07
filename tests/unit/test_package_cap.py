@@ -477,7 +477,7 @@ def _slicing_arg(local, std, intent, dims, extra=""):
 {extra}"""
 
 
-def _slicing_caps(tmp_path, package_caps):
+def _slicing_caps(tmp_path, package_caps, **extra):
     """setup writes a band count at init; producer writes wk (with interface
     levels, which no scheme takes as an argument) and bw (allocatable, sized
     by the band count); consumer, after the hook, reads both."""
@@ -502,7 +502,8 @@ def _slicing_caps(tmp_path, package_caps):
     (tmp_path / "pkg_suite.py").write_text(_SUITE.replace(
         "@ccpp_suite", 'setup = ccpp_scheme_ref("setup")\n\n@ccpp_suite').replace(
         "        step(hook=diag)", "        setup()\n        step(hook=diag)"))
-    caps = _generate(tmp_path, paths, "caps", package_caps=package_caps, legacy_mode=True)
+    caps = _generate(tmp_path, paths, "caps", package_caps=package_caps, legacy_mode=True,
+                     **extra)
     return {name: src.replace("&\n", " ") for name, src in caps.items()}
 
 
@@ -520,6 +521,20 @@ def test_suite_owned_arrays_are_sliced_to_the_current_columns(tmp_path):
     # over all columns like every other suite-owned array.
     assert re.search(r"allocate\(bw\(ncols, nb\)\)", suite)
     assert not re.search(r"allocate\(\w+\(ncol\b", suite)
+
+
+def test_capture_records_an_array_sliced_by_its_own_extent(tmp_path):
+    """capture-size-bounds: wk is passed as wk(col_start:col_end,
+    1:size(wk, 2)) -- no scheme argument carries its interface extent -- and
+    is still captured, after the producer and before the consumer."""
+    caps = _slicing_caps(tmp_path, package_caps=False, capture_scheme=["producer"])
+    suite = caps["pkg_suite_cap.F90"]
+    assert re.search(
+        r"call ccpp_capture\(\s*'wk', wk\(col_start:col_end, 1:size\(wk, 2\)\), "
+        r"'\w*work_at_interfaces',\s*'1',\s*"
+        r"'horizontal_loop_extent,vertical_interface_dimension'\)", suite)
+    caps = _slicing_caps(tmp_path, package_caps=False, capture_scheme=["consumer"])
+    assert re.search(r"call ccpp_capture\(\s*'wk', ", caps["pkg_suite_cap.F90"])
 
 
 def test_package_state_is_sliced_to_the_current_columns(tmp_path):

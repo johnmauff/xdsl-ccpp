@@ -160,9 +160,9 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _call_args,
     _call_param_names,
     _device_arg_names,
-    _expr_text,
     _scf_if,
     directive_op,
+    has_definite_name,
     iter_scheme_call_sites,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
@@ -839,8 +839,8 @@ class SchemeIOCapturePass(ModulePass):
                 # A character(len=*) argument arrives through a cast of the
                 # fixed-length variable; capture that variable.
                 value = _uncast(value)
-                # Only values with a definite Fortran name can be captured.
-                if _expr_text(value) is None:
+                # Only definite references can be captured.
+                if not has_definite_name(value):
                     continue
                 if handler is not None:
                     self._ensure_decl(call_op, handler.write, handler.module, declared_decls)

@@ -81,7 +81,8 @@ _TOP_TEMPLATE = """\
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
 # PATH, or -DNF_CONFIG=...). -DOPENACC=ON builds with OpenACC
 # (CCPP_CAPTURE_ACC_FLAGS, default -acc; with nvfortran
-# -gpu=nofma,math_uniform is added) for GPU replay of the same captures:
+# -gpu=<CCPP_CAPTURE_GPU_TARGET, default cc80>,nofma,math_uniform is added) for
+# GPU replay of the same captures:
 # the drivers always carry their own enter/exit data directives, inside
 # #ifdef USE_GPU as in the caps, and an OpenACC build defines USE_GPU (as
 # CAM-SIMA's nvhpc GPU builds do). With nvfortran a CPU build gets -noacc -- nvfortran
@@ -106,6 +107,8 @@ if(NOT CCPP_CAPTURE_DIR)
 endif()
 option(OPENACC "Build the drivers with OpenACC (GPU replay)" OFF)
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
+set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING
+    "nvfortran GPU target (-gpu=<target>; cc80: Derecho's A100s, as CAM-SIMA builds)")
 set(CCPP_CAPTURE_EXTRA_SOURCES "" CACHE STRING
     "Further Fortran sources the schemes use (;-separated absolute paths)")
 
@@ -132,7 +135,10 @@ add_compile_definitions(USE_CONTIGUOUS=)
 if(OPENACC)
   separate_arguments(_acc_flags UNIX_COMMAND "${{CCPP_CAPTURE_ACC_FLAGS}}")
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-    list(APPEND _acc_flags -gpu=nofma,math_uniform)
+    # An explicit target, as CAM-SIMA's nvhpc builds use: without one,
+    # nvfortran on a node without a GPU compiles for every target it knows,
+    # some of which need device tools an installation may lack.
+    list(APPEND _acc_flags -gpu=${{CCPP_CAPTURE_GPU_TARGET}},nofma,math_uniform)
   endif()
   add_compile_options(${{_acc_flags}})
   add_link_options(${{_acc_flags}})

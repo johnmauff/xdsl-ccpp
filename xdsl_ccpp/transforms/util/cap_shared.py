@@ -777,6 +777,36 @@ def _expr_text(value) -> "str | None":
     return value_name(value)
 
 
+def has_definite_name(value) -> bool:
+    """Whether a value is a definite reference the printers can spell: what
+    _expr_text renders, plus a CapVarRefOp -- a cap-module variable, or an
+    expression on names and literals such as the size() extent suite_owned
+    gives a suite-owned array section whose extent no scheme argument
+    carries (capture-size-bounds). Decided from the ops; no text is built."""
+    owner = value.owner
+    if isa(owner, CapVarRefOp):
+        return owner.var_name is not None or _is_definite_expr(owner.target.block.first_op)
+    if isa(owner, RankReducingSliceOp):
+        return has_definite_name(owner.source) and all(
+            has_definite_name(bound)
+            for bound in (
+                list(owner.range_lowers) + list(owner.range_uppers)
+                + list(owner.scalar_indices)
+            )
+        )
+    return _expr_text(value) is not None
+
+
+def _is_definite_expr(op) -> bool:
+    """A CapVarRefOp target built only from variable references, integer
+    literals and keyword-free calls on those."""
+    if isa(op, VarRefExprOp) or isa(op, arith.ConstantOp):
+        return True
+    if isa(op, CallExprOp) and not op.kwargs:
+        return all(_is_definite_expr(region.block.first_op) for region in op.args)
+    return False
+
+
 def value_name(value) -> "str | None":
     """The Fortran name of an SSA value: for a function's block argument,
     the dummy-argument name its function records (SUITE_ARG_NAME in
