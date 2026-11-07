@@ -14519,3 +14519,54 @@ constants, set by `to_be_ccppized_temporary`'s init through
 `wv_saturation`, which needs CAM host modules (reported in
 `test_micro_pumas_ccpp.skipped`; kept on the list as a reminder,
 `wv-saturation-ccppize`). CI passed (PR #203).
+
+## `capture-size-bounds` and `capture-compile-flags`: arguments sliced by their own extent, honest replays, host compile flags (PR #204, 2026-11-06)
+
+Found while GPU-porting `micro_pumas_ccpp_dimensions_post`: its CPU replay
+passed while comparing nothing, and its GPU replay crashed ("out of
+memory allocating 18446744073709551448 bytes").
+
+- Size bounds (`xdsl_ccpp/transforms/util/cap_shared.py`,
+  `scheme_io_capture_pass.py`): a suite-owned array whose extent no
+  scheme argument carries is passed as `x(col_start:col_end, 1:size(x,
+  2))` (`suitecap/suite_owned.py`). The capture pass required
+  `_expr_text` (text) for every captured argument and silently dropped
+  these: PUMAS `lflx`/`iflx`/`gflx`/`rflx`/`sflx`, gw_cam4 `egwdffi`,
+  `egwdffi_tot`, `kvt_gw`, `ni`, `rhoi`, `taua`, `ubi`, cam4 `p_lev`. New
+  `has_definite_name` decides from the ops (a CapVarRefOp by name or a
+  call on names and literals; slices recursively), building no text.
+- Unrecorded arguments (`scheme_io_capture_pass.py`
+  `_uncaptured_param_reason`): the driver read every in/out argument
+  from the capture file; a missing one was allocated 0 x 0
+  (`ccpp_capture_extents`), the scheme wrote past it, and the compare of
+  two empty arrays passed. Such a phase is now left out of the driver
+  with a reason (warning, `test_<scheme>.skipped`). Decided at
+  generation: a run-time check would come after the out-of-bounds write.
+- Compile flags (`xdsl_ccpp/tools/capture_cmake.py`): the generated
+  `CMakeLists.txt` applies `capture_compile_flags.txt` next to the
+  drivers when the host wrote one (`<file name> <flags...>` per source,
+  `* <flags...>` for the rest; `set_source_files_properties`
+  COMPILE_OPTIONS, `CCPP_CAPTURE_COMPILE_FLAGS` to point elsewhere). A
+  replay matches the capture bit for bit only with the model's flags (a
+  production CAM-SIMA build compiles PUMAS with its own rule).
+  xdsl_ccpp only applies the file; the host derives it (CAM-SIMA's
+  `buildlib` from make's output, `cam_autogen.write_capture_compile_flags`,
+  merged across incremental builds; companion CAM-SIMA change). An
+  earlier draft read CAM-SIMA's build logs from xdsl_ccpp; dropped as host
+  knowledge in xdsl_ccpp.
+- BACKLOG `expr-text-identity-keys`: `_expr_text` still builds Fortran
+  text the passes use as identity keys.
+- Tests: the `size()`-bounded slice captured from producer and consumer
+  (`test_package_cap.py`); the skip reason; the flags-file CMake.
+
+Related, outside xdsl-ccpp: ccs_config's nvhpc production rules no
+longer use `-Mfprelaxed` (relaxed host div/sqrt broke CPU/GPU agreement
+and replay: `pumas_post_main`'s `pgam`/`lamc` differed by up to 2.8e-9 in
+the first production pumas capture, c05a).
+
+Verification: pytest 1446 passed. PUMAS production capture c05b
+(`SMS_Ln2`, model flags applied, "Compile flags from
+.../capture_compile_flags.txt"): 7/8 bit-for-bit on CPU and GPU, including
+`micro_pumas_ccpp_dimensions_post` (five fluxes captured and compared,
+ON-GPU) and `pumas_post_main`; `micro_pumas_ccpp` is the known
+`wv-saturation-ccppize` failure.

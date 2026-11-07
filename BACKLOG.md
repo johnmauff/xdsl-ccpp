@@ -108,6 +108,7 @@ measured data, and will drift as items are reassessed.
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
 | `expr-text-identity-keys` | 1-2 days (structural keys instead of text; same results in the passes that dedupe by them) | XS |
+| `scheme-io-capture-size-bounds-recapture` | 0.5 day plus queue (two capture runs, CPU and GPU replays) | XS |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -1304,6 +1305,18 @@ filename approach originally envisioned. CHANGELOG.md L12426.
 
 **ID: `scheme-io-capture-ddt-args`. Resolved (2026-11-06, PR #203).** CHANGELOG.md L14461.
 
+**ID: `capture-size-bounds`. Resolved (2026-11-06, PR #204).** CHANGELOG.md L14523.
+
+**ID: `capture-compile-flags`. Resolved (2026-11-06, PR #204).** CHANGELOG.md L14523.
+
+**ID: `scheme-io-capture-size-bounds-recapture`. Recapture gw_cam4 and
+cam4.** Added 2026-11-06 (from `capture-size-bounds`). Their existing
+captures lack the arguments PR #204 now records (gw_cam4 `egwdffi`,
+`egwdffi_tot`, `kvt_gw`, `ni`, `rhoi`, `taua`, `ubi`; cam4 `p_lev`), and
+their drivers predate the skip of unrecorded arguments, so those
+arguments are not compared. Recapture both (production, so the flags
+file applies) and replay on CPU and GPU.
+
 **ID: `scheme-io-capture-rte-objects`. Capture the RTE-RRTMGP derived
 types.** Added 2026-11-06 (from `scheme-io-capture-ddt-args`). The
 generic capture records flat types only; every RRTMGP type is out of
@@ -1936,6 +1949,9 @@ Supporting items (not tracked elsewhere):
   with the user: change the non-debug CPU PUMAS flags so CPU and GPU agree
   bit for bit (the nvhpc flag policy), or loosen the snapshot tolerance
   for the non-debug CPU test.
+  2026-11-06: (3) partly done -- ccs_config's nvhpc production rules no
+  longer use `-Mfprelaxed` (PUMAS had `-Mfprelaxed=sqrt`); new nvhpc runs
+  needed for (1) and (2).
 - `pumas-module-props-device` — **ESCOMP/PUMAS: make `mg_*_props`
   device-resident once.** Add the six `MGHydrometeorProps` module
   variables to the existing `!$acc declare create(...)`
