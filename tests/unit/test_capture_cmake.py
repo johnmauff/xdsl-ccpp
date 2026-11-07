@@ -72,6 +72,11 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "target_link_libraries(ccpp_capture_support PUBLIC ${BLAS_LIBRARIES})" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
+    # The host's compile flags per source, applied only if the file exists
+    # (capture-compile-flags); xdsl_ccpp does not derive them itself.
+    assert 'set(CCPP_CAPTURE_COMPILE_FLAGS "${CMAKE_CURRENT_SOURCE_DIR}/capture_compile_flags.txt"' in text
+    assert 'if(EXISTS "${CCPP_CAPTURE_COMPILE_FLAGS}")' in text
+    assert 'set_source_files_properties("${_source}" PROPERTIES COMPILE_OPTIONS "${_flags}")' in text
 
 
 def test_scheme_sources_are_relative_to_a_selectable_root():
