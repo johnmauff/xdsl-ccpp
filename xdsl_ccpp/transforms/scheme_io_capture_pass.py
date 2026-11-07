@@ -650,6 +650,23 @@ def _build_test_driver_params(
     return params, ""
 
 
+def _uncaptured_param_reason(params: list, captured: "set[str]") -> str:
+    """Why a phase cannot be replayed although its arguments are of
+    capturable types: the driver reads (and for outputs compares) every
+    "in"/"out"/"inout" argument from the capture file, but the call passes
+    one in a form the capture could not record -- the driver would size it
+    from a missing variable (0 x 0) and compare empty arrays
+    (capture-size-bounds). "" when every such argument is captured."""
+    for p in params:
+        if p.category in ("in", "out", "inout") and p.name not in captured:
+            return (
+                f"argument '{p.name}' is not recorded at the call (the cap passes it "
+                f"as a reference the capture cannot write), so the driver could "
+                f"neither supply nor compare it"
+            )
+    return ""
+
+
 def _type_text(arg) -> str:
     """An argument's metadata type for a message, e.g. `real, kind
     pumas_r8, rank 2`."""
@@ -878,6 +895,11 @@ class SchemeIOCapturePass(ModulePass):
                 params, reason = _build_test_driver_params(
                     param_names, args_by_name, driver_device, real_kinds, layouts,
                 )
+                if params is not None:
+                    reason = _uncaptured_param_reason(
+                        params, {entry[1] for entry in before + after})
+                    if reason:
+                        params = None
                 if params is None:
                     skipped[table_name] = reason
                 else:
