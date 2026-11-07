@@ -67,6 +67,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below plus `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
 | `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below plus `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
 | `gpu-pumas-testmod` | 1-2 days | XS |
+| `pumas-nvhpc-optimized-cpu-snapshot` | 1-3 days (non-aborting reruns of s53b/s54b and the CPU/GPU compare; isolate the PUMAS optimization flags against the SMS_D run; tolerance or flag decision with the user) | XS-S |
 | `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
@@ -106,6 +107,8 @@ measured data, and will drift as items are reassessed.
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
+| `expr-text-identity-keys` | 1-2 days (structural keys instead of text; same results in the passes that dedupe by them) | XS |
+| `scheme-io-capture-size-bounds-recapture` | 0.5 day plus queue (two capture runs, CPU and GPU replays) | XS |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -1302,6 +1305,18 @@ filename approach originally envisioned. CHANGELOG.md L12426.
 
 **ID: `scheme-io-capture-ddt-args`. Resolved (2026-11-06, PR #203).** CHANGELOG.md L14461.
 
+**ID: `capture-size-bounds`. Resolved (2026-11-06, PR #204).** CHANGELOG.md L14523.
+
+**ID: `capture-compile-flags`. Resolved (2026-11-06, PR #204).** CHANGELOG.md L14523.
+
+**ID: `scheme-io-capture-size-bounds-recapture`. Recapture gw_cam4 and
+cam4.** Added 2026-11-06 (from `capture-size-bounds`). Their existing
+captures lack the arguments PR #204 now records (gw_cam4 `egwdffi`,
+`egwdffi_tot`, `kvt_gw`, `ni`, `rhoi`, `taua`, `ubi`; cam4 `p_lev`), and
+their drivers predate the skip of unrecorded arguments, so those
+arguments are not compared. Recapture both (production, so the flags
+file applies) and replay on CPU and GPU.
+
 **ID: `scheme-io-capture-rte-objects`. Capture the RTE-RRTMGP derived
 types.** Added 2026-11-06 (from `scheme-io-capture-ddt-args`). The
 generic capture records flat types only; every RRTMGP type is out of
@@ -1896,10 +1911,47 @@ Supporting items (not tracked elsewhere):
   (`pumas_post_main.F90:76`) with a host-only local array, and
   `size_dist_param_basic_vect` (`micro_pumas_utils.F90`, compiled with
   `-acc` as part of PUMAS) runs `!$acc parallel ... default(present)`.
-  Not related to the Kessler step 4 ports. Fix options: give that call
+  Fixed 2026-11-06 (`gpu-port-pumas-interface-schemes`, first step):
+  s53b runs past it, then stops at the snapshot check by 6.1e-10 (cloud
+  droplet number, 2 points; tolerance 5e-10) -- see
+  `pumas-nvhpc-optimized-cpu-snapshot`. Not related to the Kessler step 4
+  ports. Fix options were: give that call
   its own data region in `pumas_post_main` (or port the scheme,
   `gpu-port-pumas-interface-schemes`), or an `if(...)`/host path in the
   PUMAS utility (ESCOMP/PUMAS).
+- `pumas-nvhpc-optimized-cpu-snapshot` — **The optimized nvhpc CPU PUMAS
+  run is far off its snapshot; the CPU/GPU pair is not compared yet.**
+  Added 2026-11-06. To pair the PUMAS GPU test (`SMS_Ln2`, needs
+  `DEBUG=FALSE` for PUMAS `-acc`) with a CPU run of the same build type,
+  `testlist_cam.xml` got an `SMS_Ln2` nvhpc entry for
+  `cam/outfrq_pumas_derecho` (CAM-SIMA, uncommitted at the time; the
+  existing nvhpc CPU test is `SMS_D_Ln2`). First pair: s54b (CPU) and
+  s53b (GPU). Both abort at step 1 in the snapshot check
+  (`ncdata_check_err = .true.`, against the intel snapshot
+  `cam6_4_196_ne3pg3_qpc7_pumas_snapshot_derecho_intel_after_c20260820.nc`;
+  `TestStatus` says RUN PASS, `cs.status` rechecks it as FAIL):
+  - s54b (CPU, non-debug): 2 fields over `min_difference = 1e-9`, by a
+    lot -- rain number concentration 4.4 (9 points), rain mixing ratio
+    0.99 (10 points). Earlier nvhpc CPU runs were `SMS_D` (`-O0`); a
+    non-debug build compiles PUMAS with `-O3 -fastsse -Mflushz
+    -Mfprelaxed=sqrt` (the `PUMAS_OBJS` rule in `Depends.nvhpc`), so this
+    is the first optimized nvhpc CPU PUMAS run against the snapshot. The
+    few, large differences look like a threshold flip.
+  - s53b (GPU): 2 fields just over `min_difference = 5e-10` (cloud
+    droplet number 6.1e-10 at 2 points, rain number 5.4e-10 at 1 point).
+  - No history files, so `./cs.status.s53b -t s54b`'s `COMPARE_cpu_gpu`
+    stays PEND.
+  Wanted: (1) rerun both with `ncdata_check_err = .false.` (report, do not
+  abort) and run the zero-tolerance CPU/GPU compare; (2) run s54a
+  (`SMS_D_Ln2` CPU) and compare it with s54b to isolate the PUMAS
+  optimization flags (`-fastsse`, `-Mfprelaxed=sqrt`; the GPU build adds
+  `-gpu=nofma,math_uniform` and is close to the snapshot); (3) decide
+  with the user: change the non-debug CPU PUMAS flags so CPU and GPU agree
+  bit for bit (the nvhpc flag policy), or loosen the snapshot tolerance
+  for the non-debug CPU test.
+  2026-11-06: (3) partly done -- ccs_config's nvhpc production rules no
+  longer use `-Mfprelaxed` (PUMAS had `-Mfprelaxed=sqrt`); new nvhpc runs
+  needed for (1) and (2).
 - `pumas-module-props-device` — **ESCOMP/PUMAS: make `mg_*_props`
   device-resident once.** Add the six `MGHydrometeorProps` module
   variables to the existing `!$acc declare create(...)`
@@ -1920,11 +1972,13 @@ Supporting items (not tracked elsewhere):
   `!$acc` kernels to the `.F90` only (residency is derived by
   `acc-derive-memory-space`; the `.meta` is unchanged) and keeps the CPU
   path (directives are comments without `-acc`).
-  First: `pumas_post_main` makes the PUMAS GPU testmod abort today (see
-  `gpu-pumas-testmod`): it calls PUMAS's `size_dist_param_basic` (a
-  `default(present)` kernel) with host-only local arrays. Port it with an
-  `!$acc data copyin(icimrst) copy(niic, rei)` region around that loop
-  and add `pumas_post_main.o` to `GPU_SCHEME_OBJS` in `Depends.nvhpc`.
+  First: `pumas_post_main`, done 2026-11-06 (atmospheric_physics and
+  ccs_config, uncommitted at the time): `!$acc data` regions around its
+  calls to `size_dist_param_basic` (`copyin(mg_ice_props, icimrst)
+  copy(niic, rei)`) and `size_dist_param_liq` (`copyin(mg_liq_props,
+  icwmrst, rho) copy(ncic, mu, lambdac)`), `pumas_post_main.o` in
+  `GPU_SCHEME_OBJS`. The c03d capture replay is bit-for-bit on GPU (it had
+  reproduced the abort); the GPU testmod (s53b) runs past it.
 - `gpu-port-kessler-energy-utilities` — **OpenACC ports of the `kessler`
   suite's pointwise energy utilities.** Added 2026-11-02. The `kessler`
   suite (FKESSLER: SE and MPAS testmods) runs `kessler_test`'s 16 schemes
@@ -2352,5 +2406,15 @@ diagnostic messages and single-token metadata keys.
   section in the CAM-SIMA style, move the example scripts to
   `export_suite`, deprecate then remove `emit_ir`, and decide whether the
   standalone script path stays supported. Found by `dead-code-coverage`.
+- `expr-text-identity-keys` — **`_expr_text` builds Fortran text as an
+  identity key.** `transforms/util/cap_shared.py` `_expr_text` renders a
+  reference as Fortran (`exner(col_start:col_end, 1:nz)`), and the passes use
+  the string to decide whether two references are the same
+  (`merge_adjacent_updates`, the section check before a device push,
+  `gpu_debug_print_pass` bounds) and whether a value has a definite name.
+  Nothing prints it, but it is target syntax in a transform. Replace it with a
+  structural key (a tuple of op kind, names, literals and sub-keys) and
+  `has_definite_name` (added by `capture-size-bounds`), which decides from the
+  ops. Found 2026-11-06.
 - `capgen-api-qmin` — resolved 2026-10-31. CHANGELOG.md L13618.
 - `generic-suite-schemes` — resolved 2026-10-31. CHANGELOG.md L13591.

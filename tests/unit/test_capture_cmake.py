@@ -62,7 +62,8 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     # nvfortran: no FMA (as CAM-SIMA builds), and a CPU build must not
     # compile the schemes' !$acc directives (nvfortran does by default).
     assert "add_compile_options(-Mnofma)" in text
-    assert "list(APPEND _acc_flags -gpu=nofma,math_uniform)" in text
+    assert "list(APPEND _acc_flags -gpu=${CCPP_CAPTURE_GPU_TARGET},nofma,math_uniform)" in text
+    assert 'set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING' in text
     assert "add_compile_options(-noacc)" in text
     # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
     assert "add_compile_definitions(USE_CONTIGUOUS=)" in text
@@ -71,6 +72,11 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "target_link_libraries(ccpp_capture_support PUBLIC ${BLAS_LIBRARIES})" in text
     assert 'file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cmake")' in text
     assert "enable_testing()" in text
+    # The host's compile flags per source, applied only if the file exists
+    # (capture-compile-flags); xdsl_ccpp does not derive them itself.
+    assert 'set(CCPP_CAPTURE_COMPILE_FLAGS "${CMAKE_CURRENT_SOURCE_DIR}/capture_compile_flags.txt"' in text
+    assert 'if(EXISTS "${CCPP_CAPTURE_COMPILE_FLAGS}")' in text
+    assert 'set_source_files_properties("${_source}" PROPERTIES COMPILE_OPTIONS "${_flags}")' in text
 
 
 def test_scheme_sources_are_relative_to_a_selectable_root():

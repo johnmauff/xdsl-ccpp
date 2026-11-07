@@ -14,6 +14,17 @@ scheme. This module writes, next to them:
   framework sources), NetCDF from
   ``nf-config``, options, and an ``include()`` of every fragment.
 
+The host model may write ``capture_compile_flags.txt`` next to them (the
+compile flags file, capture-compile-flags): the flags it compiled each
+source with, so that the replay compiles every file the same way and can
+match the capture bit for bit. One line per source, ``<file name>
+<flags...>`` (file name without directory, flags separated by blanks, no
+quoting), and one ``* <flags...>`` line for the sources not listed (the
+drivers, the support library); blank lines and lines starting with ``#``
+are ignored. Accelerator flags do not belong in it: the replay build sets
+them (-DOPENACC). xdsl_ccpp only applies the file; which flags a host
+build uses is the host's business.
+
 The scheme sources are written relative to the root of the repository
 that holds them (the nearest directory above the first scheme's ``.F90``
 with a ``.git``, e.g. an atmospheric_physics checkout), as
@@ -81,7 +92,8 @@ _TOP_TEMPLATE = """\
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
 # PATH, or -DNF_CONFIG=...). -DOPENACC=ON builds with OpenACC
 # (CCPP_CAPTURE_ACC_FLAGS, default -acc; with nvfortran
-# -gpu=nofma,math_uniform is added) for GPU replay of the same captures:
+# -gpu=<CCPP_CAPTURE_GPU_TARGET, default cc80>,nofma,math_uniform is added) for
+# GPU replay of the same captures:
 # the drivers always carry their own enter/exit data directives, inside
 # #ifdef USE_GPU as in the caps, and an OpenACC build defines USE_GPU (as
 # CAM-SIMA's nvhpc GPU builds do). With nvfortran a CPU build gets -noacc -- nvfortran
@@ -90,6 +102,11 @@ _TOP_TEMPLATE = """\
 # builds do, so a replay can match a capture bit for bit.
 # CCPP_CAPTURE_TOLERANCE in the environment overrides the drivers'
 # real-valued tolerance at run time.
+#
+# capture_compile_flags.txt in this directory (CCPP_CAPTURE_COMPILE_FLAGS),
+# if the host model wrote one, gives each source the flags the model
+# compiled it with: "<file name> <flags...>" per source, "* <flags...>" for
+# the rest. Use the model's compiler with it.
 #
 # The test_<scheme>.cmake files name the scheme sources under
 # CCPP_CAPTURE_SCHEME_ROOT, by default the checkout they were generated from.
@@ -106,6 +123,8 @@ if(NOT CCPP_CAPTURE_DIR)
 endif()
 option(OPENACC "Build the drivers with OpenACC (GPU replay)" OFF)
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
+set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING
+    "nvfortran GPU target (-gpu=<target>; cc80: Derecho's A100s, as CAM-SIMA builds)")
 set(CCPP_CAPTURE_EXTRA_SOURCES "" CACHE STRING
     "Further Fortran sources the schemes use (;-separated absolute paths)")
 
@@ -132,7 +151,10 @@ add_compile_definitions(USE_CONTIGUOUS=)
 if(OPENACC)
   separate_arguments(_acc_flags UNIX_COMMAND "${{CCPP_CAPTURE_ACC_FLAGS}}")
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-    list(APPEND _acc_flags -gpu=nofma,math_uniform)
+    # An explicit target, as CAM-SIMA's nvhpc builds use: without one,
+    # nvfortran on a node without a GPU compiles for every target it knows,
+    # some of which need device tools an installation may lack.
+    list(APPEND _acc_flags -gpu=${{CCPP_CAPTURE_GPU_TARGET}},nofma,math_uniform)
   endif()
   add_compile_options(${{_acc_flags}})
   add_link_options(${{_acc_flags}})
@@ -176,6 +198,43 @@ file(GLOB _ccpp_capture_tests CONFIGURE_DEPENDS "${{CMAKE_CURRENT_SOURCE_DIR}}/t
 foreach(_test IN LISTS _ccpp_capture_tests)
   include(${{_test}})
 endforeach()
+
+# The host model's compile flags per source (capture-compile-flags).
+set(CCPP_CAPTURE_COMPILE_FLAGS "${{CMAKE_CURRENT_SOURCE_DIR}}/capture_compile_flags.txt"
+    CACHE FILEPATH "The host model's compile flags per source (used if it exists)")
+if(EXISTS "${{CCPP_CAPTURE_COMPILE_FLAGS}}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${{CCPP_CAPTURE_COMPILE_FLAGS}}")
+  file(STRINGS "${{CCPP_CAPTURE_COMPILE_FLAGS}}" _flag_lines)
+  set(_default_flags "")
+  foreach(_line IN LISTS _flag_lines)
+    string(STRIP "${{_line}}" _line)
+    if(_line STREQUAL "" OR _line MATCHES "^#")
+      continue()
+    endif()
+    separate_arguments(_words UNIX_COMMAND "${{_line}}")
+    list(POP_FRONT _words _name)
+    if(_name STREQUAL "*")
+      set(_default_flags "${{_words}}")
+    else()
+      set("_ccpp_capture_flags_${{_name}}" "${{_words}}")
+    endif()
+  endforeach()
+  get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_target IN LISTS _targets)
+    get_target_property(_sources ${{_target}} SOURCES)
+    foreach(_source IN LISTS _sources)
+      get_filename_component(_name "${{_source}}" NAME)
+      set(_flags_var "_ccpp_capture_flags_${{_name}}")
+      if(DEFINED ${{_flags_var}})
+        set(_flags "${{${{_flags_var}}}}")
+      else()
+        set(_flags "${{_default_flags}}")
+      endif()
+      set_source_files_properties("${{_source}}" PROPERTIES COMPILE_OPTIONS "${{_flags}}")
+    endforeach()
+  endforeach()
+  message(STATUS "Compile flags from ${{CCPP_CAPTURE_COMPILE_FLAGS}}")
+endif()
 """
 
 _FRAGMENT_TEMPLATE = """\

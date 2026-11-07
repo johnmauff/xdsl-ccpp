@@ -160,9 +160,9 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _call_args,
     _call_param_names,
     _device_arg_names,
-    _expr_text,
     _scf_if,
     directive_op,
+    has_definite_name,
     iter_scheme_call_sites,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
@@ -650,6 +650,23 @@ def _build_test_driver_params(
     return params, ""
 
 
+def _uncaptured_param_reason(params: list, captured: "set[str]") -> str:
+    """Why a phase cannot be replayed although its arguments are of
+    capturable types: the driver reads (and for outputs compares) every
+    "in"/"out"/"inout" argument from the capture file, but the call passes
+    one in a form the capture could not record -- the driver would size it
+    from a missing variable (0 x 0) and compare empty arrays
+    (capture-size-bounds). "" when every such argument is captured."""
+    for p in params:
+        if p.category in ("in", "out", "inout") and p.name not in captured:
+            return (
+                f"argument '{p.name}' is not recorded at the call (the cap passes it "
+                f"as a reference the capture cannot write), so the driver could "
+                f"neither supply nor compare it"
+            )
+    return ""
+
+
 def _type_text(arg) -> str:
     """An argument's metadata type for a message, e.g. `real, kind
     pumas_r8, rank 2`."""
@@ -839,8 +856,8 @@ class SchemeIOCapturePass(ModulePass):
                 # A character(len=*) argument arrives through a cast of the
                 # fixed-length variable; capture that variable.
                 value = _uncast(value)
-                # Only values with a definite Fortran name can be captured.
-                if _expr_text(value) is None:
+                # Only definite references can be captured.
+                if not has_definite_name(value):
                     continue
                 if handler is not None:
                     self._ensure_decl(call_op, handler.write, handler.module, declared_decls)
@@ -878,6 +895,11 @@ class SchemeIOCapturePass(ModulePass):
                 params, reason = _build_test_driver_params(
                     param_names, args_by_name, driver_device, real_kinds, layouts,
                 )
+                if params is not None:
+                    reason = _uncaptured_param_reason(
+                        params, {entry[1] for entry in before + after})
+                    if reason:
+                        params = None
                 if params is None:
                     skipped[table_name] = reason
                 else:

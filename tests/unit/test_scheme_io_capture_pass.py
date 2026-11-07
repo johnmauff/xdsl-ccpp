@@ -1128,3 +1128,20 @@ def test_ddt_layouts_round_trip_and_reach_the_driver_params():
     assert params[0].components == layouts["coords1d"][1]
     # Without a layout it is still left out (the stop-gap).
     assert _build_test_driver_params(["p"], args, set())[0] is None
+
+
+def test_phase_with_an_unrecorded_argument_is_left_out_of_the_driver():
+    """capture-size-bounds: an argument the driver would read or compare but
+    the capture did not record at the call leaves the phase out of the
+    driver, rather than replaying it against a 0 x 0 array that "passes"."""
+    from xdsl_ccpp.transforms.capture_driver_ir import TestDriverParam
+    from xdsl_ccpp.transforms.scheme_io_capture_pass import _uncaptured_param_reason
+
+    def param(name, category, rank=2):
+        return TestDriverParam(name, category, "real", "kind_phys", rank, None, False)
+
+    params = [param("t", "in"), param("flx", "out"), param("errflg", "error_arg", 0),
+              param("work", "unverified")]
+    assert _uncaptured_param_reason(params, {"t", "flx"}) == ""
+    reason = _uncaptured_param_reason(params, {"t"})
+    assert "argument 'flx' is not recorded at the call" in reason
