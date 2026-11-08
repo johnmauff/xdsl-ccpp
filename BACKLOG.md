@@ -50,6 +50,7 @@ measured data, and will drift as items are reassessed.
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `nvhpc-gpu-build-flags-redesign` | 7-12 days: inventory 1-1.5, design 1-2, implement 2-3, verify (SE/multitape/MPAS CPU+GPU pairs, gnu, nvhpc regression) 2-3.5, upstream ccs_config/cime PRs 1-2; plus 2-6 weeks elapsed for upstream review. Risks: new hidden dependencies, upstream design pushback, narrowing `CCPP_CAP_OBJS` changes host-file flags | M |
+| `gpu-acc-file-manifest` | 4-7 days: xdsl-ccpp manifest 1, CAM-SIMA buildlib + ccs_config rule 1-2, scheme-side GPU marking (metadata or suite) 1-2, verify (nvhpc CPU baseline + GPU regression) 1-2; plus upstream review if taken to ccs_config/CAM-SIMA | S-M |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
@@ -109,6 +110,9 @@ measured data, and will drift as items are reassessed.
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
 | `expr-text-identity-keys` | 1-2 days (structural keys instead of text; same results in the passes that dedupe by them) | XS |
 | `scheme-io-capture-size-bounds-recapture` | 0.5 day plus queue (two capture runs, CPU and GPU replays) | XS |
+| `eddy-diffusivity-adjustment-gpu-coverage` | 0.5 day plus queue (one capture run with a non-default namelist, CPU and GPU replays) | XS |
+| `vertical-diffusion-sponge-layer-gpu-coverage` | 0.5 day plus queue (one capture with `diff_sponge_fac > 0`; could share the eddy-diffusivity one) | XS |
+| `generation-error-last` | 0.5 day (xdsl-ccpp stage-error suppression + CAM-SIMA message order, tests) | XS |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -205,6 +209,7 @@ separately), CHANGELOG.md L5850.
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `nvhpc-gpu-build-flags-redesign` | The nvhpc CPU/GPU build setup in `ccs_config`/`cime` is a stack of per-rule patches; each fix has exposed another hidden dependency | M; found 2026-11-04 (s51 CPU/GPU cases); deferred by the user to its own effort | -- |
+| `gpu-acc-file-manifest` | Which files get `-acc` is decided by hand-kept lists and a filename wildcard in `Depends.nvhpc`; have the generator and the schemes declare it | S-M; found 2026-11-07 (xdsl66gpu Q-only diffs); part of `nvhpc-gpu-build-flags-redesign` | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
@@ -386,6 +391,32 @@ flags), with nothing inherited implicitly from the module environment; a
 check (e.g. `nm` for `__acc_compiled` in CPU executables, `ldd` for
 `libmpi_gtl_cuda` in GPU ones) after each build. All the current patches are
 uncommitted in the local `ccs_config` and `cime` checkouts.
+
+**`gpu-acc-file-manifest`** -- found 2026-11-07. In xdsl66gpu, `Depends.nvhpc`
+named only the Kessler suite caps in `CCPP_GPU_CAP_OBJS`, so every suite cap
+that gained OpenACC directives through a scheme port was compiled `-noacc`.
+Its `!$acc update self` before CPU schemes was dropped, and
+`sima_state_diagnostics` wrote stale Q to history (Q-only GPU/CPU diffs in
+dme_adjust, tj2016_after_coupler, pumas, SE FTJ16). The stopgap (ccs_config,
+2026-11-07) takes every `$(EXEROOT)/atm/obj/ccpp/*_cap.F90` by wildcard; it
+still depends on that directory, the `_cap` naming, and generation finishing
+before make reads `Depends.nvhpc`. `GPU_SCHEME_OBJS` is still a hand-kept list
+with the same drift risk. The cam-sima-regression/-test agents now flag any
+cap containing `!$acc` that was compiled `-noacc`.
+Proposed design: each tool reports what it produced instead of the Makefile
+guessing.
+- xdsl-ccpp writes a neutral manifest of the generated files it emitted with
+  directives (its own output, no host build knowledge), e.g.
+  `acc_files.txt` in the ccpp output directory.
+- GPU-ported schemes are marked where they are defined (scheme metadata or
+  the suite), not in `ccs_config`.
+- CAM-SIMA `buildlib` turns both into the per-file `-acc` list (like it writes
+  `capture_compile_flags.txt` today); `ccs_config` keeps only the policy
+  (listed files `-acc`, everything else `-noacc`).
+This also removes the MPAS reason for explicit lists (files are marked by
+intent, not by containing `!$acc`).
+
+**ID: `rrtmgp-gpu-cpu-diffs`. Resolved (2026-11-07)** -- nvhpc CPU verification builds compile the GPU rte-rrtmgp kernels (`RRTMGP_KERNELS=accel`, CAM-SIMA); xdsl70gpu 29/29 bit-for-bit vs 20261107-f669d35-nvhpc. CHANGELOG.md L14574.
 
 **`cam-autogen-repeat-generation`** -- CAM-SIMA's
 `cime_config/cam_autogen.py` (`generate_physics_suites`) regenerates the caps
@@ -1952,6 +1983,32 @@ Supporting items (not tracked elsewhere):
   2026-11-06: (3) partly done -- ccs_config's nvhpc production rules no
   longer use `-Mfprelaxed` (PUMAS had `-Mfprelaxed=sqrt`); new nvhpc runs
   needed for (1) and (2).
+- `eddy-diffusivity-adjustment-gpu-coverage` — **The GPU port of
+  `eddy_diffusivity_adjustment_above_pbl` is not exercised by any test.**
+  Added 2026-11-06. The scheme was ported to OpenACC (one `parallel loop
+  collapse(2)` over columns and interface levels), but its whole loop sits
+  under `if (kv_freetrop_scale /= 1 .or. (kv_top_scale /= 1 .and.
+  kv_top_pressure > 0))`, and every test case runs with the namelist
+  defaults (`kv_freetrop_scale = 1`, `kv_top_scale = 1`, `kv_top_pressure =
+  0`): the uw_vdiff capture (c04d) replays "pass" with no kernel launched
+  (`gpu_kernels.txt`: CPU-ONLY 0), and the model never runs the code.
+  Wanted: a capture with non-default values that takes both branches
+  (e.g. `kv_freetrop_scale = 0.5`, `kv_top_scale = 0.0` as in WACCM,
+  `kv_top_pressure = 1000.0`), replayed CPU and GPU; such a run differs
+  from the uw_vdiff snapshot, so the case needs `ncdata_check_err =
+  .false.` (edited in place in `user_nl_cam`, not added twice), or a
+  testmod of its own.
+- `vertical-diffusion-sponge-layer-gpu-coverage` — **The GPU port of
+  `vertical_diffusion_sponge_layer` is not exercised by any test.** Added
+  2026-11-06. Its run phase adds `diff_sponge_fac * kvm_sponge(k)` to the
+  top levels of `kvm` only if init allocated `kvm_sponge`, which it does
+  only for `diff_sponge_fac > 0` (profiles chosen by `ptop_ref`, WACCM or
+  CAM7 MT/LT tops). The F2000_C4 and cam4 replays pass with no kernel
+  launched (CPU-ONLY 0). Wanted: a capture with `diff_sponge_fac > 0`
+  (init replayed first, `scheme-io-capture-module-state-setup`), replayed
+  CPU and GPU; like `eddy-diffusivity-adjustment-gpu-coverage`, the run
+  then differs from its snapshot (`ncdata_check_err = .false.`). Both
+  could share one capture.
 - `pumas-module-props-device` — **ESCOMP/PUMAS: make `mg_*_props`
   device-resident once.** Add the six `MGHydrometeorProps` module
   variables to the existing `!$acc declare create(...)`
@@ -2416,5 +2473,19 @@ diagnostic messages and single-token metadata keys.
   structural key (a tuple of op kind, names, literals and sub-keys) and
   `has_definite_name` (added by `capture-size-bounds`), which decides from the
   ops. Found 2026-11-06.
+- `generation-error-last` — **A failed generation ends with a summary
+  line, not the cause.** Added 2026-11-07 (xdsl66n, F2000_C7/gw_cam7). When
+  the optimizer subprocess fails, it prints its `Error:` (e.g. the host
+  variable matching failure), then `ccpp_dsl`'s `finish_pipeline_stage`
+  adds `Error: running ccpp optimizer failed (exit code 1)`, and CAM-SIMA's
+  `cam_autogen.py` prints all of it (`ERROR: xdsl_ccpp cap generation
+  failed:`, warnings first, then the errors, then that summary) before
+  CIME's traceback. Read from the end, the output shows only the summary
+  and the traceback. Wanted: (1) xdsl-ccpp -- no generic "... failed (exit
+  code N)" line when the stage's subprocess already printed an `Error:`
+  (keep it when the subprocess died silently: crash, signal); (2)
+  CAM-SIMA -- in the CamAutoGenError message, warnings first and the
+  `Error:` lines last, directly above CIME's traceback. Unit tests for both.
+  (The stray `'` after the summary comes from CIME's exception wrapping.)
 - `capgen-api-qmin` — resolved 2026-10-31. CHANGELOG.md L13618.
 - `generic-suite-schemes` — resolved 2026-10-31. CHANGELOG.md L13591.

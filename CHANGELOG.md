@@ -14570,3 +14570,35 @@ Verification: pytest 1446 passed. PUMAS production capture c05b
 `micro_pumas_ccpp_dimensions_post` (five fluxes captured and compared,
 ON-GPU) and `pumas_post_main`; `micro_pumas_ccpp` is the known
 `wv-saturation-ccppize` failure.
+
+## `rrtmgp-gpu-cpu-diffs`: nvhpc CPU verification builds use the GPU rte-rrtmgp kernels (2026-11-07)
+
+Every GPU test that ran RRTMGP (rrtmgp FPHYStest, the 4 SE cam4 tests, MPAS
+cam4) differed from its nvhpc CPU baseline (rrtmgp: 84 fields, LW ~1e-14, SW
+fluxes up to ~6e-12; cam4: all fields, growing over the run); every test
+without RRTMGP was bit-for-bit (xdsl68gpu).
+
+- Cause: different source, not different compilation. CAM-SIMA's
+  `cam_autogen._set_rrtmgp_dependencies` builds the CPU kernels
+  (`rte-kernels/`, `rrtmgp-kernels/`) in a CPU build and the `accel/` kernels
+  in a GPU build; `mo_rte_solver_kernels`, `mo_optical_props_kernels` and
+  `mo_gas_optics_rrtmgp_kernels` are separate implementations. Ruled out on
+  the way: the suite-cap `-noacc` problem (diffs unchanged after that fix) and
+  denormals (fz01: GPU rebuilt with `-gpu=...,flushz`, identical diff).
+- Fix (CAM-SIMA c2f9ea8, no xdsl-ccpp change): case variable
+  `RRTMGP_KERNELS` (env_build, `auto` | `accel`). `auto` (default) keeps the
+  CPU kernels on the CPU and `accel` on the GPU -- production and the
+  `sima_perf` tests, which use each architecture's best kernels. `accel`
+  builds the `accel/` kernels in a CPU build too (compiled `-noacc`). The
+  nvhpc CPU testmods that run RRTMGP (`outfrq_rrtmgp_derecho`,
+  `outfrq_se_cam4`, `outfrq_analy_ic_cam4`) set `accel` for nvhpc only.
+  `cam_autogen`/`cam_config` pass it through; doctest and
+  `test_cam_config` updated.
+
+Verification: new nvhpc CPU baseline `20261107-f669d35-nvhpc` (xdsl70n;
+README in the baseline directory). The RRTMGP cases' built kernel sources
+match `accel/` by checksum; no `__acc_compiled` in any CPU executable. GPU
+regression xdsl70gpu against it: 29/29 BASELINE PASS at zero tolerance,
+including rrtmgp and all 6 cam4 tests (SE QPC4 SMS/SMS_D, F1850_C4/F2000_C4
+SMS_D; MPAS QPC4 SMS/SMS_D). zm_gpu has no baseline (zm's CPU run aborts in
+its `ncdata_check`, `zm-ncdata-diffs`).
