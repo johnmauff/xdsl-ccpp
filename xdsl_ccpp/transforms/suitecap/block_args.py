@@ -79,12 +79,27 @@ def _block_arg_type(a):
     return TypeConversions.convert(a.getAttr("type"), kind, _arg_dims(a))
 
 
-def _build_block_and_name_hints(input_arg_list) -> tuple:
+def _dynamic_constituent_name(fn_arg, dyn_names) -> "str | None":
+    """The name dynamic_constituent_names gives *fn_arg*, if it is one of
+    the cap-owned dynamic constituent arrays."""
+    if not dyn_names or not fn_arg.hasAttr("type"):
+        return None
+    if fn_arg.getAttr("type").lower() != "ccpp_constituent_properties_t":
+        return None
+    std = _std_key(fn_arg)
+    return dyn_names.get(std.lower()) if isinstance(std, str) else None
+
+
+def _build_block_and_name_hints(input_arg_list, dyn_names=None) -> tuple:
     """Build the Block and resolve each input arg's dummy-argument name.
 
     Each entry is a distinct standard_name and is named by the scheme's
     local name; only when two standard_names share a local name (e.g.
-    examples/var_compat) is the host's model_var_name used instead. The
+    examples/var_compat) is the host's model_var_name used instead.
+    Dynamic constituent arrays (*dyn_names*, cap_shared.dynamic_constituent_
+    names) are cap-owned and never host-matched: they take the name that
+    function gives them, unique per standard name, so the host cap's
+    lc_<name> variables match. The
     names are returned for the suite subroutine's arg_attrs
     (suite_arg_attrs), which is where later passes and the printers read
     them -- a block argument's name_hint is only a hint (xDSL drops a
@@ -95,15 +110,19 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
 
     new_block = Block(arg_types=input_arg_types)
 
+    base_names = [
+        _dynamic_constituent_name(fn_arg, dyn_names) or fn_arg.name
+        for fn_arg in input_arg_list
+    ]
     collision_counts: dict[str, int] = {}
-    for fn_arg in input_arg_list:
-        collision_counts[fn_arg.name] = collision_counts.get(fn_arg.name, 0) + 1
+    for base in base_names:
+        collision_counts[base] = collision_counts.get(base, 0) + 1
 
     data_ops = {}
     names: list[str] = []
     name_seen: dict[str, str] = {}  # dummy-arg name -> the fn_arg.name that claimed it
     for idx, fn_arg in enumerate(input_arg_list):
-        name = fn_arg.name
+        name = base_names[idx]
         if collision_counts[name] > 1:
             if not fn_arg.hasAttr("model_var_name"):
                 raise ValueError(
