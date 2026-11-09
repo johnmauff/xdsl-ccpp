@@ -478,6 +478,13 @@ class ArgumentOp(IRDLOperation):
     # resolve-constituent-residency then makes it device (constituents by
     # their reader/writer rule; acc-copy-residency for the rest).
     device_capable = opt_prop_def(UnitAttr)
+    # Set by derive_memory_space (--directive acc) on a scheme argument whose
+    # entry point names it only in `update ... if_present` ("synced": the
+    # scheme syncs it itself where it is present) and which rule (a) left on
+    # the host: resolve-constituent-residency makes it device where the
+    # variable is device data elsewhere after copy-clause promotion, and
+    # never promotes it on its own (gpu-diagnostics-conditional-sync).
+    device_synced = opt_prop_def(UnitAttr)
     model_var_name    = opt_prop_def(StringAttr)   # matched host model variable name
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model

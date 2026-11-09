@@ -279,10 +279,12 @@ def compare_memory_space(
     around the call); derived-type arguments left to the scheme; entry
     points with no OpenACC, whose memory_space comes from `.meta` only;
     arguments of such an entry point classified by the callees it passes
-    them to (fparser2_to_meta.apply_callee_residency).
+    them to (fparser2_to_meta.apply_callee_residency); arguments the scheme
+    syncs itself with `update ... if_present` (device only where the
+    variable is device data elsewhere).
     `unified` in `.meta` is not compared.
     """
-    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE, ACC_HOST
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE, ACC_HOST, ACC_SYNCED
 
     lang = "OpenMP" if language == "omp" else "OpenACC"
     examples = "map clauses" if language == "omp" else "present/copy clauses"
@@ -374,6 +376,13 @@ def compare_memory_space(
                     f"'{arg}' is copied by the scheme but also used in host code "
                     f"({where(use.line_no)}): left on the host for this call; the cap "
                     "syncs it around the call where it is device data",
+                ))
+            elif use is not None and use.category == ACC_SYNCED and declared is None:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is synced by the scheme itself ({use.how}, "
+                    f"{where(use.line_no)}): memory_space = device only where it is "
+                    "device data elsewhere",
                 ))
             elif use is not None and use.category != ACC_DEVICE and declared is None:
                 findings.append(ResidencyFinding(

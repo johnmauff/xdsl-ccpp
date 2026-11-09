@@ -323,3 +323,30 @@ def test_ddt_member_without_module_instance_not_promoted(monkeypatch):
     arg.properties["device_capable"] = UnitAttr()
     resolve_constituent_residency(module)
     assert arg.memory_space is None
+
+
+# ── gpu-diagnostics-conditional-sync: device_synced follows the variable ─────
+
+def test_synced_becomes_device_where_the_variable_is_promoted():
+    # cld_ice_run only syncs ps itself (update if_present); cld_liq_run's
+    # copy clauses make ps device data, so cld_ice_run's ps is device too
+    # and the cap drops its syncs.
+    module = _module()
+    capable = _arg(module, "cld_liq_run", "ps")
+    synced = _arg(module, "cld_ice_run", "ps")
+    capable.properties["device_capable"] = UnitAttr()
+    synced.properties["device_synced"] = UnitAttr()
+    report = resolve_constituent_residency(module)
+    assert capable.memory_space.data == "device"
+    assert synced.memory_space is not None and synced.memory_space.data == "device"
+    assert any("cld_ice_run: 'ps'" in line and "syncs it itself" in line for line in report)
+
+
+def test_synced_alone_is_not_promoted():
+    # No other scheme keeps ps on the device: a field only the diagnostics
+    # read is not made device data just to be copied back.
+    module = _module()
+    synced = _arg(module, "cld_ice_run", "ps")
+    synced.properties["device_synced"] = UnitAttr()
+    resolve_constituent_residency(module)
+    assert synced.memory_space is None

@@ -38,6 +38,12 @@ scheme ported with copy clauses alone anchors device residency, the same as
 present() does (cam4: no scheme uses present, and rule (a) alone left the
 suite with no residency, every port copying its data on every call).
 Constituent arguments keep their reader/writer rule there.
+- "synced" (only in `update ... if_present`, gpu-diagnostics-conditional-
+  sync): rule (a) as for "either", but an argument left on the host carries
+  device_synced, not device_capable -- it never anchors residency (a field
+  only the diagnostics read must not become device data just to be copied
+  back); resolve-constituent-residency makes it device where the variable
+  is device data after copy-clause promotion.
 Derived-type arguments are never classified (the scheme moves its own
 derived-type data). This module reads and sets CCPP metadata only.
 """
@@ -51,6 +57,7 @@ from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TableTypeKind
 
 DEVICE = "device"
 EITHER = "either"
+SYNCED = "synced"
 
 
 def _arg_tables(module: builtin.ModuleOp):
@@ -74,9 +81,9 @@ def apply_derived_memory_space(
     either_is_device: bool = False,
 ) -> list[str]:
     """Set memory_space = device on the scheme arguments of *module* that
-    *classification* (entry point -> {argument: "device" | "either"}, all
+    *classification* (entry point -> {argument: "device" | "either" | "synced"}, all
     lowercase) puts on the device, where the .meta is silent: "device"
-    always, "either" by rule (a), or always when *either_is_device*
+    always, "either" and "synced" by rule (a), or always when *either_is_device*
     (--directive omp). Returns one line per argument set, for --verbose 2."""
     scheme_args: list[tuple[str, ArgumentOp, str]] = []
     device_names: set[str] = set()
@@ -91,13 +98,19 @@ def apply_derived_memory_space(
                     device_names.add(_std_name(arg))
                 continue
             category = uses.get(arg.arg_name.data.lower())
-            if declared is None and category in (DEVICE, EITHER):
+            if declared is None and category in (DEVICE, EITHER, SYNCED):
                 scheme_args.append((table_name, arg, category))
                 if category == DEVICE and _std_name(arg):
                     device_names.add(_std_name(arg))
 
     report: list[str] = []
     for table_name, arg, category in scheme_args:
+        if category == SYNCED and _std_name(arg) not in device_names:
+            # The scheme syncs it itself; device only if the variable is
+            # device data after copy-clause promotion (resolve-constituent-
+            # residency).
+            arg.properties["device_synced"] = UnitAttr()
+            continue
         if category == EITHER and not either_is_device and _std_name(arg) not in device_names:
             # Left on the host; recorded so later passes know the scheme
             # also works with the data on the device (constituents:
@@ -107,6 +120,8 @@ def apply_derived_memory_space(
         arg.properties["memory_space"] = StringAttr(DEVICE)
         if category == DEVICE:
             why = "its directives require it on the device"
+        elif category == SYNCED:
+            why = "the scheme syncs it itself (update if_present), and it is device data elsewhere"
         elif either_is_device:
             why = "the scheme maps it to the device itself; --directive omp"
         else:

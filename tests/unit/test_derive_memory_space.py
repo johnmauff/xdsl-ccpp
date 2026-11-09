@@ -118,3 +118,21 @@ def test_device_and_upgraded_either_not_marked():
     args = {a.arg_name.data: a for t in m.walk() if isinstance(t, ArgumentTableOp)
             if t.table_name.data == "a_run" for a in t.body.block.ops}
     assert args["x"].device_capable is None and args["y"].device_capable is None
+
+
+# ── gpu-diagnostics-conditional-sync: "synced" ──────────────────────────────
+
+def test_synced_becomes_device_when_another_scheme_declares_it():
+    m = _module({"a_run": [_arg("t", "t_std", "device")], "diag_run": [_arg("t", "t_std")]})
+    report = apply_derived_memory_space(m, {"diag_run": {"t": "synced"}})
+    assert _spaces(m)[("diag_run", "t")] == "device"
+    assert report and "syncs it itself" in report[0]
+
+
+def test_synced_left_on_host_is_marked_device_synced_not_capable():
+    m = _module({"diag_run": [_arg("u", "u_std")]})
+    assert apply_derived_memory_space(m, {"diag_run": {"u": "synced"}}) == []
+    arg = next(op for op in m.walk() if isinstance(op, ArgumentOp))
+    assert arg.memory_space is None
+    assert arg.device_synced is not None
+    assert arg.device_capable is None

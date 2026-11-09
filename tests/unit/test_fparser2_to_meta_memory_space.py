@@ -21,6 +21,7 @@ from xdsl_ccpp.transforms.fparser2_to_meta import (
     ACC_DEVICE,
     ACC_EITHER,
     ACC_HOST,
+    ACC_SYNCED,
     _extract_subroutines,
 )
 
@@ -81,6 +82,28 @@ def test_update_and_host_data_are_device():
         "temp": (ACC_DEVICE, "self"), "qv": (ACC_DEVICE, "device"),
         "ps": (ACC_DEVICE, "use_device"),
     }
+
+
+def test_update_if_present_is_synced():
+    # gpu-diagnostics-conditional-sync: the scheme syncs the data itself
+    # where it is present; its host use (history_out_field) is not ACC_HOST.
+    got, _ = _classify(
+        "    !$acc update self(temp) if(n > 0) if_present\n"
+        "    !$acc update device(qv) if_present\n"
+        "    call out_field('T', temp)\n"
+    )
+    assert got == {
+        "temp": (ACC_SYNCED, "update self if_present"),
+        "qv": (ACC_SYNCED, "update device if_present"),
+    }
+
+
+def test_either_and_device_outrank_synced():
+    got, _ = _classify(
+        "    !$acc update self(temp, qv) if_present\n"
+        "    !$acc data copyin(temp) present(qv)\n    !$acc end data"
+    )
+    assert got == {"temp": (ACC_EITHER, "copyin"), "qv": (ACC_DEVICE, "present")}
 
 
 def test_subscripts_and_modifiers_stripped():
