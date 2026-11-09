@@ -118,3 +118,76 @@ def test_run_inside_one_loop_body_is_still_coalesced():
         Touch(calls[2], "update", True),
     ])}, lambda r, call: None)
     assert _tokens(block, calls) == ["call0", "loop[self(a) call1 call2 device(a)]", "call3"]
+
+
+# ── a device call that only reads keeps the host copy current ──────────────
+
+def _flat_block(n):
+    """call0 .. call<n-1> in one block, with a host variable a."""
+    block = Block()
+    ref = HostVarRefOp("a", "m", f64)
+    calls = [_call(i) for i in range(n)]
+    block.add_ops([ref, *calls])
+    builtin.ModuleOp(Region([block]))
+    return block, ref, calls
+
+
+def _emit(ref, touches):
+    emit_coalesced_updates("acc", {"a": (ref.res, touches)}, lambda r, call: None)
+
+
+def test_device_read_keeps_host_current():
+    # cam4: a diagnostics scheme reads T on the device between two CPU
+    # schemes; the second CPU scheme needs no second pull.
+    block, ref, calls = _flat_block(3)
+    _emit(ref, [
+        Touch(calls[0], "update", False),
+        Touch(calls[1], "present", False),
+        Touch(calls[2], "update", False),
+    ])
+    assert _tokens(block, calls) == ["self(a)", "call0", "call1", "call2"]
+
+
+def test_device_write_needs_a_new_pull():
+    block, ref, calls = _flat_block(3)
+    _emit(ref, [
+        Touch(calls[0], "update", False),
+        Touch(calls[1], "present", True),
+        Touch(calls[2], "update", False),
+    ])
+    assert _tokens(block, calls) == ["self(a)", "call0", "call1", "self(a)", "call2"]
+
+
+def test_host_write_pushed_before_device_read_then_no_pull():
+    block, ref, calls = _flat_block(3)
+    _emit(ref, [
+        Touch(calls[0], "update", True),
+        Touch(calls[1], "present", False),
+        Touch(calls[2], "update", False),
+    ])
+    assert _tokens(block, calls) == ["self(a)", "call0", "device(a)", "call1", "call2"]
+
+
+def test_section_only_run_leaves_host_stale():
+    # A run that overwrites (intent out) the section it is passed pulls
+    # nothing; the rest of the host copy is still stale afterwards.
+    block, ref, calls = _flat_block(3)
+    _emit(ref, [
+        Touch(calls[0], "update", True, True, ref.res),
+        Touch(calls[1], "present", False),
+        Touch(calls[2], "update", False),
+    ])
+    assert _tokens(block, calls) == ["call0", "device(a)", "call1", "self(a)", "call2"]
+
+
+def test_loop_boundary_resets_host_current():
+    # call0 (host) before the loop, call1 (device read) and call2 (host)
+    # in it: the host copy is not trusted across the boundary, so call2
+    # pulls inside the loop.
+    block, ref, calls = _block_with_loop()
+    _emit(ref, [
+        Touch(calls[0], "update", False),
+        Touch(calls[1], "present", False),
+        Touch(calls[2], "update", False),
+    ])
+    assert _tokens(block, calls) == ["self(a)", "call0", "loop[call1 self(a) call2]", "call3"]

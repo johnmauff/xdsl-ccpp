@@ -73,15 +73,15 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-port-dme-adjust` | 1-2 days (host-side constituent mask, one column-parallel kernel, capture replay CPU+GPU; on hold) | XS |
-| `gpu-port-wv-saturation` | 3-6 days (device `qsat` path through `wv_saturation`/`wv_sat_methods`: `!$acc routine seq`, module constants on the device, CAM-side; standalone test of `qsat` CPU vs GPU) | S |
-| `gpu-port-hack-convect-shallow` | 4-8 days after `gpu-port-wv-saturation` (~1000-line scheme, column-sequential physics, constituent-properties mask on the host; no per-scheme replay: its driver needs CAM modules through `wv_saturation`) | S-M |
-| `gpu-port-zm-conv-evap` | 2-4 days after `gpu-port-wv-saturation` (~250 lines; column-sequential evaporation; same replay gap) | S |
+| `gpu-port-wv-saturation` | 2-5 days after `wv-saturation-ccppize` and the recapture (device `qsat` path through `wv_saturation`: `!$acc routine seq`, module constants on the device; `wv_sat_methods` already has its directives; tested through the `zm_conv_evap` GPU replay) | S |
+| `gpu-port-hack-convect-shallow` | 4-8 days after `gpu-port-wv-saturation` (~1000-line scheme, column-sequential physics, constituent-properties mask on the host; per-scheme GPU replay once `wv-saturation-ccppize` lets its driver build) | S-M |
+| `gpu-port-zm-conv-evap` | 2-4 days after `gpu-port-wv-saturation` (~250 lines; column-sequential evaporation; the first `qsat` caller ported, so its GPU replay also tests device `qsat`) | S |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
 | `gpu-history-accumulate` | 6-12 days plus upstream review (device-resident accumulation buffers and kernels in ESMCI/history_output, `cam_history` wiring, write-time sync, Kessler/cam4 GPU bit-for-bit) | M |
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
-| `gpu-diagnostics-conditional-sync` | 2-4 days (classifier: `update ... if_present` is "either"; per-field `update self(...) if(is_history_field_active(...)) if_present` in `sima_state_diagnostics` and `kessler_diagnostics`; tests; Kessler GPU FPHYStest with sparse history output) | S |
+| `gpu-diagnostics-conditional-sync` | 3-6 days left (generator and `sima_state_diagnostics` done 2026-11-09; the other 22 cam4 diagnostics files, 326 `history_out_field` calls, plus `kessler_diagnostics`; one GPU regression per batch) | S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
@@ -91,6 +91,7 @@ measured data, and will drift as items are reassessed.
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
+| `gpu-port-aerosol-optics` | 5-10 days plus ESCOMP review (host gather of per-bin properties from the polymorphic `aerosol_properties`/`aerosol_state` objects into plain arrays, device kernels for the column/level/wavelength loops, species-type flags precomputed; cam4 and rrtmgp replays) | S-M |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
 | `example-gpu-build-flags` | 1-2 days (`-acc` for the OpenACC examples, offload flags at link time, `OMP_TARGET_OFFLOAD=MANDATORY`/kernel check in the GPU tests; then fix whatever starts running on the GPU) | XS-S |
@@ -105,7 +106,7 @@ measured data, and will drift as items are reassessed.
 | `acc-host-written-device-arg` | 1-2 days (classifier: written-in-kernel flag on ACC_HOST arguments; warning when device data elsewhere; tests) | XS |
 | `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
 | `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
-| `wv-saturation-ccppize` | 4-8 days plus upstream review (atmospheric_physics: `wv_saturation` init as a CCPP scheme taking its constants and namelist through metadata, errmsg/errflg instead of `endrun`, no CAM host modules; bit-for-bit check; then recapture pumas and the `wv_saturation` users) | S-M |
+| `wv-saturation-ccppize` | 4-8 days plus upstream review (atmospheric_physics: `wv_saturation` init as a CCPP scheme taking its constants and namelist through metadata, errmsg/errflg instead of `endrun`, no CAM host modules; bit-for-bit check; then recapture pumas and the `wv_saturation` users). First step of the cam4 convection GPU path, after the sima0_25_000 merge | S-M |
 | `scheme-io-capture-mpi-reach-renames` | 0.5 day (follow USE-renamed procedures in `mpi_reach`, as `module_state_access` does; test; check which captured phases it newly leaves out) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
@@ -1296,6 +1297,18 @@ then goes away. The capture's module-state setup then replays it before
 capture-list schemes that need CAM modules through it, e.g.
 `hack_convect_shallow`) can build. Related: `gpu-port-wv-saturation`
 (device `qsat`), which touches the same module.
+Decided 2026-11-09: this is the first step of the cam4 convection GPU
+path, after the sima0_25_000 merge (`~/.claude/plans/upstream-merge-
+sima0_25_000.md`). Order: (1) this, bit-for-bit; (2) recapture zm,
+hack_shallow, rk_stratiform and pumas (`/cam-sima-capture`) and check the
+CPU replays of `zm_convr`, `zm_conv_evap`, `hack_convect_shallow`,
+`compute_cloud_fraction`, `prognostic_cloud_water` and
+`micro_pumas_ccpp` pass (today five do not build and pumas fails with
+NaNs from an unset `h2otrip`); (3) `gpu-port-wv-saturation`; (4)
+`gpu-port-zm-conv-evap`, `gpu-port-hack-convect-shallow`, then
+`zm_convr`, each checked by its own GPU replay. Upstream: no open ESCOMP
+effort (issue #77, 2024, only brought `qsat` over as is); raise it with
+them before or with the PR so the versions do not diverge.
 
 **ID: `scheme-io-capture-mpi-reach-renames`. The MPI check does not follow
 renamed procedures.** Added 2026-11-06. `mpi_reach` follows calls by
@@ -2147,9 +2160,15 @@ Supporting items (not tracked elsewhere):
   saturation scheme index and any tables) present on the device. Its
   init reads a namelist and uses `spmd_utils`/`cam_abortutils`, which
   stay on the host. Also the reason these schemes' capture drivers do not
-  build (`scheme-io-capture-host-module-schemes`, group A). Test: a small
-  standalone `qsat` CPU-vs-GPU check (zero tolerance) before porting the
-  schemes. Prerequisite for the two items below.
+  build (`scheme-io-capture-host-module-schemes`, group A).
+  `to_be_ccppized/wv_sat_methods.F90` already has its OpenACC (55
+  directives, used from PUMAS's kernels); the gap is the `wv_saturation`
+  wrapper (`qsat`, `qsat_water`, `calc_hltalt`, ... `!$acc routine seq`)
+  and its module constants (`!$acc declare`, `update device` after init).
+  Decided 2026-11-09: no standalone `qsat` test. Do `wv-saturation-ccppize`
+  and the recapture first; then this, tested through the GPU replay of
+  `zm_conv_evap`, the first caller ported (zero tolerance). Prerequisite
+  for the two items below.
 - `gpu-port-hack-convect-shallow` — **GPU port of
   `hack_convect_shallow`.** Added 2026-11-05.
   `schemes/hack_shallow/hack_convect_shallow.F90` (~1000 lines), the
@@ -2160,10 +2179,10 @@ Supporting items (not tracked elsewhere):
   `gpu-port-dme-adjust`); never put the properties on the device
   (`gpu-ddt-deep-copy-residency`). The convection is column-local with
   vertical dependencies: expect one thread per column, levels
-  sequential. No per-scheme replay: its driver needs CAM modules through
-  `wv_saturation` (`test_hack_convect_shallow.skipped`); the test is a
-  full hack_shallow GPU run against its CPU reference (no GPU testmod
-  yet). The rest of the `hack_shallow` capture list is ported
+  sequential. Test: its GPU replay (capture_hack_shallow), which builds
+  once `wv-saturation-ccppize` removes the CAM modules its driver needs
+  through `wv_saturation` (`test_hack_convect_shallow.skipped`); then a
+  full hack_shallow GPU run against its CPU reference. The rest of the `hack_shallow` capture list is ported
   (2026-11-05, untested): `cloud_fraction_fice`, both `set_*_conv_fluxes_*`
   copy schemes and the updaters.
 - `gpu-port-zm-conv-evap` — **GPU port of `zm_conv_evap`.** Added
@@ -2171,7 +2190,8 @@ Supporting items (not tracked elsewhere):
   shared by the `hack_shallow` and `zm` suites (and cam4). Needs
   `gpu-port-wv-saturation`; precipitation evaporation is a top-down pass
   per column (one thread per column, levels sequential, keep the
-  summation order for bit-for-bit). Same replay gap as above.
+  summation order for bit-for-bit). Port it first of the `qsat` callers:
+  its GPU replay (capture_zm) also tests `gpu-port-wv-saturation`.
 - `gpu-port-gw-orographic` — **GPU port of
   `gravity_wave_drag_prepare_profiles` and
   `gravity_wave_drag_orographic`.** Added 2026-11-05. The two CPU-only
@@ -2309,6 +2329,15 @@ Supporting items (not tracked elsewhere):
   constituent loop in `sima_state_diagnostics_run` (`const_array` slices)
   needs the same treatment once the constituent array is device-resident
   (`constituent-device-residency`).
+  Progress 2026-11-09: generator done as category "synced" rather than
+  "either" (with acc-copy-residency, "either" would be promoted to
+  device): `device_synced`, device only where the variable is device data
+  after promotion. `sima_state_diagnostics` converted (xdsl74gpu 29/30
+  bit-for-bit, all cam4); its object added to ccs_config
+  `GPU_SCHEME_OBJS` -- every converted file must be, or its updates are
+  dropped while the cap no longer pulls. Read-only device calls no longer
+  force the next CPU scheme to pull (cap_shared.emit_coalesced_updates).
+  Left: the other cam4 `*_diagnostics` files (CHANGELOG.md, this date).
 - `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
   ports of the utility schemes every suite uses**:
   `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
@@ -2398,6 +2427,26 @@ Supporting items (not tracked elsewhere):
   four `*_diagnostics` stay on the host. McICA's random numbers
   must stay reproducible against the snapshot (generate on the host and
   copy, or a matching device generator).
+- `gpu-port-aerosol-optics` — **atmospheric_physics: GPU port of
+  `aerosol_optics`.** Added 2026-11-09. `schemes/chemistry/aerosol_optics.F90`
+  (556 lines; cam4, cam5/7, rrtmgp) runs on radiation steps; its optical
+  properties feed the RRTMGP wrappers. Not portable as written: its
+  bin/species/level loops call type-bound procedures through polymorphic
+  pointers (`class(aerosol_properties)`, `class(aerosol_state)`:
+  `aeroprops%get`, `aerostate%get_ambient_mmr`, `aerostate%wet_volume`,
+  `aerosol_optics_sw_bin/lw_bin`), and the column loop branches on
+  `select case (trim(spectype_d))` and `associated(specrefindex_d)` --
+  OpenACC has no device dynamic dispatch. Approach (like `qneg`'s
+  constituent properties): per bin, gather on the host what the objects
+  hold (densities, refractive indices, species types as integer flags,
+  pointers to the state's mixing ratios) into plain arrays, then device
+  kernels for the column/level/wavelength arithmetic; keep the objects on
+  the host (`gpu-ddt-deep-copy-residency`, not planned). The objects are
+  CAM's BAM/MAM aerosol abstraction (`aerosol_optics_core`, shared with
+  CAM), so agree the split with ESCOMP. Do it with
+  `gpu-port-rrtmgp-wrapper-schemes`: ported alone it saves little, since
+  its consumers stay on the CPU until then. Test: capture replays (cam4,
+  rrtmgp) CPU and GPU, then the rrtmgp and cam4 GPU regressions.
 - `suite-cap-loop-gpu-sync` — **Host/device syncs for host schemes
   inside a suite-cap loop.** The suite-cap half of
   `package-cap-loop-gpu-sync`'s gap: `generate-gpu-data` only sees

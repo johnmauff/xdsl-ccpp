@@ -379,9 +379,25 @@ def _extract_ccpp_tags(
 # would never reach the device). The cap cannot sync inside a call, so such
 # an argument stays on the host: the variable can still be device data
 # elsewhere, and the cap syncs it around this call as for any CPU scheme.
+#
+# "synced" (gpu-diagnostics-conditional-sync): named only in an `update`
+# with `if_present` -- the scheme copies the data between host and device
+# itself where it is present, and otherwise uses the host copy (a
+# diagnostics scheme pulling a field before history_out_field, only if
+# that field is output). Like "either" the scheme works either way, but it
+# never anchors residency: such an argument becomes device only where the
+# variable is device data elsewhere (derive_memory_space, then
+# resolve-constituent-residency after copy-clause promotion), so a field
+# no ported scheme uses is not made device data just to be copied back.
+# Its host references are the scheme's own business (no ACC_HOST).
 ACC_DEVICE = "device"
 ACC_EITHER = "either"
 ACC_HOST = "host"
+ACC_SYNCED = "synced"
+
+# AccResidency.note: the stronger of two uses of one argument by the
+# entry point's own directives.
+_NOTE_RANK = {ACC_SYNCED: 0, ACC_EITHER: 1, ACC_DEVICE: 2}
 
 # Inquiry intrinsics: an array named as their first argument is not read.
 _INQUIRY_INTRINSICS = frozenset({
@@ -440,7 +456,10 @@ def _acc_directive(words, clauses):
         elif clause in _ACC_EITHER_CLAUSES:
             named.append((ACC_EITHER, clause, arg_text))
         elif kind == "update" and clause in _ACC_UPDATE_CLAUSES:
-            named.append((ACC_DEVICE, clause, arg_text))
+            if "if_present" in words:
+                named.append((ACC_SYNCED, f"update {clause} if_present", arg_text))
+            else:
+                named.append((ACC_DEVICE, clause, arg_text))
         elif kind == "host_data" and clause in _ACC_HOST_DATA_CLAUSES:
             named.append((ACC_DEVICE, clause, arg_text))
     if kind not in _ACC_COMPUTE_KINDS:
@@ -492,7 +511,7 @@ def _omp_directive(words, clauses):
 class AccArgUse:
     """How one dummy argument is used by the entry point's OpenACC."""
 
-    category: str  # ACC_DEVICE, ACC_EITHER or ACC_HOST
+    category: str  # ACC_DEVICE, ACC_EITHER, ACC_HOST or ACC_SYNCED
     line_no: int   # source line of the directive that decided it
     how: str       # e.g. "present", "copyin", "default(present)", "implicit"
 
@@ -522,10 +541,10 @@ class AccResidency:
     via_callees: set[str] = field(default_factory=set)
 
     def note(self, name: str, category: str, line_no: int, how: str) -> None:
-        """Record *name*'s use; "device" outranks "either", and the first
-        use of the winning category is kept."""
+        """Record *name*'s use; "device" outranks "either", which outranks
+        "synced", and the first use of the winning category is kept."""
         current = self.args.get(name)
-        if current is None or (current.category == ACC_EITHER and category == ACC_DEVICE):
+        if current is None or _NOTE_RANK.get(category, 0) > _NOTE_RANK.get(current.category, 0):
             self.args[name] = AccArgUse(category, line_no, how)
 
 
@@ -812,8 +831,8 @@ def _note_calls_and_refs(sub, source_lines: list[str], decl_map: dict[str, dict]
 
 
 # Combining one argument's categories across the callees it is passed to:
-# any host use wins, then device, then either.
-_CALLEE_RANK = {ACC_EITHER: 0, ACC_DEVICE: 1, ACC_HOST: 2}
+# any host use wins, then device, then either, then synced.
+_CALLEE_RANK = {ACC_SYNCED: 0, ACC_EITHER: 1, ACC_DEVICE: 2, ACC_HOST: 3}
 
 
 def apply_callee_residency(acc_residency: dict[str, AccResidency]) -> list[str]:

@@ -14675,3 +14675,30 @@ device, 19 left on the host by host use (the RRTMGP wrappers,
 residency pass (non-constituents promoted, constituent rule unchanged).
 To verify: GPU regression bit-for-bit against `20261107-f669d35-nvhpc`;
 MPAS cam4 GPU `phys_run1` timing (perf).
+
+## `gpu-diagnostics-conditional-sync` (started) and read-only device calls (2026-11-09)
+
+- New residency category "synced" (`fparser2_to_meta.ACC_SYNCED`): an
+  argument the entry point names only in `update ... if_present` is synced
+  by the scheme itself where it is present. It never anchors residency:
+  derive_memory_space applies rule (a) and marks the rest `device_synced`
+  (not `device_capable`); resolve-constituent-residency makes those device
+  where the variable is device data after copy-clause promotion
+  (constituent views excluded). Host references in such a scheme are not
+  ACC_HOST. `--verbose 2` notes. No cap changes until a scheme uses it.
+- atmospheric_physics `sima_state_diagnostics`: `!$acc update self(x)
+  if(is_history_field_active('NAME')) if_present` before each
+  `history_out_field` (constituent loop unchanged); ccs_config compiles it
+  `-acc`. kessler: the 12-array pull before it is gone (`q` remains).
+  xdsl74gpu: 29/30 bit-for-bit against `20261107-f669d35-nvhpc` (zm has no
+  baseline), all six cam4 cases included.
+- `emit_coalesced_updates`: a device call that only reads a variable
+  (Touch.writes false) keeps the host copy current, so the next host run
+  skips its pull. Before, every device touch forced the next CPU scheme to
+  pull again, so in cam4 the pull removed from `sima_state_diagnostics`
+  reappeared before `aerosol_optics` and `tropopause_find`. A device write,
+  a run that pushed only an overwritten section, and a change of block
+  (subcycle loop boundary) still invalidate the host copy. cap_oracle: cam4
+  arrays pulled 267 -> 226 (`update self` directives 58 -> 56), pumas and
+  rrtmgp one fewer pull each, kessler unchanged. Tests in
+  `test_subcycle_sync.py`.

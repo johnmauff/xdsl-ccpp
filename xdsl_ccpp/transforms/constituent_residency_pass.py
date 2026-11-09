@@ -30,6 +30,13 @@ passes in each call (Block arguments, HOST/CONTROL-table matches, members
 of a DDT with no module instance, such as qmin) are not promoted: the cap
 never makes them resident.
 
+Self-synced arguments (gpu-diagnostics-conditional-sync): an argument its
+scheme names only in `update ... if_present` (device_synced) becomes device
+when, after the promotions above, the variable is device data elsewhere --
+some argument or host variable with the same standard name has memory_space
+= device. It never makes a variable device data on its own. Constituent
+views are left to the reader/writer rule.
+
 Runs after generate-arg-ownership (it needs the CapScratch classification
 of the views) and before generate-suite-cap; only with --directive acc
 (with omp, derive_memory_space already makes every "either" device).
@@ -173,22 +180,68 @@ def resolve_constituent_residency(module: builtin.ModuleOp) -> list[str]:
                     f"{table.table_name.data}: '{arg_op.arg_name.data}' memory_space = "
                     "device (the scheme copies it itself; copy clauses anchor residency)"
                 )
+    report += _apply_constituent_rule(uses)
+    report += _resolve_synced(ccpp_mod, called, meta)
+    return report
+
+
+def _apply_constituent_rule(uses: list[tuple[str, ccpp.ArgumentOp]]) -> list[str]:
+    """The reader/writer rule on the constituent arguments *uses*."""
     capable = [(t, a) for t, a in uses if a.device_capable is not None and a.memory_space is None]
     if not capable:
-        return report
+        return []
     cpu_writers = sorted(
         f"{t}: '{a.arg_name.data}'" for t, a in uses if _writes(a) and not _on_device(a)
     )
     if cpu_writers:
-        return report + [
+        return [
             "constituents stay host data (written on the CPU by "
             + ", ".join(cpu_writers) + "); schemes copy them per call"
         ]
+    report = []
     for table_name, arg_op in capable:
         arg_op.properties["memory_space"] = StringAttr("device")
         report.append(
             f"{table_name}: '{arg_op.arg_name.data}' memory_space = device "
             "(constituents: no CPU scheme writes them)"
+        )
+    return report
+
+
+def _resolve_synced(ccpp_mod, called: set[str], meta) -> list[str]:
+    """Make each device_synced argument (see the module docstring) device
+    where its variable is device data elsewhere, after the promotions."""
+    device_std: set[str] = set()
+    synced: list[tuple[str, ccpp.ArgumentOp]] = []
+    for _props, table in iter_arg_tables(ccpp_mod):
+        is_scheme = table.table_type.data == TableTypeKind.Scheme
+        if is_scheme:
+            split = split_scheme_table_name(table.table_name.data)
+            if split is None or split[0] not in called:
+                continue
+        for arg_op in table.body.ops:
+            if not isa(arg_op, ccpp.ArgumentOp) or arg_op.standard_name is None:
+                continue
+            if arg_op.memory_space is not None and arg_op.memory_space.data == "device":
+                device_std.add(arg_op.standard_name.data.lower())
+            elif (
+                is_scheme
+                and arg_op.device_synced is not None
+                and arg_op.memory_space is None
+            ):
+                synced.append((table.table_name.data, arg_op))
+    report = []
+    for table_name, arg_op in synced:
+        if (
+            arg_op.standard_name.data.lower() not in device_std
+            or _is_constituent_arg(arg_op)
+            or _cap_cannot_anchor(arg_op, meta)
+        ):
+            continue
+        arg_op.properties["memory_space"] = StringAttr("device")
+        report.append(
+            f"{table_name}: '{arg_op.arg_name.data}' memory_space = device "
+            "(the scheme syncs it itself, update if_present; device data elsewhere)"
         )
     return report
 
