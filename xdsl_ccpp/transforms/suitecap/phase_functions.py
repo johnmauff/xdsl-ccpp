@@ -16,6 +16,7 @@ from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_ALLOCATABLE,
+    dynamic_constituent_names,
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_INTENT,
     SUITE_ARG_NAME,
@@ -249,7 +250,9 @@ class PhaseFunctionsMixin:
         generateSchemeSubroutineCallOps).
         """
         new_block, input_arg_types, data_ops, final_values, arg_names = (
-            _build_block_and_name_hints(input_arg_list)
+            _build_block_and_name_hints(
+                input_arg_list, dynamic_constituent_names(self.meta_data),
+            )
         )
         kind_cast_ops, unit_convert_ops, writeback_ops = _apply_kind_and_unit_casts(
             input_arg_list, new_block, data_ops, final_values, divergent_std_keys,

@@ -58,6 +58,8 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     fixed_interface_fn,
     _trim_eq_cond,
     constituents_obj_name,
+    dynamic_constituent_names,
+    is_dynamic_constituent_arg,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.transforms.util.typing import TypeConversions
@@ -111,6 +113,7 @@ def _collect_constituent_info(meta_data):
     fixed_advected: list = []
     seen_fixed: set = set()
     references_count = False
+    dyn_names = dynamic_constituent_names(meta_data)
 
     for _scheme_name, props in meta_data.items():
         if props.getAttr("type") != CCPPType.SCHEME:
@@ -124,14 +127,16 @@ def _collect_constituent_info(meta_data):
                         == "number_of_ccpp_constituents"
                 ):
                     references_count = True
-                if (
-                    is_register
-                    and fn_arg.hasAttr("allocatable")
-                    and fn_arg.hasAttr("type")
-                    and fn_arg.getAttr("type").lower() == "ccpp_constituent_properties_t"
-                ):
-                    if fn_arg.name not in dynamic_array_names:
-                        dynamic_array_names.append(fn_arg.name)
+                if is_dynamic_constituent_arg(fn_arg, table_name):
+                    # One array per standard name (dynamic_constituent_names:
+                    # schemes may share a local name for different ones).
+                    std = (
+                        fn_arg.getAttr("standard_name").lower()
+                        if fn_arg.hasAttr("standard_name") else fn_arg.name.lower()
+                    )
+                    name = dyn_names.get(std, fn_arg.name)
+                    if name not in dynamic_array_names:
+                        dynamic_array_names.append(name)
                 elif (
                     not is_register
                     and fn_arg.hasAttr("advected")
