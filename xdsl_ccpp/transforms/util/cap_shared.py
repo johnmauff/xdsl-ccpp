@@ -2039,6 +2039,16 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     spans a loop boundary, so its syncs run once per iteration of the loop
     its calls are in.
 
+    A run whose host copy is already current needs no pull: after a run
+    that pulled (or found the host current) and pushed its writes, host and
+    device agree, and a device call that only reads the variable (writes
+    false: intent in) keeps it that way, so the next run skips the pull
+    (cam4: a diagnostics scheme reading T on the device no longer forces
+    the next CPU scheme to pull T again). A device call that may write, a
+    run that pushed only an overwritten section, and any change of block
+    between touches (entering or leaving a subcycle loop: writes later in a
+    loop body reach the next iteration) make the host copy stale again.
+
     "device" touches are "present" touches without the emitted assertion:
     the caller already wraps that call in its own data region (a
     constituent view's copy region, gpu_data_pass.py), so the touch only
@@ -2063,47 +2073,61 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     pushes: list = []  # (ref or section, first_op, last_op), across every identity
     produced_syncs: list = []  # (ref, call_op), across every identity
 
-    def _close_run(ref, update_run):
-        """Record a finished run of host calls ([Touch, ...])."""
+    def _close_run(ref, update_run, host_current):
+        """Record a finished run of host calls ([Touch, ...]); *host_current*:
+        the host copy was current when the run began. Returns whether it
+        is current (equal to the device copy) after the run."""
         if not update_run:
-            return
+            return host_current
         first_op, last_op = update_run[0].call_op, update_run[-1].call_op
         section = _overwritten_section(update_run)
-        if section is None:
+        if section is None and not host_current:
             pulls.append((ref, first_op, last_op))
         if any(touch.writes for touch in update_run):
             pushes.append((ref if section is None else section, first_op, last_op))
         update_run.clear()
+        return host_current or section is None
 
     for ref, touch_list in resolved_touches.values():
         if ref is None:
             continue
 
         update_run: list = []  # [Touch, ...]
+        host_current = False  # host copy equals the device copy
+        run_host_current = False  # ... when update_run began
+        last_block = None
         for touch in (Touch(*t) for t in touch_list):
-            if touch.category == "present":
-                emit_present(ref, touch.call_op)
-                _close_run(ref, update_run)
-            elif touch.category == "device":
-                # A device use whose data region the caller already emits
-                # (a constituent view's per-call copy region): it ends a
-                # host run like "present", without its own assertion.
-                _close_run(ref, update_run)
+            block = touch.call_op.parent_block()
+            if last_block is not None and block is not last_block:
+                # Entering or leaving a subcycle loop body ends a run: a
+                # run's pull and push must sit in one block (one
+                # iteration). The device copy is current at every run
+                # boundary, so values carried from one iteration to the
+                # next need nothing more; the host copy is not trusted
+                # across the boundary.
+                _close_run(ref, update_run, run_host_current)
+                host_current = False
+            last_block = block
+            if touch.category in ("present", "device"):
+                if touch.category == "present":
+                    emit_present(ref, touch.call_op)
+                # "device": a device use whose data region the caller
+                # already emits (a constituent view's per-call copy
+                # region); it ends a host run like "present", without its
+                # own assertion.
+                if update_run:
+                    host_current = _close_run(ref, update_run, run_host_current)
+                if touch.writes:
+                    host_current = False
             elif touch.category == "produced":
-                _close_run(ref, update_run)
+                _close_run(ref, update_run, run_host_current)
+                host_current = False
                 produced_syncs.append((ref, touch.call_op))
             else:  # "update"
-                if update_run and (
-                    touch.call_op.parent_block() is not update_run[-1].call_op.parent_block()
-                ):
-                    # Entering or leaving a subcycle loop body ends a run:
-                    # a run's pull and push must sit in one block (one
-                    # iteration). The device copy is current at every run
-                    # boundary, so values carried from one iteration to
-                    # the next need nothing more.
-                    _close_run(ref, update_run)
+                if not update_run:
+                    run_host_current = host_current
                 update_run.append(touch)
-        _close_run(ref, update_run)
+        _close_run(ref, update_run, run_host_current)
 
     def _grouped(entries, key_fn):
         """Group (ref, ...) entries by key_fn's own return, deduping refs

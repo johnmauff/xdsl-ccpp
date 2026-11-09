@@ -81,7 +81,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
-| `gpu-diagnostics-conditional-sync` | 2-4 days (classifier: `update ... if_present` is "either"; per-field `update self(...) if(is_history_field_active(...)) if_present` in `sima_state_diagnostics` and `kessler_diagnostics`; tests; Kessler GPU FPHYStest with sparse history output) | S |
+| `gpu-diagnostics-conditional-sync` | 3-6 days left (generator and `sima_state_diagnostics` done 2026-11-09; the other 22 cam4 diagnostics files, 326 `history_out_field` calls, plus `kessler_diagnostics`; one GPU regression per batch) | S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
@@ -2309,6 +2309,15 @@ Supporting items (not tracked elsewhere):
   constituent loop in `sima_state_diagnostics_run` (`const_array` slices)
   needs the same treatment once the constituent array is device-resident
   (`constituent-device-residency`).
+  Progress 2026-11-09: generator done as category "synced" rather than
+  "either" (with acc-copy-residency, "either" would be promoted to
+  device): `device_synced`, device only where the variable is device data
+  after promotion. `sima_state_diagnostics` converted (xdsl74gpu 29/30
+  bit-for-bit, all cam4); its object added to ccs_config
+  `GPU_SCHEME_OBJS` -- every converted file must be, or its updates are
+  dropped while the cap no longer pulls. Read-only device calls no longer
+  force the next CPU scheme to pull (cap_shared.emit_coalesced_updates).
+  Left: the other cam4 `*_diagnostics` files (CHANGELOG.md, this date).
 - `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
   ports of the utility schemes every suite uses**:
   `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
