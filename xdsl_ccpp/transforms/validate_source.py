@@ -273,19 +273,23 @@ def compare_memory_space(
       none of them uses the argument on the device.
     Notes (--verbose 2): arguments the scheme copies itself ("either": a
     copy clause or map, or an array in a compute construct with no clause)
-    whose `.meta` is silent (device with --directive omp; with acc only
-    where the cap already keeps the variable there); derived-type arguments left to the scheme; entry
-    points with no OpenACC, whose memory_space comes from `.meta` only.
+    whose `.meta` is silent (device with --directive acc or omp; constituents
+    by resolve-constituent-residency's rule); arrays the scheme copies
+    but also uses in host code (left on the host; the cap syncs them
+    around the call); derived-type arguments left to the scheme; entry
+    points with no OpenACC, whose memory_space comes from `.meta` only;
+    arguments of such an entry point classified by the callees it passes
+    them to (fparser2_to_meta.apply_callee_residency).
     `unified` in `.meta` is not compared.
     """
-    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE, ACC_HOST
 
     lang = "OpenMP" if language == "omp" else "OpenACC"
     examples = "map clauses" if language == "omp" else "present/copy clauses"
     either_outcome = (
         "memory_space = device is derived with --directive omp"
         if language == "omp"
-        else "on the device only where the cap already keeps it there"
+        else "memory_space = device is derived with --directive acc"
     )
 
     def where(line_no: int) -> str:
@@ -305,6 +309,22 @@ def compare_memory_space(
             arg for arg, op in meta_args.items()
             if op.memory_space is not None and op.memory_space.data == "device"
         )
+        if not residency.has_acc and residency.via_callees:
+            # Classified through its callees (apply_callee_residency).
+            for arg, use in sorted(residency.args.items()):
+                if arg not in meta_args or meta_args[arg].memory_space is not None:
+                    continue
+                outcome = (
+                    "left on the host for this call; the cap syncs it around the call "
+                    "where it is device data"
+                    if use.category == ACC_HOST else either_outcome
+                )
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is passed to {', '.join(sorted(residency.via_callees))} "
+                    f"({use.how}, {where(use.line_no)}): {outcome}",
+                ))
+            continue
         if not residency.has_acc:
             callees = sorted(
                 callee for callee in residency.calls
@@ -347,6 +367,13 @@ def compare_memory_space(
                     "warning", name,
                     f"'{arg}' is used on the device ({use.how}, {where(use.line_no)}) "
                     f"but .meta says memory_space = {declared}",
+                ))
+            elif use is not None and use.category == ACC_HOST and declared is None:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is copied by the scheme but also used in host code "
+                    f"({where(use.line_no)}): left on the host for this call; the cap "
+                    "syncs it around the call where it is device data",
                 ))
             elif use is not None and use.category != ACC_DEVICE and declared is None:
                 findings.append(ResidencyFinding(

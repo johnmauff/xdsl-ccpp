@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from xdsl.dialects import func, scf
+from xdsl.dialects import func
 from xdsl.pattern_rewriter import (
     InsertPoint,
 )
@@ -25,17 +25,20 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
     fn_phase,
+    iter_call_guards,
     split_scheme_table_name,
+    top_level_ancestor,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 
 def _scheme_calls(block) -> list:
     """Ordered (scf.IfOp, scheme_name, table_name) for the error-guarded
-    scheme calls at the top level of *block*."""
+    scheme calls of *block*, including those inside subcycle loops
+    (iter_call_guards)."""
     calls = []
-    for op in block.ops:
-        if not isa(op, scf.IfOp) or not op.true_region.blocks:
+    for op in iter_call_guards(block):
+        if not op.true_region.blocks:
             continue
         call_op = next(
             (
@@ -226,7 +229,11 @@ class SuiteOwnedGpuMixin:
                     entry.fortran_type, entry.kind if entry.kind else None, entry.rank
                 )
                 ref_op = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
-                Rewriter.insert_op(ref_op, InsertPoint.before(touch_list[0][0]))
+                # Before the subcycle loop holding the first touch, if any,
+                # so the reference dominates touches after the loop too.
+                Rewriter.insert_op(
+                    ref_op, InsertPoint.before(top_level_ancestor(touch_list[0][0], block))
+                )
                 resolved[std_name] = (ref_op.res, touch_list)
 
             if debug_sync:

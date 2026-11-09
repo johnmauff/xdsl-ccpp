@@ -33,6 +33,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetUpdateToOp,
     RankReducingSliceOp,
     SliceExprOp,
+    SubcycleLoopOp,
     VarRefExprOp,
     WriteErrMsgOp,
 )
@@ -1900,6 +1901,29 @@ def arg_overwrites(arg) -> bool:
     return _scheme_intent(arg) == "out"
 
 
+def iter_call_guards(block):
+    """The error-guarded scheme calls (scf.IfOp) of a suite-cap function
+    body *block*, in program order, including those inside subcycle loops
+    (SubcycleLoopOp bodies, nested to any depth). GPU sync placement must
+    see every call: a sync for a call inside a loop goes inside the loop,
+    so it runs on every iteration."""
+    for op in block.ops:
+        if isa(op, SubcycleLoopOp):
+            yield from iter_call_guards(op.body.block)
+        elif isa(op, scf.IfOp):
+            yield op
+
+
+def top_level_ancestor(op, block):
+    """The op in *block* that is *op* or contains it (e.g. the subcycle
+    loop around a call inside it), for directives that must sit in *block*
+    itself: a data region spanning calls inside and outside a loop, or a
+    reference that must dominate them all."""
+    while op is not None and op.parent_block() is not block:
+        op = op.parent_op()
+    return op
+
+
 class Touch(NamedTuple):
     """One scheme call's use of a variable that needs GPU synchronization
     (see emit_coalesced_updates).
@@ -2011,6 +2035,10 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     boundary they share, so several variables' runs sharing a boundary
     fold into one shared call instead of one each.
 
+    Touches may sit inside subcycle loops (iter_call_guards); a run never
+    spans a loop boundary, so its syncs run once per iteration of the loop
+    its calls are in.
+
     "device" touches are "present" touches without the emitted assertion:
     the caller already wraps that call in its own data region (a
     constituent view's copy region, gpu_data_pass.py), so the touch only
@@ -2065,6 +2093,15 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 _close_run(ref, update_run)
                 produced_syncs.append((ref, touch.call_op))
             else:  # "update"
+                if update_run and (
+                    touch.call_op.parent_block() is not update_run[-1].call_op.parent_block()
+                ):
+                    # Entering or leaving a subcycle loop body ends a run:
+                    # a run's pull and push must sit in one block (one
+                    # iteration). The device copy is current at every run
+                    # boundary, so values carried from one iteration to
+                    # the next need nothing more.
+                    _close_run(ref, update_run)
                 update_run.append(touch)
         _close_run(ref, update_run)
 

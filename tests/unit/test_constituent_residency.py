@@ -237,3 +237,89 @@ def test_view_reader_ignored_when_array_not_resident():
     # example's own tendency syncs (const_tend) are unrelated.
     lines = _suite_cap_run(view_reader_on_cpu=True, resident=False)
     assert not any("!$acc update" in l and "(const)" in l for l in lines), lines
+
+
+# ── acc-copy-residency: device_capable non-constituents become device ────────
+
+def _non_constituent_args(module):
+    return [
+        (table.table_name.data, arg)
+        for table in module.walk() if isinstance(table, ArgumentTableOp)
+        if table.table_type.data == "scheme"
+        for arg in table.body.block.ops
+        if isinstance(arg, ArgumentOp) and not _is_constituent_arg(arg)
+        and arg.memory_space is None
+    ]
+
+
+def test_device_capable_non_constituent_becomes_device():
+    # A scheme ported with copy clauses alone anchors residency, as
+    # present() does, even though no other scheme declares the variable.
+    module = _module()
+    (table, arg), *_ = _non_constituent_args(module)
+    arg.properties["device_capable"] = UnitAttr()
+    report = resolve_constituent_residency(module)
+    assert arg.memory_space is not None and arg.memory_space.data == "device"
+    assert any(f"{table}: '{arg.arg_name.data}'" in line and "copy clauses" in line
+               for line in report)
+
+
+def test_non_constituent_without_device_capable_untouched():
+    # ACC_HOST arguments (copied, but also used in host code) are never
+    # device_capable, so they stay host; the cap syncs them around the call.
+    module = _module()
+    args = _non_constituent_args(module)
+    resolve_constituent_residency(module)
+    assert all(a.memory_space is None for _, a in args)
+
+
+def test_cpu_constituent_writer_does_not_block_non_constituents():
+    module = _module()
+    (_, other), *_ = _non_constituent_args(module)
+    other.properties["device_capable"] = UnitAttr()
+    for _, arg in _constituent_args(module):
+        _clear_memory_space(arg)
+    (_, capable), *_ = _constituent_args(module)
+    capable.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    assert other.memory_space is not None and other.memory_space.data == "device"
+
+
+# ── acc-copy-residency: only data the cap can make resident is promoted ──────
+
+def _arg(module, table_name, arg_name):
+    return next(a for t, a in _non_constituent_args(module)
+                if t == table_name and a.arg_name.data == arg_name)
+
+
+def test_block_arg_not_promoted():
+    # The API caller passes a Block argument in; the cap never makes it
+    # resident, so device clauses on it would find nothing on the device.
+    module = _module()
+    arg = _arg(module, "cld_liq_run", "errmsg")
+    arg.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    assert arg.memory_space is None
+
+
+def test_ddt_member_with_module_instance_promoted():
+    # ps is physics_state%ps, and the host has a module-level physics_state.
+    module = _module()
+    arg = _arg(module, "cld_liq_run", "ps")
+    arg.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    assert arg.memory_space is not None and arg.memory_space.data == "device"
+
+
+def test_ddt_member_without_module_instance_not_promoted(monkeypatch):
+    # Like CAM-SIMA's qmin (the constituent object's vars_minvalue, passed
+    # to ccpp_physics_run by the caller): no module instance to USE, so the
+    # cap cannot make it resident (xdsl71gpu hb_vdiff "not found on device").
+    import xdsl_ccpp.transforms.constituent_residency_pass as crp
+
+    monkeypatch.setattr(crp, "_resolve_ddt_access_path", lambda *a, **k: None)
+    module = _module()
+    arg = _arg(module, "cld_liq_run", "ps")
+    arg.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    assert arg.memory_space is None

@@ -28,6 +28,16 @@ arguments whose .meta is silent are touched: an explicit memory_space
   Safe, since a map that finds the data present uses the device copy; an
   explicit memory_space = host in .meta opts an argument out.
 
+- "host" (an "either" array the entry point also uses in host code):
+  never set here and not device_capable -- the cap syncs the variable
+  around the call when it is device data elsewhere.
+With --directive acc, "either" arguments left on the host here carry
+device_capable; resolve-constituent-residency (acc-copy-residency,
+2026-11-08) then makes every such non-constituent argument device, so a
+scheme ported with copy clauses alone anchors device residency, the same as
+present() does (cam4: no scheme uses present, and rule (a) alone left the
+suite with no residency, every port copying its data on every call).
+Constituent arguments keep their reader/writer rule there.
 Derived-type arguments are never classified (the scheme moves its own
 derived-type data). This module reads and sets CCPP metadata only.
 """
@@ -81,7 +91,7 @@ def apply_derived_memory_space(
                     device_names.add(_std_name(arg))
                 continue
             category = uses.get(arg.arg_name.data.lower())
-            if declared is None and category is not None:
+            if declared is None and category in (DEVICE, EITHER):
                 scheme_args.append((table_name, arg, category))
                 if category == DEVICE and _std_name(arg):
                     device_names.add(_std_name(arg))

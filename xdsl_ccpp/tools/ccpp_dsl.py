@@ -4,6 +4,7 @@ import dataclasses
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -159,6 +160,8 @@ def _check_fortran_source(
             return err.getvalue(), {}
         for mismatch in compare_modules(meta_module, source_module):
             print(f"Warning: {mismatch}", file=sys.stderr)
+        own_procs = set(acc_residency)
+        _add_callee_residency(meta_module, meta_path, acc_residency, preproc_defs, language)
         for finding in compare_memory_space(meta_module, acc_residency, f90_path, language):
             if finding.level == "warning":
                 print(f"Warning: {finding}", file=sys.stderr)
@@ -167,9 +170,74 @@ def _check_fortran_source(
     classification = {
         proc: {arg: use.category for arg, use in residency.args.items()}
         for proc, residency in acc_residency.items()
-        if residency.args
+        if residency.args and proc in own_procs
     }
     return err.getvalue(), classification
+
+
+def _dependency_files(meta_module, meta_path: str) -> list[str]:
+    """The existing source files a scheme .meta's `dependencies` name,
+    resolved against its `dependencies_path` (relative to the .meta's
+    directory) or the .meta's directory."""
+    from pathlib import Path
+
+    from xdsl_ccpp.dialects.ccpp import TablePropertiesOp
+
+    files: list[str] = []
+    for op in meta_module.walk():
+        if not isinstance(op, TablePropertiesOp) or "dependencies" not in op.attributes:
+            continue
+        base = Path(meta_path).resolve().parent
+        if "dependencies_path" in op.attributes:
+            base = base / op.attributes["dependencies_path"].data
+        for dep in op.attributes["dependencies"].data:
+            path = base / dep.data
+            if path.suffix.lower() in (".f90", ".f") and path.is_file() and str(path) not in files:
+                files.append(str(path))
+    return files
+
+
+def _add_callee_residency(meta_module, meta_path: str, acc_residency: dict,
+                          preproc_defs, language: str) -> None:
+    """Classify the arguments of entry points with no directives of their own
+    by their callees' (fparser2_to_meta.apply_callee_residency). Callees in
+    other files come from the .meta's `dependencies`, parsed only when such
+    an entry point calls a procedure its own file does not define."""
+    from xdsl_ccpp.transforms.fparser2_to_meta import (
+        _extract_subroutines,
+        apply_callee_residency,
+    )
+
+    wanted = {
+        callee
+        for res in acc_residency.values() if not res.has_acc
+        for callee, _span, _actuals in res.call_sites
+        if callee not in acc_residency
+    }
+    if wanted:
+        # A text scan first: parse (slow) only a file defining a wanted callee.
+        defines = re.compile(
+            r"^\s*(?:[a-z_]+\s+)*subroutine\s+(" + "|".join(map(re.escape, sorted(wanted))) + r")\b",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        for dep_path in _dependency_files(meta_module, meta_path):
+            dep_residency: dict = {}
+            try:
+                with open(dep_path) as f:
+                    text = f.read()
+                if not defines.search(text):
+                    continue
+                _extract_subroutines(text, dep_path, preproc_defs, dep_residency, language)
+            except Exception as exc:
+                print(
+                    f"Warning: fparser2 failed to parse dependency '{dep_path}' for "
+                    f"device residency through callees: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            for proc, res in dep_residency.items():
+                acc_residency.setdefault(proc, res)
+    apply_callee_residency(acc_residency)
 
 
 class CcppDslError(Exception):
