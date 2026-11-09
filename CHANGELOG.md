@@ -14602,3 +14602,76 @@ regression xdsl70gpu against it: 29/29 BASELINE PASS at zero tolerance,
 including rrtmgp and all 6 cam4 tests (SE QPC4 SMS/SMS_D, F1850_C4/F2000_C4
 SMS_D; MPAS QPC4 SMS/SMS_D). zm_gpu has no baseline (zm's CPU run aborts in
 its `ncdata_check`, `zm-ncdata-diffs`).
+
+## `acc-copy-residency`: copy clauses make a variable device data (2026-11-08)
+
+With `--directive acc`, a scheme argument whose entry point names it in a
+copy-family clause (or uses it in a compute construct without a clause) was
+"either": device only where another scheme already required it there
+(`present`, rule (a)). No cam4 scheme uses `present`, so cam4's GPU caps had
+no `!$acc` at all and each of its 16 ported schemes copied its arrays in and
+out on every call (MPAS cam4 GPU `phys_run1` ~8x the 512-rank CPU time).
+
+- Copy clauses now anchor residency like `present`: `resolve-constituent-
+  residency` makes every `device_capable` non-constituent argument device
+  data; the cap keeps it on the GPU and syncs it around CPU schemes with the
+  existing machinery. Constituents keep their reader/writer rule.
+- New category `ACC_HOST` (`fparser2_to_meta._note_host_uses`): an "either"
+  array the entry point also references in host code (outside every compute
+  construct; inquiry intrinsics such as `size(x)` and `present(x)` do not
+  count). A present-or-copy clause copies nothing when the data is resident,
+  so host code in the scheme would see stale data; such an argument stays on
+  the host for that call and the cap syncs around it.
+- `--verbose 2` notes: the arguments made device, and each `ACC_HOST` one.
+- Only data the cap can make resident is promoted. Not promoted: Block
+  arguments, HOST/CONTROL-table matches, and members of a DDT with no
+  module-level instance (`_cap_cannot_anchor`). Found by xdsl71gpu hb_vdiff:
+  `qmin`/`qmincg` (`ccpp_constituent_minimum_values`, the constituent
+  object's `vars_minvalue`, passed in to `ccpp_physics_run`) got
+  `update self`/`present` but was never on the device ("data in update host
+  clause was not found on device"); cam4 had the same `present(qmin)`.
+- GPU syncs for calls inside subcycle loops. GPUDataPass and the
+  suite-owned sync (`suitecap/gpu.py`) collected only the top-level calls
+  of a suite function, so calls in a `SubcycleLoopOp` got no `update
+  self/device`. Harmless while nothing in those loops was device data;
+  with copy-clause residency xdsl72gpu rrtmgp differed in 42 radiation
+  fields (`rrtmgp_sw_calculate_fluxes` writes `fns` on the host,
+  `rrtmgp_sw_calculate_heating_rate` read stale `fns` on the device, then
+  `rrtmgp_sw_diagnostics` read stale `hrate` on the host). Now
+  `cap_shared.iter_call_guards` walks into loop bodies, and
+  `emit_coalesced_updates` ends a host run where the call sequence enters
+  or leaves a loop body, so a run's pull and push sit in one block and run
+  every iteration (the device copy is current at every run boundary, so
+  loop-carried values need nothing more). Data regions and suite-owned
+  references are anchored at the loop (`top_level_ancestor`). cam4 (two
+  radiation loops): 57 `update self`, 34 `update device`. Tests:
+  `test_subcycle_sync.py`.
+- Residency through callees. `micro_pumas_ccpp_run` has no OpenACC of its
+  own; it passes its arrays to `micro_pumas_tend` (`micro_pumas_v1.F90`),
+  whose `data copyin/copyout` and `update` directives work on them. Read
+  only the entry point, its arguments stayed host, so the cap wrapped it in
+  `update self` / `update device`; once the `pumas_*` interstitials were
+  device-resident (copy clauses of `micro_pumas_ccpp_dimensions_pre`), the
+  inner copyout found them present and copied nothing back, and the cap's
+  `update device` overwrote the results with the stale host copy (xdsl72gpu
+  pumas T/Q). Now, for an entry point with no directives of its own,
+  `fparser2_to_meta.apply_callee_residency` classifies each array passed
+  bare to a callee by that callee's category (one call level; host if the
+  entry point also uses it elsewhere or passes it to a callee with no
+  directives). Callees in other files come from the `.meta`'s
+  `dependencies` (`ccpp_dsl._add_callee_residency`), parsed only when a
+  text scan finds the wanted subroutine in them. `--verbose 2` notes replace
+  the "has no OpenACC of its own but calls X" warning for such entry points.
+  pumas: 97 `micro_pumas_ccpp_run` arguments device (no syncs), 4 host
+  (`relvar`, `accre_enhan`, `rndst`, `nacon`: one `update self`, no push);
+  cam4 and rrtmgp unchanged. Tests in `test_fparser2_to_meta_memory_space.py`.
+
+Effect (cap_oracle, xdsl70gpu cases): cam4 `cam4_cap.F90` 0 -> 1199 `!$acc`
+lines (49 `update self`, 31 `update device`); 297 cam4 copy-clause arguments
+device, 19 left on the host by host use (the RRTMGP wrappers,
+`set_surface_coupling_vars`). kessler (the state converters' `pmid`/`pdel`/
+`pdeldry`), rrtmgp and dme_adjust caps also change. Tests: classifier
+(host write/read, inquiry intrinsics, data region, device unaffected) and
+residency pass (non-constituents promoted, constituent rule unchanged).
+To verify: GPU regression bit-for-bit against `20261107-f669d35-nvhpc`;
+MPAS cam4 GPU `phys_run1` timing (perf).

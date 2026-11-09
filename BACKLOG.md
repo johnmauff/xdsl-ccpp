@@ -77,6 +77,10 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-hack-convect-shallow` | 4-8 days after `gpu-port-wv-saturation` (~1000-line scheme, column-sequential physics, constituent-properties mask on the host; no per-scheme replay: its driver needs CAM modules through `wv_saturation`) | S-M |
 | `gpu-port-zm-conv-evap` | 2-4 days after `gpu-port-wv-saturation` (~250 lines; column-sequential evaporation; same replay gap) | S |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
+| `gpu-history-accumulate` | 6-12 days plus upstream review (device-resident accumulation buffers and kernels in ESMCI/history_output, `cam_history` wiring, write-time sync, Kessler/cam4 GPU bit-for-bit) | M |
+| `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
+| `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
+| `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
 | `gpu-diagnostics-conditional-sync` | 2-4 days (classifier: `update ... if_present` is "either"; per-field `update self(...) if(is_history_field_active(...)) if_present` in `sima_state_diagnostics` and `kessler_diagnostics`; tests; Kessler GPU FPHYStest with sparse history output) | S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
@@ -98,6 +102,7 @@ measured data, and will drift as items are reassessed.
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
 | `scheme-io-capture-generated-stubs` | 2-3 days (imported procedures' interfaces from their source, stub module as IR with error-exit bodies, kinds through the closure, tests) | XS-S |
+| `acc-host-written-device-arg` | 1-2 days (classifier: written-in-kernel flag on ACC_HOST arguments; warning when device data elsewhere; tests) | XS |
 | `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
 | `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
 | `wv-saturation-ccppize` | 4-8 days plus upstream review (atmospheric_physics: `wv_saturation` init as a CCPP scheme taking its constants and namelist through metadata, errmsg/errflg instead of `endrun`, no CAM host modules; bit-for-bit check; then recapture pumas and the `wv_saturation` users) | S-M |
@@ -1242,6 +1247,31 @@ holds them. Wanted: also take the `present`/`copy` clauses of the
 procedures the scheme reaches (the closure's call graph, as
 `mpi_reach`/`module_state_access` follow it), mapped back to the
 entry point's arguments.
+Note 2026-11-08: generation now does one level of this for entry points
+with no OpenACC of their own (`fparser2_to_meta.apply_callee_residency`,
+callees in the same file or the `.meta` `dependencies`; CHANGELOG
+`acc-copy-residency`), and the capture driver takes its device arguments
+from the same classification. Check whether that already fixes
+`test_pumas_post_main`; what is left here is callees more than one level
+down (`size_dist_param_basic_vect` is reached through other routines) and
+calls through the closure's call graph rather than `dependencies`.
+
+**ID: `acc-host-written-device-arg`. Warn when a scheme argument the scheme
+writes in a kernel is also used in its host code while device-resident.**
+Added 2026-11-08 (found analysing the xdsl72gpu pumas diffs). An "either"
+argument the entry point (or, through `apply_callee_residency`, its callee)
+also references in host code is ACC_HOST: left on the host for that call,
+and the cap syncs around it (`update self` before, `update device` after if
+it may write). That is correct only when the kernels do not write it: if a
+kernel writes it through a present-or-copy clause and the variable is
+device-resident, the clause finds it present and copies nothing back, the
+host code sees a stale copy, and the cap's push overwrites the kernel's
+result. Not hit yet (the four pumas host arguments are intent(in)). Wanted:
+a generation warning (classifier: the argument appears in a `copy`/
+`copyout` clause or is assigned in a compute body, and is ACC_HOST, and is
+device data elsewhere in the suite), naming the fix in the scheme: an
+`update self(x) if_present` / `update device(x) if_present` around its
+host use.
 
 **ID: `wv-saturation-ccppize`. CCPP-ize `wv_saturation` (atmospheric_physics,
 upstream).** Added 2026-11-06 (from `scheme-io-capture-ddt-args`).
@@ -2178,6 +2208,82 @@ Supporting items (not tracked elsewhere):
     `interpolate_data`, so no replay);
     until then a full gw_cam4 GPU run against its
     CPU reference (no GPU testmod yet).
+- `gpu-history-accumulate` — **Accumulate history fields on the GPU.**
+  Added 2026-11-08. Follow-on to `gpu-diagnostics-conditional-sync`, which
+  only removes copies of fields on no history file. For fields that are on a
+  file, `history_out_field` (`src/history/cam_history.F90:636-782`) still
+  needs host data every step: per file it looks the name up
+  (`find_in_field_list`) and calls `hist_field_accumulate`, which adds the
+  values into the file's buffer (avg/var: add; min/max: compare; lst: copy)
+  in `buff_1d_accum`/`buff_2d_accum` (`src/history/buffers/src/hist_buffer.F90`,
+  ESMCI/history_output submodule `history01_02`). The ~30 cam4
+  `_diagnostics` schemes call it every step and do almost no arithmetic
+  themselves (unit scaling, gathered-to-column scatter, 0/1 flags), so the
+  per-step cost on the GPU is the device-to-host copy plus a CPU
+  accumulate. `history_out_field` has no time argument: output frequency
+  and averaging live in `hist_configs` and are applied at
+  `history_write_files`/`history_wrap_up`.
+  Wanted: the accumulation buffers device-resident (allocated with `enter
+  data` when the field is added), `buff_*_accum` as device kernels when the
+  input is present (`if_present`/`present()` path, host path kept for CPU
+  callers and host-only fields), and one `update self` of the buffer at
+  write/normalization time instead of one copy of the field per step. The
+  name lookup stays on the host (string hash); only the accumulate moves.
+  Details to settle: `flag_xyfill` masking, `cols_or_block` indexing, the
+  var accumulator, per-file buffers when a field is on several files, and
+  instantaneous fields (only the written step matters; with device
+  buffers they cost one kernel per step and no copy). Upstream: ESMCI/
+  history_output and CAM-SIMA `cam_history`. Test: Kessler and cam4 GPU
+  FPHYStest bit-for-bit against the nvhpc CPU baseline (avg normalization
+  order must match), plus history_output's own unit tests on CPU.
+- `gpu-port-vertical-diffusion-simple` — **GPU ports of the vertical
+  diffusion schemes that do not call the solver.** Added 2026-11-08. Nine
+  small schemes, all replayable on CPU and GPU (F2000_C4, uw_vdiff,
+  hb_vdiff captures): `vertical_diffusion_prepare_inputs` (22 lines),
+  `vertical_diffusion_set_total_surface_stress` (26),
+  `compute_kinematic_fluxes_and_obklen` (44), and in
+  `diffusion_solver.F90` `vertical_diffusion_set_temperature_at_toa_default`
+  (14), `vertical_diffusion_set_dry_static_energy_at_toa_zero` (11),
+  `vertical_diffusion_interpolate_to_interfaces` (64),
+  `vertical_diffusion_wind_damping_rate` (20),
+  `implicit_surface_stress_add_drag_coefficient` (31),
+  `vertical_diffusion_tendencies` (51). Pointwise/column loops; the
+  `coords1d` components they read are passed as plain arrays. Gain: cam4
+  cap syncs around them (cap_oracle after `acc-copy-residency`:
+  `compute_kinematic_fluxes_and_obklen` 7, `set_total_surface_stress` 6,
+  `prepare_inputs` 4, `tendencies` 4, ... per step); the rest of the group
+  stays synced until `gpu-port-vertical-diffusion-solver`. Test: the three
+  replays CPU and GPU, then hb_vdiff/uw_vdiff GPU FPHYStest bit-for-bit
+  against the nvhpc CPU baseline.
+- `gpu-port-vertical-diffusion-solver` — **GPU ports of the three vertical
+  diffusion schemes that call `fin_vol_solve`.** Added 2026-11-08.
+  `vertical_diffusion_diffuse_dry_static_energy` (46 lines),
+  `vertical_diffusion_diffuse_tracers` (78) and
+  `vertical_diffusion_diffuse_horizontal_momentum` (189), all in
+  `diffusion_solver.F90`. The hard part is the solver:
+  `fin_vol_solve` and the object-oriented tridiagonal code in
+  `to_be_ccppized/linear_1d_operators.F90` (`TriDiagDecomp`, operator
+  derived types with allocatable components) need a plain-array device
+  path (`!$acc routine seq` per column, or a column-parallel kernel),
+  bit-for-bit with the operator code (same operation order). The same
+  solver is used by `gw_common` (`gpu-port-gw-orographic`); do it once for
+  both. Replays exist (F2000_C4, uw_vdiff, hb_vdiff). Gain: cam4 cap syncs
+  around the three (`diffuse_horizontal_momentum` 6 per step, plus
+  `kvq`/`cgh`-style syncs before the other two) and lets the whole vertical
+  diffusion group stay on the device. Do after
+  `gpu-port-vertical-diffusion-simple`.
+- `gpu-port-tropopause-find` — **GPU port of `tropopause_find`.** Added
+  2026-11-08 (split out of `gpu-port-shared-utility-schemes`). The run
+  routine (197 lines) calls `tropopause_findWithBackup` six times; those
+  use five algorithms (`twmo`, `climate`, `cpp`, `hybridstobie`,
+  `findChemTrop`) and `interpolateP/T/Z`, about 700 lines of column code
+  in `tropopause_find.F90`. Module constants (`cnst_*`) need `!$acc
+  declare` and an update after init; `tropP/T/Z` and `hstobie_*` are
+  optional all the way down (substitute locals in the dispatcher); the
+  public `tropopause_findWithBackup` must keep working from host callers
+  (present-or-copy clauses). Replays: rk_stratiform, rrtmgp. Gain: 9 cam4
+  cap syncs per step (cap_oracle after `acc-copy-residency`); used by
+  rk_stratiform and rrtmgp too.
 - `gpu-diagnostics-conditional-sync` — **Diagnostics schemes copy device
   data to the host only for fields being output.** Added 2026-11-02.
   `sima_state_diagnostics_run` and `kessler_diagnostics_run` run every
@@ -2208,7 +2314,7 @@ Supporting items (not tracked elsewhere):
   `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
   `geopotential_temp`,
   `clamp_number_concentrations`, `calculate_net_heating`,
-  `tropopause_find`, and the 10 state converters in
+  `tropopause_find` (now `gpu-port-tropopause-find`), and the 10 state converters in
   `schemes/utilities/state_converters.F90` (`calc_exner`,
   `temp_to_potential_temp`, `potential_temp_to_temp`,
   `calc_dry_air_ideal_gas_density`, `wet_to_dry_*`, `dry_to_wet_*`;
@@ -2329,7 +2435,7 @@ Supporting items (not tracked elsewhere):
 | `potential_temp_to_temp` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
 | `qneg` | `schemes/utilities/qneg.F90` | kessler, pumas | `gpu-port-shared-utility-schemes` |
 | `temp_to_potential_temp` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
-| `tropopause_find` | `schemes/tropopause_find/tropopause_find.F90` | rrtmgp | `gpu-port-shared-utility-schemes` |
+| `tropopause_find` | `schemes/tropopause_find/tropopause_find.F90` | rrtmgp | `gpu-port-tropopause-find` |
 | `wet_to_dry_cloud_liquid_water` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
 | `wet_to_dry_rain` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
 | `wet_to_dry_water_vapor` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |

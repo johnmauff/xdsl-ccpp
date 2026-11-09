@@ -20,6 +20,7 @@ pytest.importorskip("fparser", reason="fparser not installed")
 from xdsl_ccpp.transforms.fparser2_to_meta import (
     ACC_DEVICE,
     ACC_EITHER,
+    ACC_HOST,
     _extract_subroutines,
 )
 
@@ -415,3 +416,200 @@ def test_real_kessler_file_default_present():
         "cpair", "rair", "rho", "z", "pk", "theta", "qv", "qc", "qr", "precl", "relhum"
     }
     assert r.args["relhum"].how == "default(present)"
+
+
+# ── acc-copy-residency: "either" arrays also used in host code ───────────────
+
+_KERNEL = (
+    "    !$acc parallel loop copyin(ps) copy(temp)\n"
+    "    do i = 1, n\n"
+    "      temp(i, 1) = temp(i, 1) + ps(i)\n"
+    "    end do\n"
+)
+
+
+def test_copy_clause_arrays_used_only_in_the_kernel_stay_either():
+    got, _ = _classify(_KERNEL)
+    assert got == {"ps": (ACC_EITHER, "copyin"), "temp": (ACC_EITHER, "copy")}
+
+
+def test_host_write_before_the_kernel_makes_it_host():
+    # With temp resident, copy(temp) copies nothing: the kernel would not
+    # see this host write. The cap must sync around the call instead.
+    got, _ = _classify("    temp(1, 1) = 0.0\n" + _KERNEL)
+    assert got["temp"] == (ACC_HOST, "host use")
+    assert got["ps"] == (ACC_EITHER, "copyin")
+
+
+def test_host_read_after_the_kernel_makes_it_host():
+    got, _ = _classify(_KERNEL + "    qv(1, 1) = temp(1, 1)\n")
+    assert got["temp"] == (ACC_HOST, "host use")
+
+
+def test_inquiry_intrinsics_are_not_host_uses():
+    got, _ = _classify(
+        "    k = size(temp, 1) + lbound(ps, 1)\n"
+        "    if (present(ps)) k = ubound(temp, 2)\n" + _KERNEL
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin"), "temp": (ACC_EITHER, "copy")}
+
+
+def test_host_use_inside_a_data_region_is_still_host():
+    # A data region is not a compute construct: the code in it runs on the host.
+    got, _ = _classify(
+        "    !$acc data copy(temp)\n"
+        "    temp(1, 1) = 0.0\n"
+        "    !$acc parallel loop\n"
+        "    do i = 1, n\n"
+        "      temp(i, 1) = temp(i, 1) + 1.0\n"
+        "    end do\n"
+        "    !$acc end data\n"
+    )
+    assert got["temp"] == (ACC_HOST, "host use")
+
+
+def test_host_use_does_not_change_device_arguments():
+    # present(): the scheme requires the data on the device; its host code
+    # is its own business (it must update itself).
+    got, _ = _classify(
+        "    temp(1, 1) = 0.0\n"
+        "    !$acc parallel loop present(temp)\n"
+        "    do i = 1, n\n"
+        "      temp(i, 1) = 1.0\n"
+        "    end do\n"
+    )
+    assert got["temp"] == (ACC_DEVICE, "present")
+
+
+# ── classification through callees (apply_callee_residency) ──────────────────
+# An entry point with no OpenACC of its own (micro_pumas_ccpp_run) takes its
+# arguments' residency from the callee it passes them to (micro_pumas_tend).
+
+_CALLEE = """
+  subroutine kern(a, b, c)
+    real, intent(inout) :: a(:), b(:), c(:)
+    integer :: i
+    !$acc data present(a) copy(b, c)
+    !$acc parallel loop
+    do i = 1, size(a)
+      a(i) = b(i) + c(i)
+    end do
+    !$acc end data
+    c(1) = 0.
+  end subroutine
+"""
+
+
+def _through_callee(entry_body: str, extra: str = ""):
+    from xdsl_ccpp.transforms.fparser2_to_meta import apply_callee_residency
+
+    src = f"""
+module m
+contains
+  subroutine m_run(x, y, z)
+    real, intent(inout) :: x(:), y(:), z(:)
+{entry_body}
+  end subroutine
+{_CALLEE}
+{extra}
+end module
+"""
+    residency = {}
+    _extract_subroutines(src, "test.F90", None, residency, "acc")
+    apply_callee_residency(residency)
+    r = residency["m_run"]
+    return {k: (v.category, v.how) for k, v in r.args.items()}, r
+
+
+def test_positional_actuals_take_the_callee_category():
+    got, r = _through_callee("    call kern(x, y, z)")
+    assert got == {
+        "x": (ACC_DEVICE, "present in kern"),
+        "y": (ACC_EITHER, "copy in kern"),
+        "z": (ACC_HOST, "host use in kern"),  # kern uses c in host code
+    }
+    assert r.via_callees == {"kern"} and not r.has_acc
+
+
+def test_keyword_actuals_map_by_name():
+    got, _ = _through_callee("    call kern(c=x, a=y, b=z)")
+    assert got == {
+        "x": (ACC_HOST, "host use in kern"),
+        "y": (ACC_DEVICE, "present in kern"),
+        "z": (ACC_EITHER, "copy in kern"),
+    }
+
+
+def test_host_use_outside_the_call_makes_it_host():
+    got, _ = _through_callee("    x(1) = 1.\n    call kern(x, y, z)")
+    assert got["x"][0] == ACC_HOST
+    assert got["y"] == (ACC_EITHER, "copy in kern")
+
+
+def test_section_actual_or_callee_without_acc_not_classified():
+    extra = """
+  subroutine plain(a)
+    real, intent(inout) :: a(:)
+    a = 0.
+  end subroutine
+"""
+    got, _ = _through_callee("    call kern(x(1:2), y, z)\n    call plain(z)", extra)
+    assert "x" not in got  # passed as a section
+    assert got["z"][0] == ACC_HOST  # also passed to plain, a callee with no OpenACC
+    assert got["y"] == (ACC_EITHER, "copy in kern")
+
+
+def test_entry_point_with_its_own_acc_ignores_callees():
+    got, r = _through_callee("    !$acc data copyin(z)\n    call kern(x, y, z)\n    !$acc end data")
+    assert set(got) == {"z"} and r.via_callees == set()
+
+
+def test_callee_in_a_meta_dependency_file_is_read(tmp_path):
+    from xdsl_ccpp.tools.ccpp_dsl import _check_fortran_source
+
+    (tmp_path / "dep.F90").write_text(f"module dep\ncontains\n{_CALLEE}\nend module\n")
+    (tmp_path / "s.F90").write_text("""
+module s
+contains
+  subroutine s_run(x, y, errmsg, errflg)
+    use dep, only: kern
+    real, intent(inout) :: x(:), y(:)
+    character(len=*), intent(out) :: errmsg
+    integer, intent(out) :: errflg
+    errmsg = ''
+    errflg = 0
+    call kern(x, y, y)
+  end subroutine
+end module
+""")
+    arg = "  type = real | kind = kind_phys\n  units = 1\n  intent = inout\n"
+    (tmp_path / "s.meta").write_text(f"""[ccpp-table-properties]
+  name = s
+  type = scheme
+  dependencies = dep.F90
+[ccpp-arg-table]
+  name = s_run
+  type = scheme
+[ x ]
+  standard_name = x_var
+  dimensions = (horizontal_dimension)
+{arg}[ y ]
+  standard_name = y_var
+  dimensions = (horizontal_dimension)
+{arg}[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character | kind = len=*
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+""")
+    _, classification = _check_fortran_source(
+        str(tmp_path / "s.meta"), str(tmp_path / "s.F90"), None, 1, "acc"
+    )
+    assert classification == {"s_run": {"x": ACC_DEVICE, "y": ACC_HOST}}

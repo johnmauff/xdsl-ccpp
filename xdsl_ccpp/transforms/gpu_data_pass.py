@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import builtin, func, scf
+from xdsl.dialects import builtin, func
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -29,6 +29,8 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     block_args_by_std,
     value_name,
     is_constituent_view_arg,
+    iter_call_guards,
+    top_level_ancestor,
     resolve_capscratch_cap_var_name,
     split_scheme_table_name,
     suite_cap_suite_name,
@@ -566,10 +568,10 @@ class GPUDataPass(ModulePass):
         # Collect every GPU-capable call in this function, in order, with its
         # scheme/table identity -- shared by both the hostless-scratch path
         # below and the diverged-host-var routing.
+        # Calls inside subcycle loops count too (iter_call_guards): their
+        # syncs go inside the loop.
         calls = []  # list of (scf.IfOp, scheme_name, table_name)
-        for op in block.ops:
-            if not isa(op, scf.IfOp):
-                continue
+        for op in iter_call_guards(block):
             call_op = self._find_call_in_if(op)
             if call_op is None:
                 continue
@@ -627,8 +629,11 @@ class GPUDataPass(ModulePass):
                         refs.add(arg_by_std[std])
 
             if refs:
-                first_if = gpu_calls[0][0]
-                last_if  = gpu_calls[-1][0]
+                # The region must open and close in the function body
+                # itself, around any subcycle loop holding the first or
+                # last call.
+                first_if = top_level_ancestor(gpu_calls[0][0], block)
+                last_if  = top_level_ancestor(gpu_calls[-1][0], block)
                 copyin_refs = sorted(refs, key=lambda a: value_name(a) or "")
                 if self.directive == "omp":
                     Rewriter.insert_op(

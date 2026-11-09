@@ -370,8 +370,24 @@ def _extract_ccpp_tags(
 # target region with no `map` for them (implicitly tofrom). nvfortran 25.9
 # supports neither present form, so a kernel-style OpenMP port is all
 # "either" (derive_memory_space treats that as device for --directive omp).
+#
+# "host" (acc-copy-residency): an "either" array the entry point also
+# references in host code -- outside every compute construct, other than as
+# the argument of an inquiry intrinsic (size, lbound, present, ...). A
+# present-or-copy clause finds resident data present and copies nothing, so
+# host code inside the scheme would see a stale host copy (or its writes
+# would never reach the device). The cap cannot sync inside a call, so such
+# an argument stays on the host: the variable can still be device data
+# elsewhere, and the cap syncs it around this call as for any CPU scheme.
 ACC_DEVICE = "device"
 ACC_EITHER = "either"
+ACC_HOST = "host"
+
+# Inquiry intrinsics: an array named as their first argument is not read.
+_INQUIRY_INTRINSICS = frozenset({
+    "size", "lbound", "ubound", "shape", "present", "allocated",
+    "associated", "is_contiguous", "kind", "len", "rank",
+})
 
 _ACC_DEVICE_CLAUSES = frozenset({"present", "deviceptr"})
 _ACC_EITHER_CLAUSES = frozenset({
@@ -476,7 +492,7 @@ def _omp_directive(words, clauses):
 class AccArgUse:
     """How one dummy argument is used by the entry point's OpenACC."""
 
-    category: str  # ACC_DEVICE or ACC_EITHER
+    category: str  # ACC_DEVICE, ACC_EITHER or ACC_HOST
     line_no: int   # source line of the directive that decided it
     how: str       # e.g. "present", "copyin", "default(present)", "implicit"
 
@@ -493,6 +509,17 @@ class AccResidency:
     # Subroutines it calls (lowercased), to spot an entry point with no
     # OpenACC of its own whose callee in the same file has some.
     calls: set[str] = field(default_factory=set)
+    # Dummy argument names in order (positional actuals map onto them when
+    # this routine is a callee, apply_callee_residency).
+    dummies: list[str] = field(default_factory=list)
+    # Only for a routine with no directives of its own (apply_callee_residency):
+    # each call (callee, (first, last) line span, [(keyword or None, bare
+    # actual name or None), ...]), and the execution-part lines referencing
+    # each non-derived array dummy.
+    call_sites: list[tuple] = field(default_factory=list)
+    ref_lines: dict[str, list[int]] = field(default_factory=dict)
+    # Callees whose directives classified some of its arguments.
+    via_callees: set[str] = field(default_factory=set)
 
     def note(self, name: str, category: str, line_no: int, how: str) -> None:
         """Record *name*'s use; "device" outranks "either", and the first
@@ -589,15 +616,20 @@ def _clause_variables(arg_text: str) -> list[tuple[str, bool]]:
     return result
 
 
-def _referenced_names(source_lines: list[str], first: int, last: int) -> set[str]:
+def _referenced_names(
+    source_lines: list[str], first: int, last: int, skip_inquired: bool = False,
+) -> set[str]:
     """Identifiers referenced in Fortran source lines *first*..*last*
     (1-indexed, inclusive), ignoring comments (and so directives), string
-    literals and component names (an identifier right after `%`)."""
+    literals and component names (an identifier right after `%`). With
+    *skip_inquired*, also the identifier right after `<inquiry intrinsic>(`
+    (`size(x, 1)` does not read x)."""
     names: set[str] = set()
     for line in source_lines[first - 1:last]:
         text = line.lower()
         i, n = 0, len(text)
         after_percent = False
+        skip_next = False
         while i < n:
             c = text[i]
             if c == "!":
@@ -611,9 +643,18 @@ def _referenced_names(source_lines: list[str], first: int, last: int) -> set[str
                 j = i
                 while j < n and (text[j].isalnum() or text[j] == "_"):
                     j += 1
-                if not after_percent:
-                    names.add(text[i:j])
+                word = text[i:j]
+                if not after_percent and not skip_next:
+                    names.add(word)
                 after_percent = False
+                skip_next = False
+                if skip_inquired and word in _INQUIRY_INTRINSICS:
+                    k = j
+                    while k < n and text[k] == " ":
+                        k += 1
+                    if k < n and text[k] == "(":
+                        skip_next = True
+                        j = k + 1
                 i = j
                 continue
             if c == "%":
@@ -622,6 +663,20 @@ def _referenced_names(source_lines: list[str], first: int, last: int) -> set[str
                 after_percent = False
             i += 1
     return names
+
+
+def _node_line_span(node) -> tuple[int, int] | None:
+    """The 1-indexed, inclusive source span of every statement under *node*
+    (fparser2 sets spans on leaf statements only)."""
+    from fparser.two.utils import walk
+
+    spans = [
+        item.span for item in (getattr(n, "item", None) for n in walk(node))
+        if item is not None and getattr(item, "span", None)
+    ]
+    if not spans:
+        return None
+    return (min(a for a, _ in spans), max(b for _, b in spans))
 
 
 def _classify_acc_residency(
@@ -656,12 +711,13 @@ def _classify_acc_residency(
         (line_no, " ".join(remainders).lower())
         for line_no, remainders in _join_comment_continuations(source_lines, span, (f"!${language}",))
     ]
-    if not directives:
-        return result
-    result.has_acc = True
-
     def is_derived(name: str) -> bool:
         return decl_map[name]["type"] not in _TYPE_MAP
+
+    if not directives:
+        _note_calls_and_refs(sub, source_lines, decl_map, result, is_derived)
+        return result
+    result.has_acc = True
 
     do_spans = sorted(
         s for s in (
@@ -671,6 +727,7 @@ def _classify_acc_residency(
     )
 
     interpret = _acc_directive if language == "acc" else _omp_directive
+    bodies: list[tuple[int, int]] = []
     for index, (line_no, text) in enumerate(directives):
         words, clauses = _split_directive(text, f"{filename}:{line_no}")
         if not words or words[0] in ("end", "routine", "wait", "atomic", "cache"):
@@ -701,6 +758,7 @@ def _classify_acc_residency(
                 body = (line_no + 1, end - 1)
         if body is None:
             continue
+        bodies.append(body)
         for name in _referenced_names(source_lines, body[0], body[1]):
             if name not in decl_map:
                 continue
@@ -712,7 +770,127 @@ def _classify_acc_residency(
                     result.note(name, ACC_DEVICE, line_no, how)
                 else:
                     result.note(name, ACC_EITHER, line_no, "implicit")
+    _note_host_uses(sub, source_lines, bodies, result)
     return result
+
+
+def _note_calls_and_refs(sub, source_lines: list[str], decl_map: dict[str, dict],
+                         result: AccResidency, is_derived) -> None:
+    """For a routine with no directives of its own: record its calls with
+    their actual arguments, and where it references each non-derived array
+    dummy, so apply_callee_residency can classify its arguments by its
+    callees' directives."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    arrays = {
+        name for name, decl in decl_map.items()
+        if decl["rank"] > 0 and not is_derived(name)
+    }
+    if not arrays:
+        return
+    for call in walk(sub, f03.Call_Stmt):
+        span = _node_line_span(call)
+        if span is None:
+            continue
+        actual_list = call.children[1]
+        actuals = []
+        for item in (actual_list.items if actual_list is not None else ()):
+            keyword = None
+            if isinstance(item, f03.Actual_Arg_Spec):
+                keyword, item = str(item.children[0]).lower(), item.children[1]
+            name = str(item).lower() if isinstance(item, f03.Name) else None
+            actuals.append((keyword, name if name in arrays else None))
+        result.call_sites.append((str(call.children[0]).lower(), span, actuals))
+    for part in walk(sub, f03.Execution_Part):
+        part_span = _node_line_span(part)
+        if part_span is None:
+            continue
+        for line_no in range(part_span[0], part_span[1] + 1):
+            for name in _referenced_names(source_lines, line_no, line_no, skip_inquired=True) & arrays:
+                result.ref_lines.setdefault(name, []).append(line_no)
+
+
+# Combining one argument's categories across the callees it is passed to:
+# any host use wins, then device, then either.
+_CALLEE_RANK = {ACC_EITHER: 0, ACC_DEVICE: 1, ACC_HOST: 2}
+
+
+def apply_callee_residency(acc_residency: dict[str, AccResidency]) -> list[str]:
+    """Classify the array arguments of each routine in *acc_residency* that
+    has no directives of its own by the directives of the callees it passes
+    them to (one call level; callees from the same dict, e.g. the scheme's
+    .meta dependencies): micro_pumas_ccpp_run has no OpenACC, but passes its
+    arrays to micro_pumas_tend, whose data region and updates make them
+    device data. Leaving them host while they are device data elsewhere is
+    wrong: the callee's present-or-copy clauses find them present and copy
+    nothing back, and the cap's `update device` after the call overwrites
+    the device results with the stale host copy (xdsl72gpu pumas T/Q).
+
+    An argument passed bare (`x`, not `x(1:n)`) to a callee dummy the callee
+    classifies takes that category (host if any callee says host; device
+    outranks either). It becomes ACC_HOST if the routine also references it
+    anywhere outside those calls -- its own host code, or a call to a
+    callee with no directives. Returns lines for --verbose 2."""
+    report: list[str] = []
+    for proc, res in acc_residency.items():
+        if res.has_acc or not res.call_sites:
+            continue
+        found: dict[str, AccArgUse] = {}
+        classified_spans: dict[str, list[tuple[int, int]]] = {}
+        for callee_name, span, actuals in res.call_sites:
+            callee = acc_residency.get(callee_name)
+            if callee is None or not callee.has_acc:
+                continue
+            for position, (keyword, actual) in enumerate(actuals):
+                if actual is None:
+                    continue
+                dummy = keyword if keyword is not None else (
+                    callee.dummies[position] if position < len(callee.dummies) else None
+                )
+                use = callee.args.get(dummy) if dummy is not None else None
+                if use is None:
+                    continue
+                res.via_callees.add(callee_name)
+                classified_spans.setdefault(actual, []).append(span)
+                current = found.get(actual)
+                if current is None or _CALLEE_RANK[use.category] > _CALLEE_RANK[current.category]:
+                    found[actual] = AccArgUse(use.category, span[0], f"{use.how} in {callee_name}")
+        for name, use in found.items():
+            spans = classified_spans[name]
+            host_line = next(
+                (ln for ln in res.ref_lines.get(name, [])
+                 if not any(first <= ln <= last for first, last in spans)),
+                None,
+            )
+            if host_line is not None and use.category != ACC_HOST:
+                use = AccArgUse(ACC_HOST, host_line, "host use")
+            res.args[name] = use
+            report.append(f"{proc}: '{name}' {use.category} ({use.how}, line {use.line_no})")
+    return report
+
+
+def _note_host_uses(sub, source_lines: list[str], bodies: list[tuple[int, int]],
+                    result: AccResidency) -> None:
+    """Turn the "either" arguments that the entry point's execution part
+    also references outside every compute construct body (*bodies*) into
+    ACC_HOST (see there), at the first such line."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    either = {name for name, use in result.args.items() if use.category == ACC_EITHER}
+    if not either:
+        return
+    parts = [_node_line_span(p) for p in walk(sub, f03.Execution_Part)]
+    for part in parts:
+        if part is None:
+            continue
+        for line_no in range(part[0], part[1] + 1):
+            if any(first <= line_no <= last for first, last in bodies):
+                continue
+            for name in _referenced_names(source_lines, line_no, line_no, skip_inquired=True) & either:
+                result.args[name] = AccArgUse(ACC_HOST, line_no, "host use")
+                either.discard(name)
 
 
 def _extract_subroutines(
@@ -798,6 +976,7 @@ def _extract_subroutines(
                 for lang in LANGUAGES
             }
             if acc_residency is not None:
+                by_language[language].dummies = [str(a).lower() for a in dummy_arg_list.items]
                 acc_residency[proc_name] = by_language[language]
             # Generated .meta does not know the directive language: an
             # argument either language classifies gets memory_space.
