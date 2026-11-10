@@ -47,6 +47,7 @@ measured data, and will drift as items are reassessed.
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-number-concentration-compiler-diffs` | 2-5 days (number concentrations in the zm h1 output and a pairwise cprnc first; multi-step gnu/intel/nvhpc comparison of the number concentrations, DEBUG and NaN-init runs, read ZM's convtran/clamp/floor path for a real defect; decide tolerance or fix with the user) | S |
+| `mcsp-number-concentration-compiler-diffs` | 1-3 days once `zm-number-concentration-compiler-diffs` is understood (likely the same cause; add the number concentrations to MCSP's h1 output, compare gnu/intel/nvhpc against the intel snapshot, confirm the ZM fix covers it) | XS-S |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `nvhpc-gpu-build-flags-redesign` | 7-12 days: inventory 1-1.5, design 1-2, implement 2-3, verify (SE/multitape/MPAS CPU+GPU pairs, gnu, nvhpc regression) 2-3.5, upstream ccs_config/cime PRs 1-2; plus 2-6 weeks elapsed for upstream review. Risks: new hidden dependencies, upstream design pushback, narrowing `CCPP_CAP_OBJS` changes host-file flags | M |
@@ -215,7 +216,8 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `zm-number-concentration-compiler-diffs` | zm FPHYStest on intel differs from the gnu snapshot only in the hydrometeor number concentrations, cloud liquid number by up to 1.4e-6 (relative) -- too large for the user to accept as rounding | S; found 2026-11-09 (xdsl76i); may be a real defect that feeds into other fields later | -- |
+| `zm-number-concentration-compiler-diffs` | zm FPHYStest on intel differs from the gnu snapshot only in the hydrometeor number concentrations, cloud liquid number by up to 1.4e-6 (relative) -- too large for the user to accept as rounding | S; found 2026-11-09 (xdsl76i); may be a real defect that feeds into other fields later; same pattern in MCSP: `mcsp-number-concentration-compiler-diffs` | -- |
+| `mcsp-number-concentration-compiler-diffs` | MCSP FPHYStest on nvhpc differs from its intel snapshot in the hydrometeor number concentrations by up to 5.2e-6 (cloud liquid), while every other field is within 1.2e-11 | XS-S; found 2026-11-10 (xdsl76n rerun at 2.2e-16); same pattern as `zm-number-concentration-compiler-diffs` | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `nvhpc-gpu-build-flags-redesign` | The nvhpc CPU/GPU build setup in `ccs_config`/`cime` is a stack of per-rule patches; each fix has exposed another hidden dependency | M; found 2026-11-04 (s51 CPU/GPU cases); deferred by the user to its own effort | -- |
@@ -365,11 +367,38 @@ locate the differing points (levels 31-56, near the cloud top/base?) and
 trace them through convtran's gather/scatter and the clamp/floor; compare
 with CAM's `convtran` for number concentrations. If it is rounding, decide
 the tolerance with the user; if a defect, fix upstream (atmospheric_physics).
-Meanwhile: CAM-SIMA's zm and MCSP testmods carry an uncommitted
-`! cross_compiler_min_difference = 1e-5` (and the xdsl76n zm/MCSP and
-xdsl76i zm cases were set to 1e-5 by hand) only so the nvhpc baseline can
-be generated; that loosening hides this, so it should not be committed as
-final until this item is decided.
+Meanwhile (decided 2026-11-10): CAM-SIMA's zm and MCSP testmods set
+`! cross_compiler_min_difference = 1e-11`, the tolerance every other
+cross-compiler physics check uses. The number concentrations exceed it, so
+zm (intel, nvhpc) and MCSP (gnu, nvhpc) keep failing their physics check
+in every regression -- on purpose, as a reminder that this is open. (The
+1e-5 used to generate the 20261109-efc0937-nvhpc baseline was never
+committed.) The same differences appear in MCSP against its intel
+snapshot: see `mcsp-number-concentration-compiler-diffs`.
+
+**`mcsp-number-concentration-compiler-diffs`** -- added 2026-11-10. The
+MCSP FPHYStest (FHIST, ZM with the mesoscale coherent structure
+parameterization; snapshot `..._zm_mcsp_snapshot_derecho_intel_after_c20261011.nc`)
+on nvhpc, rerun with `min_difference = 2.2e-16` (xdsl76n, atm.log 8136233,
+step 1): every field except the number concentrations differs at 4e-16 to
+1.2e-11 (T 4.2e-16, mixing ratios <=9.4e-14, winds and their tendencies
+<=5e-13, dT/dt 1.9e-12, deep convective mass flux 1.2e-11), but the number
+concentrations differ far more: cloud liquid 5.2e-6 (1318 points), rain
+8.9e-7, cloud ice 2.0e-9, snow 8.1e-11, graupel 1.0e-12. Cloud liquid
+number is off by 5.2e-6 while cloud liquid mass is off by 2.2e-14. This is
+the signature of `zm-number-concentration-compiler-diffs` (zm against its
+gnu snapshot: nvhpc cloud liquid number 5.2e-6 too), so it is most likely
+the same ZM number-concentration transport path (`zm_conv_convtran`,
+`clamp_number_concentrations`, `cloud_condensate_floor`); work it as part
+of that item, then confirm here: add the number concentrations to MCSP's
+h1 output, rerun gnu/intel/nvhpc and check the fix (or the agreed
+tolerance) covers MCSP. gnu against the intel snapshot has not been
+measured at epsilon yet. The testmod sets
+`! cross_compiler_min_difference = 1e-11` (with `include_user_mods` ->
+`cross_compiler_check_tolerance`), so MCSP fails on gnu and nvhpc until
+this is resolved -- deliberately, as a reminder. Note the Derecho false
+pass (`derecho-false-run-pass`): the run aborts in `ncdata_check` but
+TestStatus says RUN PASS; check atm.log.
 
 **ID: `rrtmgp-gpu-partially-present`. Resolved (2026-10-24)** -- `rrtmgp_post` now frees the gas-concentration objects (atmospheric_physics PR #468); GPU RRTMGP pair s34a completes. Trigger is our build config, see `rrtmgp-wrapper-acc-trigger`. CHANGELOG.md L12785.
 
