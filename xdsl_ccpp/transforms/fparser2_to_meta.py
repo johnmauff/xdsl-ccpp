@@ -250,6 +250,11 @@ def _join_comment_continuations(
         is_continued = body.endswith("&")
         if is_continued:
             body = body[:-1].strip()
+        if pending is not None and body.startswith("&"):
+            # A continuation line may repeat the "&" right after the
+            # sentinel ("!$acc&  x, y" or "!$acc &  x"); without this the
+            # first name read as "& x" and was silently dropped.
+            body = body[1:].strip()
 
         if pending is None:
             pending = [body]

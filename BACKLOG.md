@@ -83,6 +83,8 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
+| `tropopause-find-untested-algorithms` | 1-3 days (a capture or replay that selects analytic, Stobie and WMO through `tropopause_findWithBackup`, or a pFUnit test; then port them like the other five and check CPU and GPU) | XS-S |
+| `cap-pulls-unwritten-device-data` | 1-3 days (track per variable whether any device scheme can write it; skip the pull at function/block entry when none does; cap_oracle cam4; GPU regression) | XS-S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
@@ -2508,6 +2510,34 @@ Supporting items (not tracked elsewhere):
   (present-or-copy clauses). Replays: rk_stratiform, rrtmgp. Gain: 9 cam4
   cap syncs per step (cap_oracle after `acc-copy-residency`); used by
   rk_stratiform and rrtmgp too.
+- `cap-pulls-unwritten-device-data` — **The cap pulls device data no
+  device scheme ever writes.** Added 2026-11-10 (`gpu-port-tropopause-find`
+  cap_oracle). Once `tropopause_find` lists `lat` as `present`, latitude
+  becomes device data (entered once with `copyin`), and the cam4 cap then
+  issues `update self(lat)` four times per step, before each CPU reader at
+  the start of a phase function or block, although no scheme writes `lat`
+  and the host copy is always current. `emit_coalesced_updates` tracks host
+  currency only within one block. Fix: a variable that every scheme takes
+  as `intent(in)` (and the host does not change between calls) never
+  needs a pull. Small here (one value per column), but the same applies to
+  any read-only device input.
+- `tropopause-find-untested-algorithms` — **Three `tropopause_find`
+  algorithms have no test data and stay CPU-only.** Added 2026-11-10 (user
+  request, during `gpu-port-tropopause-find`). `tropopause_find_run` uses
+  only `twmo`, `climate`, `cpp`, `hybridstobie` and `findChemTrop`, so the
+  capture replays (`capture_rk_stratiform`, `capture_rrtmgp`
+  `test_tropopause_find`) exercise only those. `tropopause_analytic`,
+  `tropopause_stobie` and `tropopause_wmo` are reachable only through the
+  public `tropopause_findWithBackup` (kept for CAM, which picks the
+  algorithm itself), are not covered by any capture, and were left as host
+  code in the port (comment in `tropopause_findUsing`). Risk: a GPU-built
+  caller selecting one of them while its data are device-resident would
+  read stale host copies. Revisit: get test data for them (a capture of a
+  host that selects them, or a pFUnit test of `tropopause_findWithBackup`
+  with each algorithm), then port them the same way and check CPU and GPU
+  bit-for-bit. Also untested: the `hybridstobie` path without the
+  `hstobie_*` outputs and every path with `tropP/T/Z` absent (the run
+  always passes them).
 - `gpu-diagnostics-conditional-sync` — **Dropped (2026-11-10)** -- per-field pulls in the diagnostics schemes put data movement into scheme source; reverted, superseded by the `gpu-history-accumulate` design project. CHANGELOG.md L14749.
 - `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
   ports of the utility schemes every suite uses**:

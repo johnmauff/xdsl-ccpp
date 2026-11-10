@@ -14768,3 +14768,17 @@ xdsl-ccpp: the "synced" classification (`update ... if_present`,
 the pattern. Removing the copies of diagnostics fields is now part of a
 redesign of the history buffers as its own design project
 (`gpu-history-accumulate`), not GPU optimization work.
+
+## `!$acc&` continuation lines lost their first variable (2026-11-10)
+
+Found porting `tropopause_find` to the GPU: its run routine's
+`!$acc data present(lat, ..., &` / `!$acc&  tropLev, tropP, ...` left
+`tropLev`, every `tropLev_*` and `hstobie_trop` -- the first name on each
+continuation line -- out of the classification, so they never became
+device data while the scheme required them present (a GPU run would have
+aborted). `_join_comment_continuations` stripped the `!$acc` sentinel but
+kept the `&` that may follow it on a continuation line, so the first name
+read as `& troplev` and was dropped. Fix: strip a leading `&` from
+continuation bodies (`!$acc&`, `!$acc &`, any case);
+`test_continuation_with_leading_ampersand`. The atmospheric_physics port
+also uses the plain `!$acc` continuation form, like the earlier ports.
