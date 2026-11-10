@@ -14745,3 +14745,26 @@ in the ZM suite) plus CAM-SIMA #570's new CAM7 snapshot (pver=58,
 min_difference=2e-15): gnu zm passes its physics check (xdsl76g). Intel
 still differs in the number concentrations (`zm-number-concentration-
 compiler-diffs`).
+
+## `gpu-diagnostics-conditional-sync` dropped (2026-11-10)
+
+The approach -- each `*_diagnostics` scheme pulling its fields with
+`!$acc update self(x) if(is_history_field_active('N')) if_present` before
+`history_out_field`, and guarding its host computations -- was dropped by
+the user after batch 1 (11 more files) was written and checked with
+cap_oracle (cam4: 211 -> 195 pulls per step when the fields are not
+output). Reasons: it puts data movement into scheme source, which is the
+cap's job in the CCPP model; every new diagnostics scheme or field would
+need the pattern applied by hand (and correctly: a synced argument is
+never demoted by host use); and when fields are output, one coalesced cap
+pull becomes one `update` per field. Batch 1 was discarded unmerged; the
+`sima_state_diagnostics` conversion (atmospheric_physics 5ff01b4 plus the
+`pdel` pull added in the 15f745d merge) is reverted to the upstream file
+and its object removed from ccs_config `GPU_SCHEME_OBJS` (282e0af
+reverted), both in the working tree for the user to commit. Kept in
+xdsl-ccpp: the "synced" classification (`update ... if_present`,
+`device_synced`) and the read-only device-call fix in
+`emit_coalesced_updates`; both are generic and inert when no scheme uses
+the pattern. Removing the copies of diagnostics fields is now part of a
+redesign of the history buffers as its own design project
+(`gpu-history-accumulate`), not GPU optimization work.
