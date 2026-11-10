@@ -46,7 +46,9 @@ measured data, and will drift as items are reassessed.
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
-| `zm-ncdata-diffs` | 5-10 days (cause upstream: stock capgen gives the same differences; fails on every compiler) | M |
+| `zm-number-concentration-compiler-diffs` | 2-5 days (number concentrations in the zm h1 output and a pairwise cprnc first; multi-step gnu/intel/nvhpc comparison of the number concentrations, DEBUG and NaN-init runs, read ZM's convtran/clamp/floor path for a real defect; decide tolerance or fix with the user) | S |
+| `cap-clause-order-nondeterministic` | <1 day (find the set iteration; sort; check cap_oracle diffs are clean) | XS |
+| `mcsp-number-concentration-compiler-diffs` | 1-3 days once `zm-number-concentration-compiler-diffs` is understood (likely the same cause; add the number concentrations to MCSP's h1 output, compare gnu/intel/nvhpc against the intel snapshot, confirm the ZM fix covers it) | XS-S |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `nvhpc-gpu-build-flags-redesign` | 7-12 days: inventory 1-1.5, design 1-2, implement 2-3, verify (SE/multitape/MPAS CPU+GPU pairs, gnu, nvhpc regression) 2-3.5, upstream ccs_config/cime PRs 1-2; plus 2-6 weeks elapsed for upstream review. Risks: new hidden dependencies, upstream design pushback, narrowing `CCPP_CAP_OBJS` changes host-file flags | M |
@@ -77,11 +79,10 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-hack-convect-shallow` | 4-8 days after `gpu-port-wv-saturation` (~1000-line scheme, column-sequential physics, constituent-properties mask on the host; per-scheme GPU replay once `wv-saturation-ccppize` lets its driver build) | S-M |
 | `gpu-port-zm-conv-evap` | 2-4 days after `gpu-port-wv-saturation` (~250 lines; column-sequential evaporation; the first `qsat` caller ported, so its GPU replay also tests device `qsat`) | S |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
-| `gpu-history-accumulate` | 6-12 days plus upstream review (device-resident accumulation buffers and kernels in ESMCI/history_output, `cam_history` wiring, write-time sync, Kessler/cam4 GPU bit-for-bit) | M |
+| `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
-| `gpu-diagnostics-conditional-sync` | 3-6 days left (generator and `sima_state_diagnostics` done 2026-11-09; the other 22 cam4 diagnostics files, 326 `history_out_field` calls, plus `kessler_diagnostics`; one GPU regression per batch) | S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
@@ -98,6 +99,10 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
+| `scheme-io-capture-new-tests` | 4-7 days of setup and checking, spread over runs (six capture runs: mcsp, cloud_water, FHIST_C4, gw_cam7, microp_aero_bam, tracer_data_test; replay results, driver gaps logged as their own items); not urgent | S |
+| `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
+| `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
+| `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
 | `scheme-io-capture-rte-objects` | 4-6 days (handlers for the RTE optical-property, source-function and flux types through their public procedures; then `ty_gas_concs`; `kdist` later; tests; recapture rrtmgp and c03e) | S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
@@ -211,7 +216,9 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n, xdsl59g; stock capgen gives the same differences (zmcg1), so not xdsl_ccpp | -- |
+| `zm-number-concentration-compiler-diffs` | zm FPHYStest on intel differs from the gnu snapshot only in the hydrometeor number concentrations, cloud liquid number by up to 1.4e-6 (relative) -- too large for the user to accept as rounding | S; found 2026-11-09 (xdsl76i); may be a real defect that feeds into other fields later; same pattern in MCSP: `mcsp-number-concentration-compiler-diffs` | -- |
+| `cap-clause-order-nondeterministic` | Two generations of the same cam4 inputs order the variables of `!$acc enter data copyin(...)` / `exit data copyout(...)` in `cam_ccpp_cap.F90` differently (`qrl, shfrc` vs `shfrc, qrl`) | XS; found 2026-11-10 (cap_oracle diff, base HEAD = working tree); harmless, but makes cap diffs noisy | -- |
+| `mcsp-number-concentration-compiler-diffs` | MCSP FPHYStest on nvhpc differs from its intel snapshot in the hydrometeor number concentrations by up to 5.2e-6 (cloud liquid), while every other field is within 1.2e-11 | XS-S; found 2026-11-10 (xdsl76n rerun at 2.2e-16); same pattern as `zm-number-concentration-compiler-diffs` | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `nvhpc-gpu-build-flags-redesign` | The nvhpc CPU/GPU build setup in `ccs_config`/`cime` is a stack of per-rule patches; each fix has exposed another hidden dependency | M; found 2026-11-04 (s51 CPU/GPU cases); deferred by the user to its own effort | -- |
@@ -318,22 +325,92 @@ testmod sets `! cross_compiler_min_difference = 1e-9` (see
 `nvhpc-ncdata-roundoff`); with 1e-8, gnu and nvhpc reached `END OF MODEL
 RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 
-**`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
-(gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
-xdsl56g/i/n (42 in xdsl55n), e.g. `air_temperature` at ~3400-3800 points,
-max difference 1.1e-4, and much larger differences in the cloud/rain/snow
-number concentrations. Not rounding: gnu matches the snapshot's compiler,
-and the cross-compiler tolerance (1e-8) does not remove it. The test still
-passes because `cam/outfrq_zm_derecho/user_nl_cam` sets `ncdata_check` but
-not `ncdata_check_err = .true.` (and no `min_difference`), so differences
-are only printed. (`hack_shallow` is set up the same way; its differences are
-rounding-sized, ~1e-15.) `ncdata_check_err = .true.` turned on in the zm
-testmod 2026-10-22 (CAM-SIMA, uncommitted), so the zm test now FAILS until
-this is fixed. A stock-capgen build (2026-10-30, gnu, zmcg1) differs on the
-same 9 variables with the same maxima and locations as xdsl_ccpp (xdsl59g;
-geopotential height counts differ by ~20 of ~11,660 points), so the cause
-is the ZM scheme or its snapshot, not the generator. To do: check the
-snapshot's date, c20250116, against ZM changes, and raise it upstream.
+**ID: `zm-ncdata-diffs`. Resolved (2026-11-09)** -- by the sima0_25_000 / atmos_phys0_34_000 merge (new CAM7 snapshot, ZM transport of number concentrations); gnu zm passes (xdsl76g). CHANGELOG.md L14741.
+
+**`zm-number-concentration-compiler-diffs`** -- added 2026-11-09. After the
+merge the zm FPHYStest passes its physics check on gnu (the snapshot's
+compiler, `min_difference = 2e-15`, xdsl76g) but intel (xdsl76i) aborts in
+`ncdata_check`, and only on the number concentrations: cloud liquid number
+46 points, max 1.4e-6 (relative); rain number 25 points, 2.8e-9; cloud ice
+number 5 points, 3.6e-9. T, Q, Z and the other ZM outputs match at 2e-15.
+nvhpc (xdsl76n, rerun at 2e-15) differs too, and more: cloud liquid
+number 969 points, max 5.2e-6; rain number 1055 points, 1.6e-6; ice number
+4.2e-10; snow number 4.8e-11 -- while every other field differs only at
+1e-11 to 4e-15 (convective mass flux 1e-11, dT/dt 2e-12, winds ~4e-13, mixing
+ratios <=8e-14), the size expected between compilers. So it is not intel
+alone: both non-gnu compilers differ from the gnu snapshot, and the number
+concentrations differ 5-6 orders of magnitude more than anything else.
+ZM's own outputs agree across compilers at rounding level: cprnc of the
+step-1 `cam.h1i` files (xdsl76g/76i/76n) gives normalized RMS 1e-13 to
+1e-17 for all 31 ZM history fields in every pair (largest DLFZM: intel vs
+nvhpc 7.8e-13, gnu vs intel 1.3e-13, gnu vs nvhpc 7.9e-13; gnu and intel
+closest). The zm testmod's h1 file has no number concentrations, so the
+fields that differ by up to 5.2e-6 could not be compared that way.
+First step: add `hist_add_inst_fields;h1: NUMLIQ, NUMRAI, NUMICE, NUMSNO`
+(sima_state_diagnostics' constituent diagnostic names; check them) to
+`cam/outfrq_zm_derecho/user_nl_cam`, rerun zm on gnu, intel and nvhpc, and
+cprnc the number concentrations pairwise: if intel and nvhpc differ from
+each other about as much as each does from gnu (1e-6), the path is
+sensitive or defective; if intel and nvhpc agree closely, look at what
+gnu does differently.
+The user considers 1.4e-6 too large to be compiler rounding: it may be a
+real defect (e.g. an uninitialized or out-of-range value, a division by a
+near-zero denominator, or an order-dependent sum) in the code atmos_phys
+#453 added -- `zm_conv_convtran` now transports these number concentrations
+(`doconvtran` set in `_init` by standard name), followed by
+`clamp_number_concentrations` and `cloud_condensate_floor` -- and one that
+would feed into other fields after more steps (number concentrations drive
+the microphysics and radiation).
+Investigate: run the zm test for more steps on gnu, intel and nvhpc and
+compare the number concentrations and T/Q over time (growing or bounded?);
+SMS_D runs with NaN/uninitialized-value trapping on all three compilers;
+locate the differing points (levels 31-56, near the cloud top/base?) and
+trace them through convtran's gather/scatter and the clamp/floor; compare
+with CAM's `convtran` for number concentrations. If it is rounding, decide
+the tolerance with the user; if a defect, fix upstream (atmospheric_physics).
+Meanwhile (decided 2026-11-10): CAM-SIMA's zm and MCSP testmods set
+`! cross_compiler_min_difference = 1e-11`, the tolerance every other
+cross-compiler physics check uses. The number concentrations exceed it, so
+zm (intel, nvhpc) and MCSP (gnu, nvhpc) keep failing their physics check
+in every regression -- on purpose, as a reminder that this is open. (The
+1e-5 used to generate the 20261109-efc0937-nvhpc baseline was never
+committed.) The same differences appear in MCSP against its intel
+snapshot: see `mcsp-number-concentration-compiler-diffs`.
+
+**`cap-clause-order-nondeterministic`** -- added 2026-11-10. `cap_oracle
+diff --base HEAD` on the xdsl77gpu SE F2000_C4 cam4 case, with no
+generator change between base and head, reported `cam_ccpp_cap.F90`
+DIFFERENT: the suite-level `!$acc enter data copyin(qrl, shfrc)` (init) and
+`exit data copyout(qrl, shfrc)` (final) list the two variables in the
+opposite order. Most likely a Python `set` (string hashing is randomized per
+process) feeding the clause list of the framework-variable residency in
+`ccpp_cap`. Harmless (clause order has no meaning), but a nondeterministic
+generator makes every cap diff and oracle run noisy. Fix: sort, or keep
+first-seen order; then `cap_oracle diff --base HEAD` should say IDENTICAL.
+
+**`mcsp-number-concentration-compiler-diffs`** -- added 2026-11-10. The
+MCSP FPHYStest (FHIST, ZM with the mesoscale coherent structure
+parameterization; snapshot `..._zm_mcsp_snapshot_derecho_intel_after_c20261011.nc`)
+on nvhpc, rerun with `min_difference = 2.2e-16` (xdsl76n, atm.log 8136233,
+step 1): every field except the number concentrations differs at 4e-16 to
+1.2e-11 (T 4.2e-16, mixing ratios <=9.4e-14, winds and their tendencies
+<=5e-13, dT/dt 1.9e-12, deep convective mass flux 1.2e-11), but the number
+concentrations differ far more: cloud liquid 5.2e-6 (1318 points), rain
+8.9e-7, cloud ice 2.0e-9, snow 8.1e-11, graupel 1.0e-12. Cloud liquid
+number is off by 5.2e-6 while cloud liquid mass is off by 2.2e-14. This is
+the signature of `zm-number-concentration-compiler-diffs` (zm against its
+gnu snapshot: nvhpc cloud liquid number 5.2e-6 too), so it is most likely
+the same ZM number-concentration transport path (`zm_conv_convtran`,
+`clamp_number_concentrations`, `cloud_condensate_floor`); work it as part
+of that item, then confirm here: add the number concentrations to MCSP's
+h1 output, rerun gnu/intel/nvhpc and check the fix (or the agreed
+tolerance) covers MCSP. gnu against the intel snapshot has not been
+measured at epsilon yet. The testmod sets
+`! cross_compiler_min_difference = 1e-11` (with `include_user_mods` ->
+`cross_compiler_check_tolerance`), so MCSP fails on gnu and nvhpc until
+this is resolved -- deliberately, as a reminder. Note the Derecho false
+pass (`derecho-false-run-pass`): the run aborts in `ncdata_check` but
+TestStatus says RUN PASS; check atm.log.
 
 **ID: `rrtmgp-gpu-partially-present`. Resolved (2026-10-24)** -- `rrtmgp_post` now frees the gas-concentration objects (atmospheric_physics PR #468); GPU RRTMGP pair s34a completes. Trigger is our build config, see `rrtmgp-wrapper-acc-trigger`. CHANGELOG.md L12785.
 
@@ -1211,6 +1288,125 @@ applying this to a busier suite.
 **ID: `scheme-io-capture-host-module-schemes`. Resolved (2026-11-06, PR #200).** CHANGELOG.md L14272.
 
 **ID: `scheme-io-capture-rte-kernel-variants`. Resolved (2026-11-06, PR #201).** CHANGELOG.md L14333.
+
+**ID: `scheme-io-capture-new-tests`. Capture data for the regression tests
+the sima0_25_000 merge added, and for suites never captured.** Added 2026-11-09; low priority. Three tests
+came in with the merge (CAM-SIMA xdsl-ccpp-adapter-merge-b942a2d): the
+FPHYStest `outfrq_mcsp_derecho` (test suite `mcsp`: the full ZM sequence,
+then `save_core_tend_from_convect_deep`, `zm_conv_cloud_top`, `mcsp`,
+`mcsp_diagnostics`, and `clamp_number_concentrations` /
+`cloud_condensate_floor`), the FPHYStest `outfrq_cloud_water_derecho`
+(`convective_cloud_water`, `cloud_water_paths`), and the full-model
+`SMS_D_Ln9 FHIST_C4 outfrq_se_cam4` (cam4 with transient historical
+forcing). Capture each with `/cam-sima-capture` (`list` = every scheme of
+the suite) and replay the drivers CPU and GPU, as for the existing
+captures (/glade/derecho/scratch/dennis/capture_*). Expected gaps:
+`mcsp` calls `vertinterp` from CAM-SIMA's `src/utils/interpolate_data.F90`
+(a host module the capture support library does not provide; its
+`.meta` has no `dependencies` line), and the ZM schemes that call `qsat`
+do not build until `wv-saturation-ccppize`. FHIST_C4's value over the
+existing cam4 captures is real time-varying input to `prescribed_ozone`,
+`prescribed_aerosols`, `prescribed_volcanic_aerosol`,
+`prescribed_aerosol_deposition_flux` and `solar_irradiance_data`, so
+capture just those. Also the FPHYStest `outfrq_gw_cam7_derecho` (test
+suite `gw_cam7_se`: `gravity_wave_drag_common`, `_prepare_profiles`,
+`_top_taper`, `compute_total_precipitation_rate`, and the CAM7 sources
+`_moving_mountain`, `_convection_deep`, `_frontogenesis`, `_ridge`,
+`_ridge_beta`, with their diagnostics), never captured because until the
+merge it failed MODEL_BUILD (no host variables for `prec_dp`/`prec_sh`/
+`prec_str`, fixed by sima0_24_000's registry, CAM-SIMA #557); it now passes
+on gnu, intel and nvhpc with no snapshot differences (xdsl76g/76i/76n).
+Expected gap: in capture_gw_cam4, `gravity_wave_drag_prepare_profiles` and
+`gravity_wave_drag_orographic` were NOT-BUILT (the `Coords1D` /
+`gw_common` path, see `gpu-port-gw-orographic`); the CAM7 GW schemes
+likely share it. The replays are what `gpu-port-gw-orographic` needs.
+Also two older suites never captured (added 2026-11-09, for
+`gpu-tests-without-device-code`): `microp_aero_bam` (`nucleate_ice_ccpp`,
+`ndrop_bam_ccpp`, `compute_subgrid_vertical_velocity_clubb`,
+`scale_subgrid_vertical_velocity`, `dust_default_radii`, with their
+diagnostics -- none captured anywhere; the ports of `ndrop_bam_ccpp` and
+`nucleate_ice_ccpp` need these replays) and `tracer_data_test`
+(`prescribed_*` readers and `tropopause_find`, with this suite's own
+tracer-data inputs). `rebin_seasalt` and `tropopause_find` already have
+replays (capture_cam4/F2000_C4, capture_rk_stratiform/rrtmgp). Expect some
+microp_aero_bam drivers NOT-BUILT at first (CAM aerosol code, possibly
+CAM host modules).
+Log each driver gap found as its own item.
+
+**ID: `release-tagging`. A coordinated tag scheme across our repositories,
+and a skill/agent the user runs to tag a tested state.** Added 2026-11-09.
+Results are identified today by date-hash baseline names
+(`20261109-efc0937-nvhpc`) and commit lists in perf files, across five
+repositories (CAM-SIMA, atmospheric_physics, ccs_config and cime -- pinned by
+CAM-SIMA -- and xdsl-ccpp, which is not a submodule).
+Agreed so far (user, 2026-11-09): the upstream tag as the base plus our own
+counter, `sima0_25_000-xdsl01`, `-xdsl02`, ... for the CAM-SIMA fork and
+`atmos_phys0_34_000-xdsl01` for the atmospheric_physics fork (not
+`simax0_25_000`: no room for our increments between upstream tags, and it
+would collide with upstream's patch numbers); baselines could then be named
+after the tag (`sima0_25_000-xdsl01-nvhpc`).
+Open: the xdsl-ccpp naming (same name as CAM-SIMA, its own version, or the
+commit recorded in the CAM-SIMA tag message) -- the user's decision, to be
+coordinated across all repositories.
+Then a skill (thin trigger) + agent (the procedure), run by the user when
+they decide a state is a release point -- NOT part of /cam-sima-regression:
+check every repository is clean and pushed and CAM-SIMA's submodule pointers
+match the checkouts; find the regressions that passed at exactly these
+commits (gnu, intel, nvhpc CPU baseline, nvhpc GPU compare) and show any
+missing; propose the next tag name and an annotated message listing every
+repository's commit, the baseline tag and the regression IDs; print the
+`git tag -a` / `git push origin <tag>` commands for the user to run (lines
+under 100 characters; the agent never tags or pushes). First candidate:
+the sima0_25_000 merge once xdsl76n and its GPU compare pass and
+`post-merge-generation-fixes` is merged.
+
+**ID: `gpu-tests-without-device-code`. Three `aux_sima_gpu` tests run
+(almost) nothing on the GPU.** Added 2026-11-09. Count of each GPU test's
+suite schemes whose source has OpenACC and whose object is compiled `-acc`
+(`Depends.nvhpc`): `cloud_water_gpu` 0 of 4 (`convective_cloud_water`,
+`cloud_water_paths` and their diagnostics, all CPU); `trcdata_bam_gpu` 1 of
+6, and that one is `sima_state_diagnostics` (conditional pulls, no kernels;
+`prescribed_*` readers and `tropopause_find` on the CPU); `microp_aero_bam_gpu`
+1 of 14 (`rebin_seasalt` only; `nucleate_ice_ccpp`, `ndrop_bam_ccpp`, the
+subgrid vertical-velocity schemes, `tropopause_find`, `dust_default_radii`
+on the CPU). They still build for the GPU and compare bit-for-bit with
+their CPU baseline, so they show a GPU build of a CPU suite is unchanged,
+but they exercise no device code. Every other GPU test has real GPU work
+(e.g. kessler 15/16, cam4 50/158, cam7 41/130). Fix with at least one real
+port each: cloud_water first (small column schemes, also in cam4 and
+cam7: `convective_cloud_water`, `cloud_water_paths`); trcdata_bam via
+`gpu-port-tropopause-find` (the readers stay on the host); microp_aero_bam
+via `ndrop_bam_ccpp` and `nucleate_ice_ccpp` (CAM aerosol code, larger,
+needs upstream review). Each port: OpenACC in the `.F90`, object in
+`GPU_SCHEME_OBJS`, capture replay CPU and GPU, then the GPU test.
+
+**ID: `untested-test-suites`. atmospheric_physics test suites no CAM-SIMA
+test runs.** Added 2026-11-09. Of the 23 suites in
+`src/physics/ncar_ccpp/test/test_suites/`, 18 have an FPHYStest testmod
+(all run, with nvhpc and `_gpu` versions); five have none:
+- `rayleigh_friction` (`rayleigh_friction`, its diagnostics, updaters): a
+  snapshot exists, `cam_ne3pg3_rayleighfriction_snapshot_derecho_gnu_*_c20241210.nc`
+  (/glade/campaign/cesm/amwg/soft_eng/sima_baselines/cam_sima_test_snapshots).
+  Add `cam/outfrq_rayleigh_friction_derecho` like the other FPHYStests
+  (gnu, intel, nvhpc; `cross_compiler_check_tolerance`) and its `_gpu`
+  testmod. `rayleigh_friction` is not ported: small, a natural first GPU
+  port for the test.
+- `dry_adiabatic_adjust` (`dadadj` + updaters): `dadadj` is already ported
+  and verified on the GPU in cam4; a dedicated test covers it alone. Its
+  snapshot is a different setup,
+  `cam_dry_adiabatic_adjust_SMS_Ln9_P1.ne5_ne5_mg37.QPC5HIST_gnu_*.nc`
+  (ne5, QPC5HIST), so the testmod needs that grid and probably upstream's
+  original settings (ask the atmospheric_physics developers how it was run).
+- `tropopause_find` (`tropopause_find`, `tropopause_diagnostics`, `qneg`):
+  no snapshot found; would need one from CAM. Pairs with
+  `gpu-port-tropopause-find`. Later.
+- `convection_permitting` (99 schemes): not an FPHYStest -- the physics of
+  compset `CAM%MPASCP` (MPAS convection-permitting, analytic IC,
+  `config_component.xml`); a later full-model regression or perf target.
+- `file_io_test`: a test of the CCPP file-I/O interface
+  (`test/test_schemes/file_io_test`); low value for us.
+Then: new gnu/intel/nvhpc baselines include them; the regression agent's
+expected counts change.
 
 **ID: `scheme-io-capture-share-code`. Resolved (2026-11-06, PR #201).** CHANGELOG.md L14333.
 
@@ -2097,7 +2293,7 @@ Supporting items (not tracked elsewhere):
   (`gpu-port-check-energy-chng`), so on the device it adds per-call
   transfers; the user accepted that cost mid-port and will reevaluate
   performance once more schemes are ported. `sima_tend_diagnostics` stays on the
-  host (history; `gpu-diagnostics-conditional-sync`). Test: per-scheme
+  host (history; `gpu-history-accumulate`). Test: per-scheme
   capture replays from an FKESSLER case (`/cam-sima-capture`), then the SE
   and MPAS Kessler GPU testmods.
 - `gpu-port-check-energy-chng` — **GPU port of `check_energy_chng` (with
@@ -2229,9 +2425,17 @@ Supporting items (not tracked elsewhere):
     until then a full gw_cam4 GPU run against its
     CPU reference (no GPU testmod yet).
 - `gpu-history-accumulate` — **Accumulate history fields on the GPU.**
-  Added 2026-11-08. Follow-on to `gpu-diagnostics-conditional-sync`, which
-  only removes copies of fields on no history file. For fields that are on a
-  file, `history_out_field` (`src/history/cam_history.F90:636-782`) still
+  Added 2026-11-08. **A full design project (user, 2026-11-10), not
+  GPU-optimization work:** the history buffers' redesign needs its own
+  design document before implementation. It replaces the dropped
+  `gpu-diagnostics-conditional-sync` (per-field pulls in the diagnostics
+  schemes put data movement into scheme source -- the cap's job -- and
+  every new diagnostics scheme would need them). Goal: diagnostics schemes
+  stay unchanged, `history_out_field` accumulates on the device when its
+  input is device data (decided at run time), and the cap stops pulling
+  the diagnostics schemes' arguments. Notes so far:
+  `history_out_field` (`src/history/cam_history.F90:636-782`)
+  needs host data every step: `history_out_field` (`src/history/cam_history.F90:636-782`) still
   needs host data every step: per file it looks the name up
   (`find_in_field_list`) and calls `hist_field_accumulate`, which adds the
   values into the file's buffer (avg/var: add; min/max: compare; lst: copy)
@@ -2304,40 +2508,7 @@ Supporting items (not tracked elsewhere):
   (present-or-copy clauses). Replays: rk_stratiform, rrtmgp. Gain: 9 cam4
   cap syncs per step (cap_oracle after `acc-copy-residency`); used by
   rk_stratiform and rrtmgp too.
-- `gpu-diagnostics-conditional-sync` — **Diagnostics schemes copy device
-  data to the host only for fields being output.** Added 2026-11-02.
-  `sima_state_diagnostics_run` and `kessler_diagnostics_run` run every
-  step but compute nothing: each argument goes to CAM's
-  `history_out_field`, which accumulates it only if the field is on a
-  history file. The cap cannot know which are, so in the Kessler GPU suite
-  it syncs every device-resident argument before them every step
-  (`update self(temp, z, phis, dse)`, `update self(precl)`; the only two
-  syncs left in the run group after step 4). Move the sync into the
-  schemes: per field, `!$acc update self(x) if(is_history_field_active(
-  '<NAME>')) if_present` before its `history_out_field` call
-  (`is_history_field_active` exists in `src/history/cam_history.F90`).
-  `if_present` keeps the schemes working where the field is host data
-  (CPU suites, host-only fields). Generator side: the classifier
-  (`_classify_acc_residency`) must treat an `update` with `if_present` as
-  "either", not "device" -- else fields only the diagnostics read (`u`,
-  `v`, `omega`, ...) would become device data just to be copied back;
-  with "either", rule (a) makes the device-resident ones (`temp`, `z`,
-  `phis`, `dse`, `precl`) device, so the cap drops their syncs, and leaves
-  the rest on the host. No `.meta` change. Gain: no copies for fields not
-  output that step (production runs with sparse history); in FPHYStest
-  most fields are probably output, so little changes there. The
-  constituent loop in `sima_state_diagnostics_run` (`const_array` slices)
-  needs the same treatment once the constituent array is device-resident
-  (`constituent-device-residency`).
-  Progress 2026-11-09: generator done as category "synced" rather than
-  "either" (with acc-copy-residency, "either" would be promoted to
-  device): `device_synced`, device only where the variable is device data
-  after promotion. `sima_state_diagnostics` converted (xdsl74gpu 29/30
-  bit-for-bit, all cam4); its object added to ccs_config
-  `GPU_SCHEME_OBJS` -- every converted file must be, or its updates are
-  dropped while the cap no longer pulls. Read-only device calls no longer
-  force the next CPU scheme to pull (cap_shared.emit_coalesced_updates).
-  Left: the other cam4 `*_diagnostics` files (CHANGELOG.md, this date).
+- `gpu-diagnostics-conditional-sync` — **Dropped (2026-11-10)** -- per-field pulls in the diagnostics schemes put data movement into scheme source; reverted, superseded by the `gpu-history-accumulate` design project. CHANGELOG.md L14749.
 - `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
   ports of the utility schemes every suite uses**:
   `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
