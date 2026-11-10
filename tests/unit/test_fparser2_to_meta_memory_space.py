@@ -118,6 +118,18 @@ def test_continuation_line_joined():
     assert got == {"qv": (ACC_EITHER, "copyin"), "temp": (ACC_DEVICE, "present")}
 
 
+@pytest.mark.parametrize("sentinel", ["!$acc&", "!$acc &", "!$ACC&"])
+def test_continuation_with_leading_ampersand(sentinel):
+    # tropopause_find port: "!$acc&  tropLev, ..." lost its first name
+    # ("& troplev"), so tropLev never became device data.
+    got, _ = _classify(
+        "    !$acc data present(ps, &\n"
+        f"    {sentinel}           temp, qv)\n"
+        "    !$acc end data"
+    )
+    assert got == {name: (ACC_DEVICE, "present") for name in ("ps", "temp", "qv")}
+
+
 def test_default_present_is_not_a_present_clause():
     # 'present' is default's value; with no compute body, nothing is classified.
     got, _ = _classify("    !$acc data default(present)\n    !$acc end data")
