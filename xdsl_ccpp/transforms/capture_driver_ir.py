@@ -47,6 +47,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     MemberAccessExprOp,
     OmpTargetEnterDataOp,
     OmpTargetExitDataOp,
+    PreprocessorIfdefOp,
     PrintStmtOp,
     ProgramOp,
     RealKindType,
@@ -94,6 +95,10 @@ class TestDriverParam:
 # Categories of the arguments a test driver supplies itself, with nothing
 # to read from a capture file.
 _DRIVER_SUPPLIED_CATEGORIES = frozenset({"error_arg", "log_unit"})
+
+# Defined by an OpenACC/OpenMP build of the drivers (capture_cmake.py), as
+# by CAM-SIMA's nvhpc GPU builds; the drivers' device directives sit inside it.
+_GPU_BUILD_MACRO = "USE_GPU"
 
 
 def is_call_only_phase(params: "list[TestDriverParam]") -> bool:
@@ -316,7 +321,14 @@ class _DriverBuilder:
     def compare_components(self, p: TestDriverParam) -> list:
         """Compare each recorded component of `p` with `<p.name>_expected`'s
         (read from out/<p.name>); an allocatable one only when it was
-        captured, failing when the call did not allocate it."""
+        captured, failing when the call did not allocate it.
+
+        With a directive, only in a CPU build: xdsl-ccpp never moves
+        derived-type data, the scheme does (gpu-ddt-deep-copy-residency), so
+        in a GPU build the host copy of a component the scheme keeps on the
+        device is not the result (PUMAS's proc_rates). A GPU build reports
+        the derived type as skipped instead; the CPU replay of the same
+        capture checks it."""
         expected = f"{p.name}_expected"
         ops = []
         for comp, base, rank, allocatable in p.components:
@@ -334,7 +346,11 @@ class _DriverBuilder:
                         self.fail(_str(f"FAIL: {label} not allocated by the call (call "),
                                   _var("call_count"), _str(")"))),
             )
-        return ops
+        if not self.directive:
+            return ops
+        skip = PrintStmtOp([_str(f"SKIP: {p.name} (derived type) not compared in a GPU build "
+                                 "(call "), _var("call_count"), _str(")")])
+        return [PreprocessorIfdefOp(_GPU_BUILD_MACRO, [skip], ops)]
 
     def errflg_check(self, table: str, errmsg: "str | None", errflg: "str | None") -> list:
         if errflg is None:
@@ -395,7 +411,8 @@ class _DriverBuilder:
                 continue
             if p.components:
                 # A derived type recorded component by component
-                # (scheme-io-capture-ddt-args): on the host only.
+                # (scheme-io-capture-ddt-args): on the host only, and
+                # compared by a CPU build only (compare_components).
                 if p.category in ("in", "inout"):
                     array_reads += self.read_components(p, "in", name)
                 if p.category in ("out", "inout") and not setup:

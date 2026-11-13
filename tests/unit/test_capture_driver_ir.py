@@ -333,3 +333,36 @@ def test_derived_type_output_is_compared_component_by_component():
     assert "if (allocated(p%ifc)) then" in compare
     assert "ok = ccpp_capture_compare(p%ifc, p_expected%ifc, tolerance," in compare
     assert "FAIL: p%ifc not allocated by the call" in text
+
+
+def test_derived_type_output_compared_only_in_a_cpu_build():
+    """With a directive (one driver for both builds), the component compares
+    sit in the #else of #ifdef USE_GPU: a scheme may keep a derived type's
+    components on the device (PUMAS's proc_rates), so a GPU build reports
+    the derived type as skipped; the CPU build compares it."""
+    text = _run([P("p", "out", "coords1d", None, 0, type_module="coords_1d",
+                   components=_COORDS)], directive="acc")
+    guard = _between(text, "#ifdef USE_GPU\n", "#endif")
+    gpu, cpu = guard.split("#else\n")
+    assert "SKIP: p (derived type) not compared in a GPU build (call " in gpu
+    assert "ccpp_capture_compare" not in gpu
+    assert "ok = ccpp_capture_compare(p%n, p_expected%n)" in cpu
+    assert "ok = ccpp_capture_compare(p%ifc, p_expected%ifc, tolerance," in cpu
+    # the expected values are still read in both builds
+    assert "call ccpp_capture_read('out/p', 'n', p_expected%n)" in text
+
+
+def test_derived_type_output_unguarded_without_a_directive():
+    text = _run([P("p", "out", "coords1d", None, 0, type_module="coords_1d",
+                   components=_COORDS)])
+    assert "#ifdef" not in text
+    assert "SKIP:" not in text
+
+
+def test_array_output_compared_in_both_builds():
+    """Only derived types are skipped on the GPU: a plain array output's
+    compare stays outside any preprocessor guard."""
+    text = _run([P("t", "out", "real", "kind_phys", 2)],
+                directive="acc")
+    assert "ok = ccpp_capture_compare(t, t_expected, tolerance," in text
+    assert "SKIP:" not in text

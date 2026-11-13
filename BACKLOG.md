@@ -69,15 +69,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-ddt-deep-copy-residency` | not planned (2026-11-02): schemes move their own derived-type data | -- |
 | `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below plus `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
 | `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below plus `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
-| `gpu-pumas-testmod` | 1-2 days | XS |
-| `pumas-nvhpc-optimized-cpu-snapshot` | 1-3 days (non-aborting reruns of s53b/s54b and the CPU/GPU compare; isolate the PUMAS optimization flags against the SMS_D run; tolerance or flag decision with the user) | XS-S |
-| `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
-| `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
+| `pumas-module-props-device` | code done and verified (2026-11-12); only the ESCOMP/PUMAS PR and its review left | XS |
+| `pumas-proc-rates-allocate-once` | 1-3 days (lazy allocate in the run or an init dimension, `inout` intent, device copies with the allocation, recapture, CPU/GPU replay and PUMAS GPU test) plus ESCOMP/PUMAS review; first a profile showing it matters | XS-S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-port-dme-adjust` | 1-2 days (host-side constituent mask, one column-parallel kernel, capture replay CPU+GPU; on hold) | XS |
-| `gpu-port-wv-saturation` | 2-5 days after `wv-saturation-ccppize` and the recapture (device `qsat` path through `wv_saturation`: `!$acc routine seq`, module constants on the device; `wv_sat_methods` already has its directives; tested through the `zm_conv_evap` GPU replay) | S |
-| `gpu-port-hack-convect-shallow` | 4-8 days after `gpu-port-wv-saturation` (~1000-line scheme, column-sequential physics, constituent-properties mask on the host; per-scheme GPU replay once `wv-saturation-ccppize` lets its driver build) | S-M |
-| `gpu-port-zm-conv-evap` | 2-4 days after `gpu-port-wv-saturation` (~250 lines; column-sequential evaporation; the first `qsat` caller ported, so its GPU replay also tests device `qsat`) | S |
+| `gpu-port-wv-saturation` | 2-5 days after the recapture (device `qsat` path through `wv_saturation`: `!$acc routine seq`, constants already on the device; `wv_sat_methods` already has its directives; tested through the `zm_conv_evap` GPU replay) | S |
+| `pumas-refl-single-division-upstream` | <1 day plus PUMAS review (one-file PR, submodule bump) | XS |
+| `zm-convr-init-gathered-outputs` | <1 day plus review (6 lines, regression run) | XS |
+| `gpu-port-zm-convr` | 8-15 days after `gpu-port-wv-saturation` (~2640-line scheme; gather/scatter over convecting columns, scalar `qsat_hPa` inside column loops, module state from `zm_conv_options`; GPU replay in capture_zm) | M |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
 | `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
@@ -105,7 +104,7 @@ measured data, and will drift as items are reassessed.
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
 | `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
-| `scheme-io-capture-rte-objects` | 4-6 days (handlers for the RTE optical-property, source-function and flux types through their public procedures; then `ty_gas_concs`; `kdist` later; tests; recapture rrtmgp and c03e) | S |
+| `scheme-io-capture-rte-objects` | 6-10 days (handlers for the RTE optical-property, source-function and flux types through their public procedures, with compare for outputs; then `ty_gas_concs`; `kdist` by setup-scheme replay; handler registry supplied by the physics side; tests; recapture rrtmgp and c03e) | S-M |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
@@ -113,7 +112,7 @@ measured data, and will drift as items are reassessed.
 | `acc-host-written-device-arg` | 1-2 days (classifier: written-in-kernel flag on ACC_HOST arguments; warning when device data elsewhere; tests) | XS |
 | `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
 | `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
-| `wv-saturation-ccppize` | 4-8 days plus upstream review (atmospheric_physics: `wv_saturation` init as a CCPP scheme taking its constants and namelist through metadata, errmsg/errflg instead of `endrun`, no CAM host modules; bit-for-bit check; then recapture pumas and the `wv_saturation` users). First step of the cam4 convection GPU path, after the sima0_25_000 merge | S-M |
+| `wv-sat-methods-move` | <1 day plus a coordinated PUMAS PR (one `dependencies` path in `micro_pumas_ccpp.meta`, PUMAS submodule bump, `git mv`) | XS |
 | `scheme-io-capture-mpi-reach-renames` | 0.5 day (follow USE-renamed procedures in `mpi_reach`, as `module_state_access` does; test; check which captured phases it newly leaves out) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
@@ -1306,7 +1305,7 @@ captures (/glade/derecho/scratch/dennis/capture_*). Expected gaps:
 `mcsp` calls `vertinterp` from CAM-SIMA's `src/utils/interpolate_data.F90`
 (a host module the capture support library does not provide; its
 `.meta` has no `dependencies` line), and the ZM schemes that call `qsat`
-do not build until `wv-saturation-ccppize`. FHIST_C4's value over the
+did not build before `wv-saturation-ccppize` (recheck). FHIST_C4's value over the
 existing cam4 captures is real time-varying input to `prescribed_ozone`,
 `prescribed_aerosols`, `prescribed_volcanic_aerosol`,
 `prescribed_aerosol_deposition_flux` and `solar_irradiance_data`, so
@@ -1472,41 +1471,18 @@ device data elsewhere in the suite), naming the fix in the scheme: an
 `update self(x) if_present` / `update device(x) if_present` around its
 host use.
 
-**ID: `wv-saturation-ccppize`. CCPP-ize `wv_saturation` (atmospheric_physics,
-upstream).** Added 2026-11-06 (from `scheme-io-capture-ddt-args`).
-`to_be_ccppized/wv_saturation.F90`'s `wv_sat_init`, called from the init
-of scheme `to_be_ccppized_temporary`, sets `wv_sat_methods`' private
-module constants (`tmelt`, `h2otrip`, `tboil`, `ttrice`, `epsilo`,
-`omeps`) through `wv_sat_methods_init`, taking them from CAM host modules
-(`physconst`) and reading its own namelist (`namelist_utils`,
-`spmd_utils`, `cam_logfile`, `cam_abortutils`). A capture replay cannot
-run that setup: the variables are private (not capturable) and the
-setter's sources need host modules. So `test_micro_pumas_ccpp` (c03d,
-kept on the pumas list as a reminder) replays with `h2otrip` unset:
-PUMAS's `qsat_ice` (`wv_sat_qsat_ice_vect` -> `GoffGratch_svp_ice_vect`)
-divides by it, NaNs spread through the microphysics, and most outputs
-fail; `test_micro_pumas_ccpp.skipped` names the setter and the missing
-modules. Wanted (atmospheric_physics PR): an init scheme for
-`wv_saturation` (or `wv_sat_methods`) whose `.meta` takes the constants
-and the namelist settings as arguments, reports errors through
-errmsg/errflg, and uses no CAM host modules; `to_be_ccppized_temporary`
-then goes away. The capture's module-state setup then replays it before
-`micro_pumas_ccpp`, and the drivers blocked by `wv_saturation` (the ~14
-capture-list schemes that need CAM modules through it, e.g.
-`hack_convect_shallow`) can build. Related: `gpu-port-wv-saturation`
-(device `qsat`), which touches the same module.
-Decided 2026-11-09: this is the first step of the cam4 convection GPU
-path, after the sima0_25_000 merge (`~/.claude/plans/upstream-merge-
-sima0_25_000.md`). Order: (1) this, bit-for-bit; (2) recapture zm,
-hack_shallow, rk_stratiform and pumas (`/cam-sima-capture`) and check the
-CPU replays of `zm_convr`, `zm_conv_evap`, `hack_convect_shallow`,
-`compute_cloud_fraction`, `prognostic_cloud_water` and
-`micro_pumas_ccpp` pass (today five do not build and pumas fails with
-NaNs from an unset `h2otrip`); (3) `gpu-port-wv-saturation`; (4)
-`gpu-port-zm-conv-evap`, `gpu-port-hack-convect-shallow`, then
-`zm_convr`, each checked by its own GPU replay. Upstream: no open ESCOMP
-effort (issue #77, 2024, only brought `qsat` over as is); raise it with
-them before or with the PR so the versions do not diverge.
+**ID: `wv-saturation-ccppize`. Resolved (2026-11-11).** CHANGELOG.md L14786.
+
+**ID: `wv-sat-methods-move`. Move `wv_sat_methods.F90` out of
+`to_be_ccppized/`.** Added 2026-11-11 (from `wv-saturation-ccppize`).
+It already uses no host modules, but stayed in `to_be_ccppized/` because
+PUMAS's `micro_pumas_ccpp.meta` (ESCOMP/PUMAS submodule) lists it as
+`dependencies = ../../../to_be_ccppized/wv_sat_methods.F90`, a path
+into atmospheric_physics' layout from inside another repository.
+Moving it to `schemes/utilities/` beside `wv_saturation.F90` needs a
+one-line PUMAS PR and the PUMAS submodule bump in the same
+atmospheric_physics PR (else cam5, cam7 and pumas fail at generation).
+Do it with the next PUMAS change; build-only, no answer change.
 
 **ID: `scheme-io-capture-mpi-reach-renames`. The MPI check does not follow
 renamed procedures.** Added 2026-11-06. `mpi_reach` follows calls by
@@ -1611,6 +1587,27 @@ as arrays the driver allocates and points the components at;
 `ty_gas_concs` through `get_vmr`/`set_vmr`. `kdist` comes last (its
 init reads files; replaying the setup scheme may be simpler). Needed for
 scheme-by-scheme GPU checks of `gpu-fphystest-rrtmgp`.
+Additions (2026-11-12, re-sized S -> S-M):
+1. Compare, not only rebuild. A handled derived type is today only
+   rebuilt from the capture and never compared (`capture_driver_ir`:
+   "rebuilt from the capture ... never compared"). McICA's and cloud
+   optics' main outputs are optical-properties objects, and the flux
+   schemes write flux objects, so each handler also needs a compare --
+   e.g. extract the public arrays (`tau`, `ssa`, `g`, band limits,
+   fluxes) so the driver's existing array compare reports them.
+2. Where the handlers live. `ccpp_constituent_prop_ptr_t` is a CCPP
+   framework type, so its handler belongs in `xdsl_ccpp/framework_src`;
+   RTE-RRTMGP is a physics library and xdsl-ccpp carries no physics
+   knowledge. So the physics side (atmospheric_physics, beside
+   `schemes/rrtmgp/objects`) provides the handler module and a neutral
+   registration input (type -> module, write/read/compare routines, as
+   `capture_compile_flags.txt` works); `_DDT_CAPTURES` becomes the
+   built-in default plus that registry.
+3. `kdist` by setup replay. McICA, cloud optics and gas optics all take
+   `kdist`. The existing module-state setup (the driver calls
+   `wv_saturation_init` before the pumas replay) sets module state, but
+   `kdist` is an argument the setup scheme produces: extend the
+   mechanism so a setup call's output feeds a replayed argument.
 
 **ID: `scheme-io-capture-group-replay`. Replay a whole generated group
 subroutine.** Added 2026-10-28. Per-scheme replay checks one scheme's
@@ -1893,8 +1890,24 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   change, full test suites + a CAM-SIMA regression run. Enables
   `gpu-conversion-residency` with upstream dialects and, later, replacing
   xdsl_ccpp's hand-written `Acc*`/`Omp*` data-directive ops.
-- `constituent-device-residency` — **Keep the constituents on the device
-  across calls (performance).** Since `advected-constituent-host-binding`,
+- `constituent-device-residency` — **Constituent views and the whole
+  constituent array alias on the device: make the syncs correct by
+  construction (correctness; reclassified from performance by the user
+  2026-11-12).** Found 2026-11-12 in the PUMAS GPU cap (s61): the whole
+  array is already resident -- `enter data copyin(lc_constituent_array)`
+  in `ccpp_initialize_constituents`, `update device` at physics entry and
+  `update self` on return (host cap) -- and the per-constituent views
+  (`cldice_in`, ...) are pointers into it, so the per-call `data
+  copy(<view>)` regions find the views present and move nothing. Hazard:
+  the generator tracks a view and the whole array (`const`) as separate
+  variables, so a CPU scheme writing a view (or the whole array) on the
+  host between device schemes would leave the device copy stale with no
+  error -- the per-call `copy` meant to protect the next device call
+  degenerates to `present`. No current suite has such a writer (PUMAS
+  CPU/GPU bit-for-bit). Fix: treat views and the whole array as one
+  variable for last-writer tracking, `update self`/`update device` where
+  the writing side changes, device calls under `present`. Original
+  (performance) description: Since `advected-constituent-host-binding`,
   `generate-gpu-data` wraps each scheme call that takes a
   `memory_space = device` constituent view in its own
   `!$acc data copy(<view>)` region
@@ -2023,27 +2036,42 @@ is derived from the Fortran source's OpenACC clauses
   every other scheme in the suite is CPU-only. The suite cap has no
   unit or kind conversions (checked 2026-10-28), so
   `gpu-conversion-residency` is not needed unless a port adds one.
+  All ESCOMP/PUMAS changes for this work collect on one local submodule
+  branch, `props-device` (off the pin `e7377ae`; user, 2026-11-12):
+  `pumas-module-props-device`, `pumas-proc-rates-residency` and the
+  optional wrapper directives of step 3, `avg_diameter`'s `!$acc routine
+  seq`, and the reflectivity rewrite (`13cd79d`, cherry-picked
+  2026-11-12: the user needs CPU/GPU bit-for-bit now;
+  `pumas-refl-single-division-upstream`).
   Steps, in order:
   1. `gpu-pumas-testmod` — PUMAS's own kernels on the GPU, cap
-     unchanged.
+     unchanged. Done (CHANGELOG.md L14975): GPU test bit-for-bit with the
+     nvhpc CPU test (xdsl80gpu, xdsl81gpu).
   2. `pumas-module-props-device` — PUMAS's module-level props resident
      (upstream, ESCOMP/PUMAS).
-  3. Add OpenACC directives (a data region with `present`/copy
-     clauses for its arguments) to `micro_pumas_ccpp_run`, the routine
-     `micro_pumas_ccpp.meta` describes, so `acc-derive-memory-space`
-     sees them; it does not follow the call into `micro_pumas_tend`.
-     `micro_pumas_ccpp.F90` lives in ESCOMP/PUMAS, so this is an
-     upstream change (bundle `pumas-module-props-device` with it); no
-     `.meta` change.
-  4. `micro_proc_rates` (`proc_rates_type`, 119 allocatable
-     components) stays PUMAS's to move: `micro_pumas_tend`'s data
-     region copies it per call. Keeping it resident across calls, if
-     needed, is scheme-side `enter`/`exit data` (ESCOMP/PUMAS), not
-     generator work (`gpu-ddt-deep-copy-residency`, not planned).
+  3. Residency of `micro_pumas_ccpp_run`'s arguments. Done by the
+     generator, not by directives in the wrapper: since
+     `acc-copy-residency` (CHANGELOG.md L14606, 2026-11-08, "Residency
+     through callees") an entry point with no OpenACC of its own takes
+     each array it passes bare to a callee from that callee's
+     directives (one call level; `micro_pumas_tend`'s data region).
+     Result in the pumas GPU cap (xdsl81gpu): 97 arguments device, no
+     syncs; 4 host (`relvar`, `accre_enhan`, `rndst`, `nacon`), one
+     `update self` before the call.
+     2026-11-12: the 4 are device too (CHANGELOG.md L15078: a mapped
+     array passed to a call inside its data region is not a host use),
+     so the `update self` is gone. Left, optional: an explicit
+     `!$acc data present(...)` in `micro_pumas_ccpp_run`
+     (ESCOMP/PUMAS) would make the residency visible in the wrapper
+     itself and drop the one generator dependence on reading
+     `micro_pumas_v1.F90`; no data-movement gain.
+  4. `micro_proc_rates`: done 2026-11-12 (`pumas-proc-rates-residency`,
+     CHANGELOG.md L15120); allocating it once is `pumas-proc-rates-allocate-once`.
   5. `constituent-device-residency` — PUMAS's main inputs (cloud
      liquid/ice, number concentrations, rain, snow, graupel) are
      constituents, copied per device call today.
-  6. `gpu-port-pumas-interface-schemes` and
+  6. `gpu-port-pumas-interface-schemes` (done 2026-11-12, CHANGELOG.md
+     L15030) and
      `gpu-port-shared-utility-schemes` — the CPU schemes around PUMAS.
   7. Validation per the acceptance criteria above; tolerance per
      `pumas-ncdata-diffs` (its snapshot is intel-made).
@@ -2166,64 +2194,8 @@ Supporting items (not tracked elsewhere):
   (the known `kessler_hand.exe`/C++ drivers "PRESENT clause was not
   found" cases). Not related to CAM-SIMA, whose GPU builds use `-acc`.
 - **ID: `omp-derive-memory-space`. Resolved (2026-11-02, PR #188)** -- CHANGELOG.md L13916.
-- `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
-  `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
-  plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,
-  `GPU_TYPE=a100`, `NGPUS_PER_NODE=4`, `OVERSUBSCRIBE_GPU`) and an
-  nvhpc entry in `testlist_cam.xml`. Check that the PUMAS `.F90` files
-  get `-acc` in the build, and whether the snapshot needs a looser
-  tolerance on the GPU. Exercises PUMAS's own data regions only.
-  Set up 2026-10-28 (CAM-SIMA, uncommitted): standalone testmod with
-  `min_difference = 5e-10` (the nvhpc GPU flags match GPU to CPU results), test `SMS_Ln2` nvhpc (not `SMS_D`: PUMAS
-  gets `-acc` only when `DEBUG=FALSE` in `Depends.nvhpc`). First run
-  (s47b, 2026-11-02): builds, aborts at run time with "data in PRESENT
-  clause was not found on device: name=qic(:vlen)" (every task). Cause:
-  the CPU scheme `pumas_post_main` calls PUMAS's
-  `size_dist_param_basic(mg_ice_props, icimrst(:,k), ...)`
-  (`pumas_post_main.F90:76`) with a host-only local array, and
-  `size_dist_param_basic_vect` (`micro_pumas_utils.F90`, compiled with
-  `-acc` as part of PUMAS) runs `!$acc parallel ... default(present)`.
-  Fixed 2026-11-06 (`gpu-port-pumas-interface-schemes`, first step):
-  s53b runs past it, then stops at the snapshot check by 6.1e-10 (cloud
-  droplet number, 2 points; tolerance 5e-10) -- see
-  `pumas-nvhpc-optimized-cpu-snapshot`. Not related to the Kessler step 4
-  ports. Fix options were: give that call
-  its own data region in `pumas_post_main` (or port the scheme,
-  `gpu-port-pumas-interface-schemes`), or an `if(...)`/host path in the
-  PUMAS utility (ESCOMP/PUMAS).
-- `pumas-nvhpc-optimized-cpu-snapshot` — **The optimized nvhpc CPU PUMAS
-  run is far off its snapshot; the CPU/GPU pair is not compared yet.**
-  Added 2026-11-06. To pair the PUMAS GPU test (`SMS_Ln2`, needs
-  `DEBUG=FALSE` for PUMAS `-acc`) with a CPU run of the same build type,
-  `testlist_cam.xml` got an `SMS_Ln2` nvhpc entry for
-  `cam/outfrq_pumas_derecho` (CAM-SIMA, uncommitted at the time; the
-  existing nvhpc CPU test is `SMS_D_Ln2`). First pair: s54b (CPU) and
-  s53b (GPU). Both abort at step 1 in the snapshot check
-  (`ncdata_check_err = .true.`, against the intel snapshot
-  `cam6_4_196_ne3pg3_qpc7_pumas_snapshot_derecho_intel_after_c20260820.nc`;
-  `TestStatus` says RUN PASS, `cs.status` rechecks it as FAIL):
-  - s54b (CPU, non-debug): 2 fields over `min_difference = 1e-9`, by a
-    lot -- rain number concentration 4.4 (9 points), rain mixing ratio
-    0.99 (10 points). Earlier nvhpc CPU runs were `SMS_D` (`-O0`); a
-    non-debug build compiles PUMAS with `-O3 -fastsse -Mflushz
-    -Mfprelaxed=sqrt` (the `PUMAS_OBJS` rule in `Depends.nvhpc`), so this
-    is the first optimized nvhpc CPU PUMAS run against the snapshot. The
-    few, large differences look like a threshold flip.
-  - s53b (GPU): 2 fields just over `min_difference = 5e-10` (cloud
-    droplet number 6.1e-10 at 2 points, rain number 5.4e-10 at 1 point).
-  - No history files, so `./cs.status.s53b -t s54b`'s `COMPARE_cpu_gpu`
-    stays PEND.
-  Wanted: (1) rerun both with `ncdata_check_err = .false.` (report, do not
-  abort) and run the zero-tolerance CPU/GPU compare; (2) run s54a
-  (`SMS_D_Ln2` CPU) and compare it with s54b to isolate the PUMAS
-  optimization flags (`-fastsse`, `-Mfprelaxed=sqrt`; the GPU build adds
-  `-gpu=nofma,math_uniform` and is close to the snapshot); (3) decide
-  with the user: change the non-debug CPU PUMAS flags so CPU and GPU agree
-  bit for bit (the nvhpc flag policy), or loosen the snapshot tolerance
-  for the non-debug CPU test.
-  2026-11-06: (3) partly done -- ccs_config's nvhpc production rules no
-  longer use `-Mfprelaxed` (PUMAS had `-Mfprelaxed=sqrt`); new nvhpc runs
-  needed for (1) and (2).
+- **ID: `gpu-pumas-testmod`. Resolved (2026-11-12)** -- CHANGELOG.md L14975.
+- **ID: `pumas-nvhpc-optimized-cpu-snapshot`. Resolved (2026-11-12)** -- CHANGELOG.md L15005.
 - `eddy-diffusivity-adjustment-gpu-coverage` — **The GPU port of
   `eddy_diffusivity_adjustment_above_pbl` is not exercised by any test.**
   Added 2026-11-06. The scheme was ported to OpenACC (one `parallel loop
@@ -2256,27 +2228,45 @@ Supporting items (not tracked elsewhere):
   (`micro_pumas_utils.F90:289`) and `!$acc update device(...)` (`:390`,
   after they are set). Flat type, set only at init; `micro_pumas_tend`'s
   `copyin` then finds them present. Bit-for-bit; also applies to
-  ESCOMP/CAM. Small gain, so bundle it with step 3 of
-  `gpu-fphystest-pumas`.
-- `gpu-port-pumas-interface-schemes` — **OpenACC ports of the PUMAS
-  suite's own per-step CPU schemes** (5; see `gpu-port-scheme-checklist`):
-  `micro_pumas_ccpp_dimensions_pre/post`, `pumas_post_main`,
-  `micro_pumas_ccpp_optics_limiter` (atmospheric_physics), and
-  entry-point directives in `micro_pumas_ccpp_run` (ESCOMP/PUMAS; its
-  kernels are one call down). The suite's cloud-fraction schemes,
-  `to_be_ccppized_temporary`, the stubs and `pumas_pre_main` are init- or
-  register-only, so they need no port; `sima_state_diagnostics` stays on
-  the host (history). Each port adds
-  `!$acc` kernels to the `.F90` only (residency is derived by
-  `acc-derive-memory-space`; the `.meta` is unchanged) and keeps the CPU
-  path (directives are comments without `-acc`).
-  First: `pumas_post_main`, done 2026-11-06 (atmospheric_physics and
-  ccs_config, uncommitted at the time): `!$acc data` regions around its
-  calls to `size_dist_param_basic` (`copyin(mg_ice_props, icimrst)
-  copy(niic, rei)`) and `size_dist_param_liq` (`copyin(mg_liq_props,
-  icwmrst, rho) copy(ncic, mu, lambdac)`), `pumas_post_main.o` in
-  `GPU_SCHEME_OBJS`. The c03d capture replay is bit-for-bit on GPU (it had
-  reproduced the abort); the GPU testmod (s53b) runs past it.
+  ESCOMP/CAM. Small gain.
+  Code done and verified 2026-11-12: PUMAS commit `eb7078a` on the
+  submodule branch `props-device` (see `gpu-fphystest-pumas`). The
+  `copyin(mg_*_props)` in `micro_pumas_tend` and `pumas_post_main` stay;
+  they now find the data present. GPU test s60
+  (`SMS_Ln2...cam-outfrq_pumas_derecho_gpu`, xdsl-ccpp `main` 72f4788):
+  RUN and MEMLEAK PASS, history file cprnc "IDENTICAL" against the nvhpc
+  CPU baseline `20261109-efc0937-nvhpc`. Left: the ESCOMP/PUMAS PR (one
+  PR from `props-device` with the other PUMAS GPU changes).
+- **ID: `pumas-proc-rates-residency`. Resolved (2026-11-12)** -- CHANGELOG.md L15120.
+- `pumas-proc-rates-allocate-once` — **ESCOMP/PUMAS: allocate the
+  `proc_rates` DDT once, not every step.** Added 2026-11-12 (follow-on to
+  `pumas-proc-rates-residency`). Today `micro_pumas_ccpp_run` allocates all
+  119 components every call (`micro_pumas_ccpp.F90:516`, the `REMOVECAM`
+  note calls it "a performance hit") and `micro_pumas_ccpp_timestep_final`
+  frees them; in a GPU build each call also creates and deletes their
+  device copies (`proc_rates_device_create/_delete`). Not measured yet --
+  do it only if a profile shows the churn (nvhpc pools device memory, so
+  the device side is likely cheap; the host allocate/free of 119 arrays
+  per step is the part to time). Obstacles:
+  - Size: `micro_ncol` is `microphysics_horizontal_loop_extent`, a
+    run-time loop extent; init has no horizontal dimension. Either add one
+    to `micro_pumas_ccpp_init` (new argument, standard name, CAM-SIMA host
+    variable), or allocate lazily in the run -- allocate when not
+    allocated or when the shape changed, free in `_final` -- which also
+    covers CAM's varying `ncol` (no `REMOVECAM` switch needed).
+  - Intent: `micro_proc_rates_out` is `intent(out)` in the run, which
+    frees every allocatable component on entry; it must become `inout`
+    (`.F90` and `.meta`) for the allocation to survive between calls.
+  - Device copies: with the allocation kept, create them once with it and
+    delete them in `_final` (no per-call create/delete). That is also what
+    `gpu-history-accumulate`'s todo for the process rates needs (device
+    copies alive until the diagnostics run).
+  - Replay: as `inout`, the capture records `proc_rates` before the call
+    too (`in/` group), so pumas needs a recapture, and the driver's
+    back-to-back run calls then reuse one allocation.
+  Bit-for-bit expected (no arithmetic changes). Goes on the PUMAS branch
+  `props-device` with the ESCOMP/PUMAS PR, or after it.
+- **ID: `gpu-port-pumas-interface-schemes`. Resolved (2026-11-12)** -- CHANGELOG.md L15030.
 - `gpu-port-kessler-energy-utilities` — **OpenACC ports of the `kessler`
   suite's pointwise energy utilities.** Added 2026-11-02. The `kessler`
   suite (FKESSLER: SE and MPAS testmods) runs `kessler_test`'s 16 schemes
@@ -2350,46 +2340,87 @@ Supporting items (not tracked elsewhere):
 - `gpu-port-wv-saturation` — **Device `qsat` for the convection
   schemes.** Added 2026-11-05. `hack_convect_shallow` and `zm_conv_evap`
   (and `zm_convr`, `compute_cloud_fraction`, `prognostic_cloud_water`)
-  call `qsat` from `src/physics/ncar_ccpp/to_be_ccppized/wv_saturation.F90`
-  (1483 lines; generic `qsat` over `qsat_line`/`qsat_vect`/`qsat_2D`,
+  call `qsat` from `src/physics/ncar_ccpp/schemes/utilities/wv_saturation.F90`
+  (~1450 lines; a CCPP scheme since `wv-saturation-ccppize`; generic
+  `qsat` over `qsat_line`/`qsat_vect`/`qsat_2D`,
   built on `wv_sat_methods`). Calling it inside a kernel needs
   `!$acc routine seq` on the call path down to `wv_sat_methods` and
-  its module data (`physconst` constants such as `epsilo`, the selected
-  saturation scheme index and any tables) present on the device. Its
-  init reads a namelist and uses `spmd_utils`/`cam_abortutils`, which
-  stay on the host. Also the reason these schemes' capture drivers do not
-  build (`scheme-io-capture-host-module-schemes`, group A).
+  its module data present on the device. Since `wv-saturation-ccppize`
+  the constants (`epsilo`, `latvap`, `latice`, `rh2o`, `cpair`, `tmelt`,
+  `h2otrip`) are `wv_saturation` module variables with `!$acc declare
+  create` and an `update device` at init, beside `estbl`, `omeps`, `c3`,
+  `pcf`; still host-only: `wv_sat_methods`' `default_idx` (the selected
+  method). Generation now notes that `compute_cloud_fraction_run` calls
+  OpenACC code (`svp_ice_vect`) without directives of its own.
   `to_be_ccppized/wv_sat_methods.F90` already has its OpenACC (55
   directives, used from PUMAS's kernels); the gap is the `wv_saturation`
   wrapper (`qsat`, `qsat_water`, `calc_hltalt`, ... `!$acc routine seq`)
   and its module constants (`!$acc declare`, `update device` after init).
-  Decided 2026-11-09: no standalone `qsat` test. Do `wv-saturation-ccppize`
-  and the recapture first; then this, tested through the GPU replay of
-  `zm_conv_evap`, the first caller ported (zero tolerance). Prerequisite
-  for the two items below.
-- `gpu-port-hack-convect-shallow` — **GPU port of
-  `hack_convect_shallow`.** Added 2026-11-05.
-  `schemes/hack_shallow/hack_convect_shallow.F90` (~1000 lines), the
-  `hack_shallow` suite's main scheme (also in cam4). Needs
-  `gpu-port-wv-saturation`. Reads `const_props`
-  (`ccpp_constituent_prop_ptr_t`): evaluate whatever it needs per
-  constituent on the host into plain arrays (as `qneg`,
-  `gpu-port-dme-adjust`); never put the properties on the device
-  (`gpu-ddt-deep-copy-residency`). The convection is column-local with
-  vertical dependencies: expect one thread per column, levels
-  sequential. Test: its GPU replay (capture_hack_shallow), which builds
-  once `wv-saturation-ccppize` removes the CAM modules its driver needs
-  through `wv_saturation` (`test_hack_convect_shallow.skipped`); then a
-  full hack_shallow GPU run against its CPU reference. The rest of the `hack_shallow` capture list is ported
-  (2026-11-05, untested): `cloud_fraction_fice`, both `set_*_conv_fluxes_*`
-  copy schemes and the updaters.
-- `gpu-port-zm-conv-evap` — **GPU port of `zm_conv_evap`.** Added
-  2026-11-05. `schemes/zhang_mcfarlane/zm_conv_evap.F90` (~250 lines),
-  shared by the `hack_shallow` and `zm` suites (and cam4). Needs
-  `gpu-port-wv-saturation`; precipitation evaporation is a top-down pass
-  per column (one thread per column, levels sequential, keep the
-  summation order for bit-for-bit). Port it first of the `qsat` callers:
-  its GPU replay (capture_zm) also tests `gpu-port-wv-saturation`.
+  Decided 2026-11-09: no standalone `qsat` test. First recapture zm,
+  hack_shallow, rk_stratiform and pumas (`/cam-sima-capture`) and check
+  the CPU replays of `zm_convr`, `zm_conv_evap`, `hack_convect_shallow`,
+  `compute_cloud_fraction`, `prognostic_cloud_water` and
+  `micro_pumas_ccpp` now build and pass (pumas failed with NaNs from an
+  unset `h2otrip`); the capture's module-state setup must run
+  `wv_saturation_init` (fix the capture if not; it does). Then this,
+  tested through the GPU replays of its in-kernel callers (zero
+  tolerance). Prerequisite for `gpu-port-zm-convr`.
+  Narrowed 2026-11-11: `zm_conv_evap` and `compute_cloud_fraction` were
+  ported without it (CHANGELOG.md L14878) -- they call the vector forms
+  from the host, which already run their own kernels on present data.
+  `hack_convect_shallow` was ported the same way (CHANGELOG.md L14909).
+  Still needed for the
+  scalar calls inside column loops: `zm_convr` (`qsat_hPa`, four sites,
+  plus `qsat_water`), `prognostic_cloud_water` (`qsat`, `svp_to_qsat`,
+  `estblf` per point; `findsp_vc`).
+- **ID: `pumas-refl-cpu-gpu-diffs`. Resolved (2026-11-11)** -- CHANGELOG.md L14838.
+- `pumas-refl-single-division-upstream` — **Upstream the PUMAS reflectivity
+  rewrite.** Added 2026-11-11 (from `pumas-refl-cpu-gpu-diffs`). The local
+  edit in the PUMAS submodule (`micro_pumas_v1.F90`, ice and snow terms of
+  the radar-reflectivity loop: `*1.e4_r8` with one division instead of
+  `/icldm*1000/0.1`) makes the nvhpc CPU and GPU reflectivity diagnostics
+  bit-for-bit and removes two divisions per point. Needs an ESCOMP/PUMAS PR
+  (answer change: those 5 diagnostics, by rounding, on every compiler) and
+  the PUMAS submodule bump in atmospheric_physics; until then the edit
+  lives only in this working tree.
+  Deferred by the user 2026-11-11. Worked out then: there is no
+  `johnmauff/PUMAS` fork yet (create one on GitHub). PR base: ESCOMP/PUMAS
+  `main_cam` (default; 27f3a55), two answer-changing PRs (#80, #82) ahead
+  of the submodule pin e7377ae (`pumas_cam-release_v1.41`), with the
+  reflectivity lines identical, so the edit cherry-picks cleanly. Plan:
+  in the submodule rename `origin` to `escomp`, add the fork as `origin`;
+  commit the edit on a branch off the pin (`refl-single-division`, for
+  local builds), cherry-pick onto `escomp/main_cam`
+  (`refl-single-division-pr`), push, open the PR against `main_cam`. Keep
+  the local pin (moving to `main_cam` would change answers). PR text:
+  not bit-for-bit in general -- the 5 reflectivity diagnostics change by
+  rounding on every compiler, nothing feeds back; nvhpc CPU and GPU now
+  agree (c07g 624/624). Pointing atmospheric_physics at the fork's branch
+  needs a `.gitmodules` URL change: do it with the submodule-pointer
+  updates.
+  2026-11-12: also cherry-picked onto the PUMAS branch `props-device`
+  (`13cd79d`) for CPU/GPU bit-for-bit there; it may go upstream with that
+  branch's PR instead of alone (the user decides).
+- `zm-convr-init-gathered-outputs` — **Upstream the `zm_convr` output
+  initialization.** Added 2026-11-11 (c07a replay). `zm_convr_run` now
+  zeroes the intent(out) `mu`, `eu`, `du`, `md`, `ed`, `dp` over all
+  columns (they were written only for the first `lengath`, and not at
+  all when nothing convects). Local edit in the atmospheric_physics
+  `xdsl-support` working tree, kept out of the `wv_saturation` PR by
+  request; a small separate PR (bit-for-bit expected; confirm with a
+  regression).
+- **ID: `capture-gpu-status-own-kernels`. Resolved (2026-11-11)** -- CHANGELOG.md L14950.
+- **ID: `gpu-port-hack-convect-shallow`. Resolved (2026-11-11)** -- CHANGELOG.md L14909.
+- `gpu-port-zm-convr` — **GPU port of `zm_convr`.** Added 2026-11-11
+  (the only CPU-ONLY driver left in capture_zm after the `zm_conv_evap`
+  port). `schemes/zhang_mcfarlane/zm_convr.F90` (~2640 lines), the deep
+  convection core of the `zm` suite (and cam4). Needs
+  `gpu-port-wv-saturation`: `qsat_hPa` is called per point inside column
+  loops (cape/buoyancy and the cloud-top search). Gathers convecting
+  columns (`lengath`) before the core, so the port needs the gather and
+  scatter on the device; module settings come from `zm_conv_options`.
+  Test: its GPU replay (capture_zm `test_zm_convr`, zero tolerance).
+- **ID: `gpu-port-zm-conv-evap`. Resolved (2026-11-11)** -- CHANGELOG.md L14878.
 - `gpu-port-gw-orographic` — **GPU port of
   `gravity_wave_drag_prepare_profiles` and
   `gravity_wave_drag_orographic`.** Added 2026-11-05. The two CPU-only
@@ -2462,6 +2493,29 @@ Supporting items (not tracked elsewhere):
   history_output and CAM-SIMA `cam_history`. Test: Kessler and cam4 GPU
   FPHYStest bit-for-bit against the nvhpc CPU baseline (avg normalization
   order must match), plus history_output's own unit tests on CPU.
+  Todo (2026-11-12): **history output of derived-type data the scheme
+  keeps on the device -- PUMAS's process rates.** Since
+  `pumas-proc-rates-residency` (user's option (b)), a GPU build keeps
+  `proc_rates` (`proc_rates_type`, 119 arrays) on the device for the
+  `micro_pumas_ccpp_run` call only and never copies it back; the host
+  copies are unset. Nothing outputs them today (`pumas_diagnostics_run` is
+  a placeholder in no suite). The design has to cover them: the cap never
+  moves derived-type data (`gpu-ddt-deep-copy-residency`), so the copy
+  cannot be the cap's. Costs to weigh: averaged (`'A'`) fields need every
+  step's values (accumulated every step), instantaneous ones only on
+  written steps, inactive fields none -- usually a handful of the 119 or
+  none; copying all ~80 that `micro_pumas_tend` writes every call was
+  option (1), rejected. A per-field `update self(...) if(active)` in
+  `pumas_diagnostics` is the pattern dropped with
+  `gpu-diagnostics-conditional-sync`. Device-resident buffers would let
+  `history_out_field` accumulate the components on the device directly,
+  but then the device copies must live until the diagnostics run (delete
+  in `micro_pumas_ccpp_timestep_final`, not right after
+  `micro_pumas_tend`). Until then a tripwire stops a GPU run that outputs
+  them: PUMAS `micro_pumas_diags` `proc_rates_on_host` (a parameter,
+  `.false.` under `_OPENACC`) and a check at the top of
+  `pumas_diagnostics_run` (atmospheric_physics) that returns
+  `errflg = 1` while it is false.
 - `gpu-port-vertical-diffusion-simple` — **GPU ports of the vertical
   diffusion schemes that do not call the solver.** Added 2026-11-08. Nine
   small schemes, all replayable on CPU and GPU (F2000_C4, uw_vdiff,
@@ -2724,6 +2778,7 @@ Supporting items (not tracked elsewhere):
 | `rrtmgp_inputs_setup` | `schemes/rrtmgp/rrtmgp_inputs_setup.F90` | rrtmgp | none: init/register only |
 | `rrtmgp_sw_solar_var_setup` | `schemes/rrtmgp/rrtmgp_sw_solar_var_setup.F90` | rrtmgp | none: init/register only |
 | `to_be_ccppized_temporary` | `schemes/utilities/to_be_ccppized_temporary.F90` | pumas | none: init/register only |
+| `wv_saturation` | `schemes/utilities/wv_saturation.F90` | pumas | none: init/final only (its `qsat` helpers: `gpu-port-wv-saturation`) |
 | `kessler_diagnostics` | `schemes/sima_diagnostics/kessler_diagnostics.F90` | kessler | none: stays on host (history output) |
 | `rrtmgp_cloud_diagnostics` | `schemes/sima_diagnostics/rrtmgp_cloud_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
 | `rrtmgp_diagnostics` | `schemes/sima_diagnostics/rrtmgp_diagnostics.F90` | rrtmgp | none: stays on host (history output) |

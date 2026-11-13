@@ -516,6 +516,96 @@ def test_host_use_does_not_change_device_arguments():
     assert got["temp"] == (ACC_DEVICE, "present")
 
 
+# A whole array passed to a call inside a data region that maps it was put on
+# the device for that callee (PUMAS's micro_pumas_tend passes relvar to
+# kk2000_liq_autoconversion, whose kernels use it with default(present)): not
+# a host use.
+
+def test_whole_array_passed_to_a_call_in_its_data_region_stays_either():
+    got, _ = _classify(
+        "    !$acc data copyin(ps) copy(temp)\n"
+        "    call kern(temp, ps, n)\n"
+        "    !$acc end data\n"
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin"), "temp": (ACC_EITHER, "copy")}
+
+
+def test_keyword_actual_in_its_data_region_stays_either():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    call kern(x=ps, &\n"
+        "              m=n)\n"
+        "    !$acc end data\n"
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin")}
+
+
+def test_call_outside_the_data_region_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    !$acc end data\n"
+        "    call kern(ps, n)\n"
+    )
+    assert got["ps"] == (ACC_HOST, "host use")
+
+
+def test_data_region_not_naming_the_array_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copyin(ps) copy(temp)\n"
+        "    call kern(ps, n)\n"
+        "    !$acc end data\n"
+        "    !$acc data copyin(ps)\n"
+        "    call kern(temp, n)\n"
+        "    !$acc end data\n"
+    )
+    assert got["ps"] == (ACC_EITHER, "copyin")
+    assert got["temp"] == (ACC_HOST, "host use")
+
+
+def test_section_actual_in_its_data_region_is_still_host():
+    # Only a whole array: a section may be copied into a temporary on the host.
+    got, _ = _classify(
+        "    !$acc data copy(temp)\n"
+        "    call kern(temp(:, 1), n)\n"
+        "    !$acc end data\n"
+    )
+    assert got["temp"] == (ACC_HOST, "host use")
+
+
+def test_other_host_use_in_the_data_region_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copy(temp)\n"
+        "    call kern(temp, n)\n"
+        "    temp(1, 1) = 0.0\n"
+        "    !$acc end data\n"
+    )
+    assert got["temp"] == (ACC_HOST, "host use")
+
+
+def test_nested_data_regions():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    !$acc data copy(temp)\n"
+        "    call kern(temp, ps, n)\n"
+        "    !$acc end data\n"
+        "    call kern(ps, n)\n"
+        "    !$acc end data\n"
+        "    call kern(temp, n)\n"
+    )
+    assert got["ps"] == (ACC_EITHER, "copyin")
+    assert got["temp"] == (ACC_HOST, "host use")  # the last call is outside both
+
+
+def test_omp_target_data_region():
+    got, _ = _classify(
+        "    !$omp target data map(to: ps) map(tofrom: temp)\n"
+        "    call kern(temp, ps, n)\n"
+        "    !$omp end target data\n",
+        language="omp",
+    )
+    assert got == {"ps": (ACC_EITHER, "map(to)"), "temp": (ACC_EITHER, "map(tofrom)")}
+
+
 # ── classification through callees (apply_callee_residency) ──────────────────
 # An entry point with no OpenACC of its own (micro_pumas_ccpp_run) takes its
 # arguments' residency from the callee it passes them to (micro_pumas_tend).
