@@ -84,6 +84,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
 | `cloud-optical-properties-drop-ppgrid` | ~1 day (replace `pcols` in 17 array dimensions, `pverp` in `cldclw`, drop `use ppgrid`; rk_stratiform CPU snapshot and GPU FPHYStest bit-for-bit; rerun the rk_stratiform capture and build its 11 replays) | XS |
+| `wv-sat-methods-to-utilities` | ~0.5 day (`git mv` to `schemes/utilities/`, one `wv_saturation.meta` `dependencies` line, `r8` -> `kind_phys`; one cap generation and one CPU snapshot test; small upstream PR) | XS |
 | `tropopause-find-untested-algorithms` | 1-3 days (a capture or replay that selects analytic, Stobie and WMO through `tropopause_findWithBackup`, or a pFUnit test; then port them like the other five and check CPU and GPU) | XS-S |
 | `cap-pulls-unwritten-device-data` | 1-3 days (track per variable whether any device scheme can write it; skip the pull at function/block entry when none does; cap_oracle cam4; GPU regression) | XS-S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
@@ -2341,6 +2342,31 @@ Supporting items (not tracked elsewhere):
   (ON-GPU, bit-for-bit; check the captured calls have `is_dycore_moist`
   true: all 3 c02h calls do, so the real path is covered). No GPU testmod
   for the `dme_adjust` suite yet.
+- `wv-sat-methods-to-utilities` — **Move `wv_sat_methods.F90` out of
+  `to_be_ccppized/`, next to `wv_saturation.F90` (atmospheric_physics).**
+  Added 2026-11-13; not blocking (the user's call): it does not affect the
+  capture replays, which find modules by name anywhere in the
+  atmospheric_physics checkout (`module_definitions`); only a `use` of a
+  module outside the repository blocks a replay. Since
+  `wv-saturation-ccppize`, `wv_sat_methods` is a pure library: the SVP
+  formulas plus `wv_sat_methods_init`/`wv_sat_set_default`, called only by
+  `wv_saturation_init` (a CCPP scheme that gets every constant by standard
+  name); PUMAS (`micro_pumas_v1`, `micro_mg1_0`) `use`s it directly. So no
+  CCPP scheme of its own (no `.meta`, no phases), keep the module name and
+  public interface. Steps: `git mv to_be_ccppized/wv_sat_methods.F90
+  schemes/utilities/`; `schemes/utilities/wv_saturation.meta`
+  `dependencies = ../../to_be_ccppized/wv_sat_methods.F90` ->
+  `wv_sat_methods.F90` (same change, or cap generation and the capture
+  build fail); its private `r8 = selected_real_kind(12)` -> `kind_phys`
+  from `ccpp_kinds` (AGENTS.md; same kind, bit-for-bit; keep the
+  `wv_sat_methods_init` `kind` argument, its interface). No CAM-SIMA change
+  (`cam_autogen.py` copies what remains in `to_be_ccppized/`); ESCOMP CAM's
+  `bld/configure` already has `src/atmos_phys/schemes/utilities` on its
+  Filepath. Test: cap generation of a suite with `wv_saturation` (pumas or
+  cam4) and a CPU snapshot test, bit-for-bit. Upstream: a small ESCOMP PR
+  after the `wv_saturation` CCPP-ization PR; reviewers may prefer
+  `phys_utils/` (AGENTS.md: only with human confirmation) -- propose
+  `schemes/utilities/`.
 - `cloud-optical-properties-drop-ppgrid` — **Remove CAM's `ppgrid` from
   `to_be_ccppized/cloud_optical_properties.F90` so the rk_stratiform
   schemes get capture replays (atmospheric_physics).** Added 2026-11-12.
@@ -2402,6 +2428,13 @@ Supporting items (not tracked elsewhere):
   scalar calls inside column loops: `zm_convr` (`qsat_hPa`, four sites,
   plus `qsat_water`), `prognostic_cloud_water` (`qsat`, `svp_to_qsat`,
   `estblf` per point; `findsp_vc`).
+  Done 2026-11-13, pending the GPU build and regression (CHANGELOG.md
+  `gpu-port-wv-saturation` entry): `!$acc routine seq` on the scalar path
+  in `wv_saturation` and `wv_sat_methods`, `default_idx` on the device.
+  `findsp_vc` stays host (error message); a device port of
+  `prognostic_cloud_water` calls `findsp` per point and reduces the
+  status. First device use, and so the real test: `gpu-port-zm-convr` or
+  the `prognostic_cloud_water` port. Resolve after the regression.
 - **ID: `pumas-refl-cpu-gpu-diffs`. Resolved (2026-11-11)** -- CHANGELOG.md L14838.
 - `pumas-refl-single-division-upstream` — **Upstream the PUMAS reflectivity
   rewrite.** Added 2026-11-11 (from `pumas-refl-cpu-gpu-diffs`). The local

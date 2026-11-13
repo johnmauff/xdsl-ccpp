@@ -15231,3 +15231,38 @@ perf12 (MPAS GPU node) against perf10, s/simulated day: `phys_run1` 47.32 ->
 41.87, `phys_run2` 6.73 -> 6.10, `phys_timestep_init` 0.74 -> 1.58 (per-group
 enter/exit; `constituent-residency-across-groups`), whole run 133.15 ->
 128.30.
+
+## `gpu-port-wv-saturation`: device-callable scalar `qsat` path (2026-11-13)
+
+atmospheric_physics only (`xdsl-support`, uncommitted at the time); no
+generator change. The scalar saturation routines get `!$acc routine seq`,
+so a kernel can call them per point -- needed by `zm_convr` (`qsat_hPa` ->
+`qsat_water`) and `prognostic_cloud_water` (`qsat`, `estblf`,
+`svp_to_qsat`, `findsp`):
+
+- `to_be_ccppized/wv_sat_methods.F90`: `wv_sat_svp_to_qsat`,
+  `wv_sat_qsat_water`/`_ice`/`_trans`, `wv_sat_svp_water`/`_ice`/`_trans`,
+  and the Goff-Gratch, Murphy-Koop and Bolton scalar formulas. The selected
+  method `default_idx` gets `!$acc declare create` and an `update device`
+  in `wv_sat_set_default` and `wv_sat_reset_default` (the scalar functions
+  read it on the device; the vector forms select on the host).
+- `schemes/utilities/wv_saturation.F90`: `svp_water`/`_ice`/`_trans`,
+  `estblf`, `tq_enthalpy`, `no_ip_hltalt`, `calc_hltalt`,
+  `deriv_outputs_line`, `qsat_line`, `qsat_water_line`, `qsat_ice_line`
+  and `findsp` (`findsp_vc` stays host: it writes the error message). The
+  module constants, `estbl` and `pcf` were already `declare create` with an
+  `update device` in `wv_saturation_init`.
+
+Host code is unchanged (the directives add device copies of the routines),
+so existing CPU and GPU answers should not move. No GPU caller yet: the
+device path is first exercised by the `zm_convr` or
+`prognostic_cloud_water` port, through its GPU replay and FPHYStest.
+
+Verification: `/cam-sima-test s63 pumas gpu ref` (xdsl-ccpp `main`
+996aa3e), the first nvhpc GPU build of the directives -- both modules are
+in the `Depends.nvhpc` PUMAS objects and compile `-acc`. Build and run
+PASS; cprnc of `cam.h1i.0001-01-01-01800.nc` against the nvhpc CPU
+baseline `20261109-efc0937-nvhpc` (`...cam-outfrq_pumas_derecho`): 42 of 42
+fields bit-for-bit, files identical. The full GPU regression has not been
+run with this change.
+
