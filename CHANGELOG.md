@@ -15114,8 +15114,9 @@ suite cap adds `data present(phis)`/`present(ps)` around the call and the
 host cap adds `cam_out%tbot`, `pbot`, `psl` to its `copyout` (the same
 handling as the other `cam_out` fields); the host-cap `enter data` list
 order differs (set order; differs between case groups too). Every other
-case IDENTICAL. pytest 1494 passed. Not yet run: cam4 and PUMAS GPU tests
-(bit-for-bit against the nvhpc CPU baseline expected).
+case IDENTICAL. pytest 1494 passed. GPU regression xdsl84gpu (with the
+entries below): cam4 and PUMAS GPU tests bit-for-bit against the nvhpc CPU
+baseline `20261109-efc0937-nvhpc`.
 
 ## `pumas-proc-rates-residency`: PUMAS process rates stay on the device (2026-11-12)
 
@@ -15153,3 +15154,80 @@ against the nvhpc CPU baseline `20261109-efc0937-nvhpc`;
 `micro_pumas_diags.F90` compiled `-acc`, the executable calls
 `proc_rates_device_create`/`_delete`, and the suite cap has no `update
 self` of `pumas_relvar` & co. (the classifier change, same build).
+
+## `constituent-device-residency`: CPU writers no longer keep the constituents off the GPU (2026-11-12)
+
+`resolve-constituent-residency`'s reader/writer rule (2026-11-02) made the
+constituents device data only if no CPU scheme wrote them. cam4 has CPU
+writers (`prescribed_ozone`, the radiative-gas `timestep_init`s,
+`cloud_condensate_floor`), so `lc_constituent_array` was never resident and
+every GPU user moved the whole array with its own present-or-copy clause on
+every call: per step about 70 whole-array transfers (12x
+`apply_constituent_tendencies` and 12x `qneg` in and out, 15x
+`geopotential_temp` in, ...; ~4 s/simulated day in perf08).
+
+Rule now (`_apply_constituent_rule`): the device_capable constituent
+arguments become device data when no CPU scheme writes the constituents,
+or when some device_capable scheme takes the whole array. The rest was
+already there (stages 2-3 of PR #189, never in this file): the array is
+made resident (see below for how), and the divergence machinery
+(`find_diverged_capscratch_vars`, `emit_coalesced_updates`) puts `update
+self` before each run of CPU readers/writers and `update device` after a
+run that writes; a view and the whole array share one identity in a group
+that takes the whole array. With CPU writers and only per-constituent views
+on the device nothing changes (views never make the array resident).
+`--verbose 2` lists the CPU writers it syncs. Docstrings that said views are never
+resident updated (`_emit_constituent_view_copies`, `is_constituent_view_arg`,
+ccpp_cap).
+
+cap_oracle against the previous branch, xdsl82gpu GPU cases: cam4 (SE and
+MPAS), cam7, rrtmgp, zhang_mcfarlane and mcsp change; every other case
+identical. cam4: 46 `data present(constituents)` regions around the GPU
+users; in `physics_before_coupler` 8 `update self` (before the prescribed
+writers, 3x `check_energy_chng`, `zm_convr`, `cloud_condensate_floor`, the
+rk_stratiform chain and its diagnostics) and 2 `update device` (after the
+prescribed writers, after `cloud_condensate_floor`); 3 `update self` in
+`physics_after_coupler`; ~25 whole-array transfers per step in all (host
+cap included) instead of ~70. The first pull of each group is redundant
+(the host cap just synced): `constituent-group-entry-host-current`.
+Tests: `test_constituent_residency.py` (the old CPU-writer test split into
+whole-array vs views-only, plus an end-to-end suite-cap test).
+
+**Resident only during a group call.** With this rule xdsl83gpu passed
+FPHYStest cam7/rrtmgp/zm/mcsp, but all 8 cam4 cases (SE and MPAS) failed at
+RUN: NaN in the `check_energy_gmean` reprosum (SIGFPE in DEBUG); so did
+the MPAS GPU perf case. Cause: the array was entered once in
+`ccpp_initialize_constituents` and kept, with `update device`/`update
+self` around each group call -- but the host model calls GPU-ported
+schemes directly, outside the cap: SE `dp_coupling.F90` and MPAS
+`dyn_coupling_impl.F90` call `qneg_run`, `geopotential_temp_run` and
+`update_dry_static_energy_run` on the constituents. Their present-or-copy
+clauses found the array present and used the stale device copy (dropsonde:
+GPU `geopotential_temp` `zm` NaN in every element at the init-time coupling
+call; FPHYStest has no dycore, so it passed). Fix
+(`_inject_constituent_step_syncs`): `enter data copyin` before and `exit
+data copyout` after each group call that passes the array or a view,
+instead of the `update device`/`update self` pair; no `enter data` in
+`ccpp_initialize_constituents`, no `exit data delete` in `ccpp_final`
+(`lc_const_tend` and scratch arrays unchanged). Between groups the array is
+not on the device, so direct host calls copy the current host data, as in a
+CPU-resident build; same transfer volume. cap_oracle against HEAD, all
+xdsl83gpu GPU cases: every host-cap change is that swap (45 enter/exit
+pairs; the 20 more than before are cam4's, resident now). Also: the
+generated cap depended on
+PYTHONHASHSEED (order of hoisted `enter data` clauses, e.g. cam4's `shfrc,
+qrl, lat_rad`: the lifetime analyses walk sets of scheme names);
+`GPUCcppCapPass` now sorts the lifetime maps -- cam4 caps identical under
+three seeds. Tests: `test_constituent_residency.py` (enter/exit around the
+group call, none at init/final), `test_constituent_gpu_residency.py`,
+`test_capscratch_residency.py`; pytest 1497 passed.
+
+Verification (user runs): GPU regression xdsl84gpu against the nvhpc CPU
+baseline `20261109-efc0937-nvhpc`: 33 of 34 cases RUN and BASELINE PASS,
+including all 8 cam4 cases (SE and MPAS, DEBUG and not) and FPHYStest
+cam7/rrtmgp/zm/mcsp; the one failure is the known upstream F2000_C7 RUN
+failure ("Longwave down ... negative or zero", same in xdsl82gpu/83gpu).
+perf12 (MPAS GPU node) against perf10, s/simulated day: `phys_run1` 47.32 ->
+41.87, `phys_run2` 6.73 -> 6.10, `phys_timestep_init` 0.74 -> 1.58 (per-group
+enter/exit; `constituent-residency-across-groups`), whole run 133.15 ->
+128.30.

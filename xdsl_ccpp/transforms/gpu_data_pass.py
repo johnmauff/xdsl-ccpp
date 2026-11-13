@@ -397,12 +397,14 @@ class GPUDataPass(ModulePass):
         """Wrap each call that takes a device constituent view in its own
         copy() region over those views.
 
-        The constituents are updated on the host between device calls (by
-        the host model, host-side schemes and tendency appliers writing
-        through other views of the same memory), so a device copy is never
-        kept across calls: each call copies its views in and back out.
-        Keeping lc_constituent_array resident with explicit update syncs
-        instead is backlog item constituent-device-residency.
+        When lc_constituent_array is not resident, the constituents are
+        updated on the host between device calls (by the host model,
+        host-side schemes and tendency appliers writing through other views
+        of the same memory), so each call copies its views in and back out.
+        When it is resident (resolve-constituent-residency: a device user of
+        the whole array), these regions find the views present and move
+        nothing; the syncs around CPU users come from the divergence
+        machinery (_process_diverged_capscratch_vars).
 
         Called after the blanket hostless region is built, so these
         per-call regions nest inside it.

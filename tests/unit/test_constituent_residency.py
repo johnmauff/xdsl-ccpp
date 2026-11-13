@@ -82,18 +82,40 @@ def test_all_users_on_device_makes_them_device():
     assert len(report) == len(args)
 
 
-def test_cpu_writer_keeps_them_host():
-    module = _module()
-    args = _constituent_args(module)
-    writers = [a for _, a in args if a.intent is not None and a.intent.data in ("out", "inout")]
-    assert writers
-    for _, arg in args:
+def _whole_and_view(module):
+    """apply_constituent_tendencies' whole array (const) and cld_ice_run's
+    view (cld_ice_array), memory_space cleared."""
+    args = dict(((t, a.arg_name.data), a) for t, a in _constituent_args(module))
+    for arg in args.values():
         _clear_memory_space(arg)
-        arg.properties["device_capable"] = UnitAttr()
-    writers[0].properties.pop("device_capable")  # one scheme writes on the CPU
+    return (args[("apply_constituent_tendencies_run", "const")],
+            args[("cld_ice_run", "cld_ice_array")])
+
+
+def test_cpu_view_writer_does_not_block_a_whole_array_device_user():
+    # Since constituent-residency-cpu-writers: a device user of the whole
+    # array makes the constituents resident; the CPU writer (cld_ice_run
+    # writes its view) stays host and is synced by the cap.
+    module = _module()
+    whole, view = _whole_and_view(module)
+    whole.properties["device_capable"] = UnitAttr()
+    assert view.intent.data in ("out", "inout")
+    report = resolve_constituent_residency(module)
+    assert whole.memory_space is not None and whole.memory_space.data == "device"
+    assert view.memory_space is None
+    assert any("resident, the cap syncs them around their CPU writers" in l for l in report)
+    writers = next(l for l in report if l.startswith("constituents written on the CPU (synced):"))
+    assert "cld_ice_run: 'cld_ice_array'" in writers  # (and the examples' init phases)
+
+
+def test_cpu_whole_array_writer_with_only_view_device_users_keeps_them_host():
+    # Views alone never make the array resident: nothing changes.
+    module = _module()
+    whole, view = _whole_and_view(module)
+    view.properties["device_capable"] = UnitAttr()
     (line,) = resolve_constituent_residency(module)
-    assert "stay host data" in line
-    assert all(a.memory_space is None for _, a in args)
+    assert "stay host data" in line and "apply_constituent_tendencies_run: 'const'" in line
+    assert whole.memory_space is None and view.memory_space is None
 
 
 def test_cpu_reader_does_not_block():
@@ -155,11 +177,26 @@ def _physics_run(fortran: str) -> list[str]:
     return [l.strip() for l in fortran[start:end].splitlines()]
 
 
-def test_resident_constituents_synced_around_the_group_call():
+def test_resident_constituents_entered_and_exited_around_the_group_call():
+    """The array is device data only during the group call: the host model
+    calls ported schemes directly between groups (SE/MPAS dynamics
+    coupling: qneg, geopotential_temp), and a present-but-stale device copy
+    gave them NaNs."""
     lines = _physics_run(_host_cap_fortran(make_device=True))
     call = next(i for i, l in enumerate(lines) if l.startswith("call ") and "cld_suite" in l)
-    assert "!$acc update device(lc_constituent_array)" in lines[:call]
-    assert "!$acc update self(lc_constituent_array)" in lines[call:]
+    assert "!$acc enter data copyin(lc_constituent_array)" in lines[:call]
+    assert "!$acc exit data copyout(lc_constituent_array)" in lines[call:]
+    assert not any("!$acc update" in l and "lc_constituent_array)" in l for l in lines)
+
+
+def test_resident_constituents_not_entered_at_init_nor_deleted_at_final():
+    text = _host_cap_fortran(make_device=True)
+    for fn in ("ccpp_initialize_constituents", "ccpp_final"):
+        body = text[text.index(f"{fn}("):]
+        body = body[:body.index("end subroutine")]
+        assert "lc_constituent_array)" not in "".join(
+            l for l in body.splitlines(keepends=True) if "!$acc" in l
+        ), fn
 
 
 def test_host_constituents_get_no_syncs():
@@ -230,6 +267,45 @@ def test_device_view_user_needs_no_update():
     lines = _suite_cap_run(view_reader_on_cpu=False)
     gap = _between(lines, "apply_constituent_tendencies_run", "cld_ice_run")
     assert not any("!$acc update" in l for l in gap), gap
+
+
+def test_cpu_view_writer_synced_after_the_rule_makes_them_resident():
+    # End to end from the rule: the device_capable whole-array user is
+    # promoted, so the CPU writer of a view gets the whole array pulled
+    # before it and pushed back after it.
+    from io import StringIO
+
+    from xdsl_ccpp.backend.print_ftn import print_to_ftn
+    from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
+    from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
+    from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
+    from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
+    from xdsl_ccpp.transforms.suite_cap import SuiteCAP
+    from xdsl_ccpp.transforms.suite_kinds import MetaKind
+
+    module = _module()
+    whole, _view = _whole_and_view(module)
+    whole.properties["device_capable"] = UnitAttr()
+    resolve_constituent_residency(module)
+    ctx = Context()
+    for dialect in (builtin.Builtin, func.Func, arith.Arith, CCPP, CCPPUtils):
+        ctx.load_dialect(dialect)
+    for pass_cls in (MetaKind, SuiteCAP):
+        pass_cls().apply(ctx, module)
+    GPUDataPass(directive="acc").apply(ctx, module)
+    for pass_cls in (CCPPCAP, GenerateKinds, StripCCPP):
+        pass_cls().apply(ctx, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    text = out.getvalue()
+    assert "!$acc enter data copyin(lc_constituent_array)" in text
+    start = text.index("subroutine cld_suite_physics(")
+    lines = [l.strip() for l in text[start:text.index("end subroutine cld_suite_physics", start)]
+             .splitlines()]
+    before = _between(lines, "apply_constituent_tendencies_run", "cld_ice_run")
+    assert "!$acc update self(const)" in before, before
+    after = _between(lines, "cld_ice_run", "apply_constituent_tendencies_run")
+    assert "!$acc update device(const)" in after, after
 
 
 def test_view_reader_ignored_when_array_not_resident():

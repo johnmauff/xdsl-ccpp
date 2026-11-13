@@ -9,16 +9,23 @@ arguments, pointer slices into lc_constituent_array). Under rule (a)
 present-or-copy clauses are "either" (device_capable), so the constituents
 stay host data and every such scheme copies them in and out on each call.
 
-Reader/writer rule (decided 2026-11-02): the constituents become device
-data when no CPU scheme writes them -- every scheme argument resolving to
-lc_constituent_array with intent out/inout is device or device_capable.
-Then every device_capable constituent argument gets memory_space =
-device, and the existing machinery takes over: lc_constituent_array is
-made resident (ccpp_cap framework_var_residency), CPU readers of the
-whole array get update self (find_diverged_capscratch_vars), and the
-views' per-call copy regions find the data present. If a CPU scheme
-writes the constituents, nothing changes (per-call copies, correct), and
---verbose 2 says why.
+Reader/writer rule (decided 2026-11-02, relaxed 2026-11-12): every
+device_capable constituent argument gets memory_space = device when no
+CPU scheme writes the constituents, or when some device_capable scheme
+takes the whole array. Then the existing machinery takes over:
+lc_constituent_array is made resident during each suite-group call
+(ccpp_cap framework_var_residency; enter data copyin / exit data copyout
+around each group call in the host cap), CPU readers and writers -- of the whole array or of a
+view -- get update self before and, for writers, update device after
+(find_diverged_capscratch_vars, emit_coalesced_updates: a view and the
+whole array share one identity in a group that takes the whole array),
+and the views' per-call copy regions find the data present. Only when
+CPU schemes write the constituents and nothing but per-constituent views
+is used on the device does nothing change (views never make the array
+resident; per-call copies, correct); --verbose 2 says why. (Before
+2026-11-12 any CPU writer kept them host: cam4's prescribed_ozone,
+cloud_condensate_floor, ... made every device user copy the whole array
+in and out per call.)
 
 Copy-clause residency (acc-copy-residency, decided 2026-11-08): every other
 device_capable scheme argument (not a constituent) gets memory_space =
@@ -185,26 +192,45 @@ def resolve_constituent_residency(module: builtin.ModuleOp) -> list[str]:
     return report
 
 
+def _is_whole_array(arg_op: ccpp.ArgumentOp) -> bool:
+    """A constituent argument that is the whole array (ccpp_constituents),
+    not a per-constituent view (a host-bound advected argument)."""
+    return arg_op.advected is None
+
+
 def _apply_constituent_rule(uses: list[tuple[str, ccpp.ArgumentOp]]) -> list[str]:
-    """The reader/writer rule on the constituent arguments *uses*."""
+    """The reader/writer rule on the constituent arguments *uses*.
+
+    The device_capable ones become device data when no CPU scheme writes
+    the constituents, or -- since constituent-residency-cpu-writers -- when
+    some device_capable scheme takes the whole array: that makes the array
+    resident (ccpp_cap framework_var_residency), and the CPU writers and
+    readers stay host data that the cap syncs around (whole-array update
+    self / update device, find_diverged_capscratch_vars). With CPU writers
+    and only per-constituent views on the device nothing changes: views
+    never make the array resident, so the schemes keep copying per call."""
     capable = [(t, a) for t, a in uses if a.device_capable is not None and a.memory_space is None]
     if not capable:
         return []
     cpu_writers = sorted(
         f"{t}: '{a.arg_name.data}'" for t, a in uses if _writes(a) and not _on_device(a)
     )
-    if cpu_writers:
+    if cpu_writers and not any(_is_whole_array(a) for _, a in capable):
         return [
             "constituents stay host data (written on the CPU by "
-            + ", ".join(cpu_writers) + "); schemes copy them per call"
+            + ", ".join(cpu_writers) + "; only per-constituent views are used on the "
+            "device); schemes copy them per call"
         ]
+    reason = (
+        "constituents: resident, the cap syncs them around their CPU writers"
+        if cpu_writers else "constituents: no CPU scheme writes them"
+    )
     report = []
     for table_name, arg_op in capable:
         arg_op.properties["memory_space"] = StringAttr("device")
-        report.append(
-            f"{table_name}: '{arg_op.arg_name.data}' memory_space = device "
-            "(constituents: no CPU scheme writes them)"
-        )
+        report.append(f"{table_name}: '{arg_op.arg_name.data}' memory_space = device ({reason})")
+    if cpu_writers:
+        report.append("constituents written on the CPU (synced): " + ", ".join(cpu_writers))
     return report
 
 

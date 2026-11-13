@@ -1258,8 +1258,15 @@ class GPUCcppCapPass(ModulePass):
         if ccpp_mod is None:
             return
 
-        suite_lifetimes = self._analyze_suite_var_lifetimes(ccpp_mod)
-        suite_residency_lifetimes = self._analyze_suite_residency_lifetimes(ccpp_mod)
+        # Sorted by variable: the analyses walk sets of scheme names, and a
+        # hoisted variable's enter/exit clause position follows this order,
+        # so without it the generated cap changed with PYTHONHASHSEED.
+        suite_lifetimes, suite_residency_lifetimes = (
+            {suite: dict(sorted(lts.items(), key=lambda kv: repr(kv[0]))) if lts else lts
+             for suite, lts in by_suite.items()}
+            for by_suite in (self._analyze_suite_var_lifetimes(ccpp_mod),
+                             self._analyze_suite_residency_lifetimes(ccpp_mod))
+        )
         if not any(suite_lifetimes.values()) and not any(suite_residency_lifetimes.values()):
             return
 
