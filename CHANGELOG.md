@@ -15296,12 +15296,47 @@ registry file names them, and the host passes it with the new
   scalar is a plain local, not allocatable.
 - **Builds**: the registry's sources join the driver build of every scheme
   (or setup scheme) with a handled argument, and the datatable's utility
-  files when capturing, so the model compiles them too.
+  files when a captured scheme has one, so the model compiles them too
+  (only then: a suite without the type does not build its modules).
 - **Tests**: `test_capture_ddt_handlers.py` (parser), driver IR read/
   compare per intent, and examples/ddthost end to end with a handler for
   its nested `vmr_type` (cap, driver, `.skipped` reason, fragment,
-  datatable). `pytest tests/unit`: 1512 passed.
+  datatable; no sources when no captured scheme uses a registry type).
+  `pytest tests/unit`: 1513 passed.
 
 Nothing changes without `--capture-ddt-handlers`. Next: stage 2, the
 atmospheric_physics handlers for the RTE optical properties, source
 functions and fluxes, and CAM-SIMA passing the registry.
+
+## `scheme-io-capture-rte-objects` stage 2: handlers for the RTE optical properties, sources and fluxes (2026-11-13)
+
+atmospheric_physics and CAM-SIMA only; uses stage 1's registry.
+
+- `schemes/rrtmgp/objects/ccpp_capture_rte_objects.F90` (new): write/read/
+  compare for `ty_optical_props_1scl_ccpp`, `ty_optical_props_2str_ccpp`,
+  `ty_source_func_lw_ccpp`, `ty_fluxes_broadband_ccpp` and
+  `ty_fluxes_byband_ccpp`, through RTE's public procedures: the spectral
+  part (`is_initialized`, `get_band_lims_wavenumber`/`_gpoint`,
+  `get_name`; rebuilt with `init`), `tau`/`ssa`/`g` and `top_is_at_1`
+  (rebuilt with `alloc_1scl`/`alloc_2str` and `set_top_at_1`), the LW
+  source arrays (`alloc`), and every associated flux pointer (rebuilt as
+  new arrays). A part present on one side only, or of another shape, is
+  reported as a failure. Uses only `ccpp_capture_mod` from xdsl_ccpp, and
+  is compiled only into capture builds.
+- `schemes/rrtmgp/objects/capture_handlers.txt` (new): the registry.
+- CAM-SIMA `cime_config/cam_autogen.py`: passes `--capture-ddt-handlers`
+  with that file when capturing and the file exists.
+
+Generation check (rrtmgp FPHYStest case c06a regenerated with a capture of
+`rrtmgp_pre`, sw/lw `aerosols`, sw/lw `rte`, sw/lw `calculate_fluxes`,
+`rrtmgp_post`; no build): drivers for `rrtmgp_pre` (run phase),
+`rrtmgp_sw_aerosols`, `rrtmgp_lw_aerosols`, `rrtmgp_sw_rte`,
+`rrtmgp_sw_calculate_fluxes` and `rrtmgp_lw_calculate_fluxes`, each
+fragment compiling the handler module, the datatable listing it.
+`rrtmgp_lw_rte` (`kdist`), `rrtmgp_post` and `rrtmgp_pre_init`
+(`ty_gas_concs`) stay out until stage 3.
+
+Verification: rrtmgp capture c08f (nvhpc) passed every phase and recorded
+the RTE objects as sub-groups (e.g. `rrtmgp_sw_rte_run`: the optical
+properties, `aersw`, `flux_clrsky`, `flux_allsky`); the six new drivers
+built, and all CPU replays passed. Pending (user): the GPU replays.

@@ -105,7 +105,7 @@ measured data, and will drift as items are reassessed.
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
 | `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
-| `scheme-io-capture-rte-objects` | 5-7 days left (stage 1 done 2026-11-13; stage 2: handlers for the optical-property, source-function and flux types, CAM-SIMA passing the registry, recapture rrtmgp; stage 3: `ty_gas_concs`, `kdist` by setup replay, plain-NetCDF `ccpp_io_reader`) | S |
+| `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3: `ty_gas_concs`, `kdist` by setup replay, plain-NetCDF `ccpp_io_reader`) | S |
 | `capture-interpolate-data` | 1-3 days (move or copy the few `interpolate_data` routines the physics uses into atmospheric_physics, or a capture-side stand-in like the share stubs; recapture mcsp, gw_cam7, rrtmgp) | XS-S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
@@ -1627,7 +1627,9 @@ Additions (2026-11-12, re-sized S -> S-M):
    mechanism so a setup call's output feeds a replayed argument.
 Plan (2026-11-13, three stages): (1) xdsl-ccpp: handlers from a
 registry file (`--capture-ddt-handlers`) -- **done 2026-11-13**, CHANGELOG
-`scheme-io-capture-rte-objects` stage 1; (2) atmospheric_physics handler
+`scheme-io-capture-rte-objects` stage 1; (2) -- **done 2026-11-13**,
+CPU replays pass (c08f), GPU replays pending (CHANGELOG stage 2; `rrtmgp_post`
+needs `ty_gas_concs`, so it moves to stage 3) -- atmospheric_physics handler
 module and registry in `schemes/rrtmgp/objects/` for the optical
 properties, LW source functions and fluxes, and CAM-SIMA's
 `cam_autogen.py` passing the registry: replays of `rrtmgp_pre_run`, sw/lw

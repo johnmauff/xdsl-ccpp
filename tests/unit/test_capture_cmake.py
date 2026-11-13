@@ -793,3 +793,40 @@ def test_registry_handler_captures_compares_and_builds_its_type(tmp_path):
     utilities = [el.text for el in ET.parse(tmp_path / "datatable.xml").getroot().iter("file")
                  if el.text]
     assert str(tmp_path / "ddthost" / "scheme" / "vmr_capture.F90") in utilities
+
+
+def test_registry_sources_only_where_a_handled_type_is_used(tmp_path):
+    """A registry whose types no captured scheme uses adds nothing to the
+    model build (its handlers need modules that suite does not build)."""
+    pytest.importorskip("fparser")
+    import xml.etree.ElementTree as ET
+
+    repo = tmp_path / "ddthost"
+    _run_ddthost_capture(tmp_path, flat=True, handlers=True)  # sets up the repository
+    # Regenerate with a registry whose only type no captured scheme uses.
+    registry = repo / "scheme" / "capture_handlers.txt"
+    registry.write_text(_VMR_HANDLERS.replace("handler vmr_type", "handler other_type"))
+    from xdsl_ccpp.util.capture_ddt_handlers import parse_ddt_handlers
+    parse_ddt_handlers.cache_clear()
+    out = tmp_path / "second"
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    scheme_dir = repo / "scheme"
+    options_db.update({
+        "host_files": [str(scheme_dir / "host_ccpp_ddt.meta")] + [
+            str(repo / "host_ftn" / f"{name}.meta")
+            for name in ("test_host_data", "test_host_mod", "test_host")],
+        "scheme_files": [str(scheme_dir / f"{name}.meta") for name in (
+            "make_ddt", "environ_conditions", "setup_coeffs", "temp_set",
+            "temp_calc_adjust", "temp_adjust")],
+        "suites": [str(scheme_dir / "ddt_suite.xml"), str(scheme_dir / "temp_suite.xml")],
+        "capture_scheme": ["make_ddt"],
+        "capture_test_driver_dir": str(out / "drivers"),
+        "capture_ddt_handlers": str(registry),
+        "emit_datatable": str(out / "datatable.xml"),
+        "out": str(out / "out"), "tempdir": str(out / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+    files = [el.text for el in ET.parse(out / "datatable.xml").getroot().iter("file") if el.text]
+    assert not any(f.endswith("vmr_capture.F90") for f in files)
+    assert "vmr_capture.F90" not in (out / "drivers" / "test_make_ddt.cmake").read_text()

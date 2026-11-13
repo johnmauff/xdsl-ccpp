@@ -1641,8 +1641,10 @@ class ccppMain:
         root_el = build_datatable_from_module(
             self._parse_frontend(mlir_file), cap_files, host_name=host_name,
             framework_src_dir=self.options_db.get("framework_src_dir") or "",
+            # Only when a captured scheme uses a handled type: the handlers
+            # need that type's modules, which another suite does not build.
             capture_sources=(self._capture_handler_sources()
-                             if self.options_db.get("capture_scheme") else ()),
+                             if self._handled_schemes else ()),
         )
         write_datatable(root_el, datatable_path)
         self.print_verbose_message(f"  -> Wrote datatable: {datatable_path}")
