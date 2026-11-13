@@ -85,6 +85,7 @@ from xdsl_ccpp.dialects.ccpp_utils import PointerAssignOp as CCPPPointerAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
 from xdsl_ccpp.dialects.ccpp_utils import DoLoopOp as CCPPDoLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import PreprocessorIfdefOp as CCPPPreprocessorIfdefOp
 from xdsl_ccpp.dialects.ccpp_utils import MetadataLiteralExprOp as CCPPMetadataLiteralExprOp
 from xdsl_ccpp.dialects.ccpp_utils import NullPointerExprOp as CCPPNullPointerExprOp
 from xdsl_ccpp.dialects.ccpp_utils import MethodCallExprOp as CCPPMethodCallExprOp
@@ -1380,6 +1381,13 @@ class ftnPrintContext:
                 with self.descend() as inner:
                     inner.print_block(op.body.block)
                 self.print("end do")
+            case CCPPPreprocessorIfdefOp():
+                self.print(f"#ifdef {op.macro.data}", use_prefix=False)
+                self.print_block(op.defined_body.block)
+                if op.undefined_body.block.first_op is not None:
+                    self.print("#else", use_prefix=False)
+                    self.print_block(op.undefined_body.block)
+                self.print("#endif", use_prefix=False)
             case CCPPScopedBlockOp():
                 self.print("block")
                 with self.descend() as blk:

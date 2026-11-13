@@ -14782,3 +14782,374 @@ read as `& troplev` and was dropped. Fix: strip a leading `&` from
 continuation bodies (`!$acc&`, `!$acc &`, any case);
 `test_continuation_with_leading_ampersand`. The atmospheric_physics port
 also uses the plain `!$acc` continuation form, like the earlier ports.
+
+## `wv-saturation-ccppize`: `wv_saturation` is a CCPP scheme (2026-11-11)
+
+atmospheric_physics branch `wv-saturation-ccppize` (off `xdsl-support`;
+the upstream PR is a cherry-pick onto `main`, which none of the touched
+files differ from). `wv_saturation.F90` moved from `to_be_ccppized/` to
+`schemes/utilities/` and became the scheme `wv_saturation`:
+- `wv_saturation_init` takes the namelist option `wv_sat_scheme` (new
+  `wv_saturation_namelist.xml`, group `wv_sat_nl`, default GoffGratch,
+  new standard name `control_for_saturation_vapor_pressure_method`), the
+  physconst constants `tmelt`, `h2otrip`, `epsilo`, `latvap`, `latice`,
+  `rh2o`, `cpair` by standard name, `amIRoot`/`iulog`, and returns errors
+  through errmsg/errflg. The constants are module variables, now also
+  `!$acc declare create`d and updated on the device at init.
+  `wv_saturation_final` deallocates the table.
+- No host modules remain (`physconst`, `shr_kind_mod`, `spmd_utils`,
+  `cam_logfile`, `cam_abortutils`, `shr_assert_mod`, `error_messages`
+  removed; `ccpp_kinds` only). `wv_sat_readnl` is deleted: it was never
+  called, so CAM-SIMA always ran GoffGratch and still does by default.
+- `findsp_vc` returns errmsg/errflg instead of `endrun`; its one caller,
+  `prognostic_cloud_water_run`, passes them through.
+- `to_be_ccppized_temporary` stays as an empty placeholder (user
+  decision); the 12 suites that use it (cam4/5/7 and 9 test suites) call
+  `wv_saturation` right after it. 8 scheme `.meta` files point their
+  `dependencies` at the new path.
+- `wv_sat_methods.F90` stays in `to_be_ccppized/`: PUMAS's
+  `micro_pumas_ccpp.meta` (ESCOMP/PUMAS submodule) names that path, so
+  moving it needs a PUMAS PR (`wv-sat-methods-move`).
+
+The kit at `ccpp_conversion_kit/` (CAM-to-CCPP conversion process) was
+used only in part: its conventions and framework notes, `ccpp_lint.py`
+and the reviewer checklist; its CAM-side phases (splice in CAM,
+snapshots, dropsonde) do not apply to code already in atmospheric_physics.
+
+Checks: a generation diff of the cam4 GPU caps (xdsl79gpu inputs, base =
+`xdsl-support` atmos_phys, head = the branch, same xdsl-ccpp) shows only
+the new `wv_saturation_init`/`_final` calls and their arguments (data
+movement unchanged apart from known clause-order noise). Declaring the
+init dummies `real(r8)` through the local `r8 => kind_phys` alias drew
+"kind mismatch (meta='kind_phys', source='r8')"; they are declared
+`kind_phys`. With the old file no longer failing to parse
+(`open(newunit=...)` in `wv_sat_readnl`), generation now notes that
+`compute_cloud_fraction_run` calls OpenACC code (`svp_ice_vect`) -- caps
+unchanged; relevant to `gpu-port-wv-saturation`. Regressions: xdsl80n
+(nvhpc CPU vs 20261109-efc0937-nvhpc) and xdsl80gpu (GPU vs the same CPU
+baseline) bit-for-bit for every `wv_saturation` user; zm and mcsp CPU
+abort on their deliberate 1e-11 snapshot tolerance, with history files
+cprnc-IDENTICAL to the baseline. xdsl80g (gnu, 33 cases) and xdsl80i
+(intel, 34) pass every snapshot check, including intel's own pumas and
+mcsp snapshots, except intel zm, which differs as before (gnu snapshot,
+as in xdsl76i). F2000_C7 fails at RUN on every compiler (upstream,
+missing PUMAS inputs).
+
+## Recaptures after `wv-saturation-ccppize`; `zm_convr` and PUMAS fixes (2026-11-11)
+
+Recaptured with the CCPP-ized `wv_saturation` (c07a zm, c07b hack_shallow,
+c07c rk_stratiform, c07d uw_vdiff, c07e/c07g pumas). The capture's
+module-state setup replays `wv_saturation_init` before each scheme that
+reads its state (no xdsl-ccpp change needed), so the drivers that did not
+build or failed before now build: `zm_convr`, `zm_conv_evap` (zm and
+hack_shallow), `hack_convect_shallow`, `bretherton_park_diff`,
+`micro_pumas_ccpp` (no more NaNs from an unset `h2otrip`); c07c adds
+`prognostic_cloud_water` and `compute_cloud_fraction`.
+
+Two scheme fixes found by the new replays (local, uncommitted; upstream
+PRs pending, see BACKLOG):
+- `zm_convr` (atmospheric_physics, `xdsl-support` working tree): the
+  intent(out) outputs `mu`, `eu`, `du`, `md`, `ed`, `dp` were written only
+  for the first `lengath` (convective) columns, and not at all when no
+  column convects. The replay allocates fresh arrays, so columns past
+  `lengath` held whatever was in memory (`test_zm_convr` failed `md`,
+  `du`, `ed`, `dp` with a zero max abs diff, i.e. bit-pattern-only
+  mismatches). `zm_convr_run` now zeroes them over all columns before the
+  early return. Model answers unchanged (those columns were 0 in the host
+  arrays and nothing reads them).
+- PUMAS (`micro_pumas_v1.F90` reflectivity loop, PUMAS submodule working
+  tree): the GPU replay failed 5 radar-reflectivity diagnostics (`refl`,
+  `arefl`, `areflz`, `csrfl`, `acsrfl`) by ~1 ulp while 604 other outputs
+  matched. nvfortran computes `qi*rho/icldm*1000/0.1` on the CPU as
+  `(qi*rho*1000)/(icldm*0.1)` (2 divisions) and on the GPU in source order
+  (3); not caused by `-O3 -fastsse`, vectorization or the math library
+  (a standalone CPU vs GPU test of the operations is bit-identical), and
+  explicit parentheses do not stop it. Rewritten with one division per
+  term (`qi*rho*1.e4_r8/icldm`, `qsout*rho*1.e4_r8`): c07g CPU and GPU
+  replays both pass 624/624. Changes only these diagnostics, by rounding,
+  on every compiler; they are in no regression history.
+
+Gotcha: a GPU replay build partly made on a login node fails to link on a
+GPU node (`nvlink fatal: ... ABI version '8' is incompatible with target
+ABI version '7'`), and with `-k` ctest then runs the previous executable,
+reporting stale results. Build GPU replays on a GPU node, from an empty
+build directory when in doubt.
+
+## `gpu-port-zm-conv-evap` and `compute_cloud_fraction`: GPU ports through the vector `qsat` (2026-11-11)
+
+Two `qsat` callers ported to OpenACC (atmospheric_physics `xdsl-support`,
+uncommitted; `GPU_SCHEME_OBJS` in ccs_config `Depends.nvhpc`). Neither needed
+device-callable `qsat`: both call the vector forms (`qsat_vect`,
+`qsat_water_vect`, `svp_ice_vect`) from the host, and those already run
+their own kernels on present-or-copy data. A data region in each scheme
+keeps `es`/`qs` (and the scheme's other locals) on the device, so the
+`qsat` kernels work on device data with no transfer.
+
+- `zm_conv_evap_run`: one data region; the top-down evaporation pass is one
+  thread per column with levels sequential (loop order swapped from levels
+  outer, columns inner; each column's operations unchanged); the `prec_gen`
+  conversions became per-column statements.
+- `compute_cloud_fraction`: namelist module variables `!$acc declare create`
+  plus `update device` at init (as `tropopause_find`); the run phase is one
+  data region with `collapse(2)` pointwise kernels, `kernels` around the
+  array zeroing, and the inversion search one thread per column (levels in
+  order, so the first most stable level still wins). The statement function
+  `land(i)` became its expression (not usable in device code); the
+  never-read `ierror` (a race on the device) and `cldbnd` were removed.
+
+Verified (capture replays, fresh `build_gpu` on a GPU node, zero
+tolerance): `zm_conv_evap` ON-GPU and passing in capture_zm and
+capture_hack_shallow, `compute_cloud_fraction` ON-GPU and passing in
+capture_rk_stratiform (RK path only: `cldfrc_ice = .false.`, so the ice
+cloud options are not exercised); every GPU test in those three
+directories passes; so does every CPU test (rebuilt 14:47 from the
+edited sources, whose loop order changed on the CPU too). `zm_convr` remains
+CPU-ONLY (not ported; `gpu-port-zm-convr`).
+
+## `gpu-port-hack-convect-shallow`: GPU port of `hack_convect_shallow` (2026-11-11)
+
+OpenACC port of `schemes/hack_shallow/hack_convect_shallow.F90`
+(atmospheric_physics `xdsl-support`, uncommitted; `GPU_SCHEME_OBJS` in
+ccs_config `Depends.nvhpc`). No device-callable `qsat` needed: like
+`zm_conv_evap`, both `qsat` calls are vector calls from the host, whose
+kernels run on the scheme's device data.
+
+- Module constants: `!$acc declare create` plus `update device` at init;
+  `qhalf` is `!$acc routine seq`.
+- Host-only work first, before the data region: the water vapor index and
+  each constituent's `const_props(m)%is_dry`, read once into a plain
+  logical array (the property DDT stays off the device). The original
+  called `is_dry` per level and constituent and ignored its error flag;
+  an error now returns.
+- `kloop` (top-down levels) stays on the host. Per level, one column
+  kernel does the cloud model, the overshoot checks, the mass flux, the
+  thermodynamic updates and the constituent transport (constituents in
+  order per column). The original gathered the convecting columns
+  (`indx1`/`len1`); no column reads another's data, so a mask
+  (`convect(i)`) replaces the gather and the per-column loops fuse. The
+  constituent transport picks the dry or moist `1/pdel` per point instead
+  of copying whole `pd`/`rpd`/`pm` arrays per constituent and level (`pd`,
+  `pm` were never read).
+- The mid-level `qsat` for levels `k` and `k-1` runs over all columns
+  (pointwise, so each point's value is the same) and a scatter kernel
+  keeps the convecting columns' results. `cycle kloop` when nothing
+  convects was dropped: the skipped work changes nothing then.
+- Final tendencies as kernels; `rliq_sh` summed per column in the
+  original level order. `debug_verbose` blocks (off) `update self` what
+  they print.
+
+Verified (capture_hack_shallow replay, zero tolerance, fresh builds):
+`test_hack_convect_shallow` passes on the CPU (15:10) and ON-GPU (15:12,
+1528 kernel launches including `hack_convect_shallow_run`, `qsat_vect`,
+`calc_hltalt_vect`, `deriv_outputs_vect`). Every scheme in the
+hack_shallow capture list now runs on the GPU (7 of 7). Not covered by the
+replay: the `rpdeldry` branch unless a captured constituent is dry. Next
+full-model check: `SMS_Ln2...FPHYStest...outfrq_hack_shallow_derecho_gpu`
+in the next `nvhpc gpu compare=` regression.
+
+## `capture-gpu-status-own-kernels`: ON-GPU counts only the scheme's own kernels (2026-11-11)
+
+`gpu_kernel_report()` in `/glade/derecho/scratch/dennis/build_capture_tests.sh`
+(the replay script; not part of xdsl-ccpp) marked a test ON-GPU when any
+OpenACC kernel launched during its replay, so a scheme that is not ported
+but calls OpenACC helpers counted as GPU-enabled. Now each launch's
+`file=` (from `NV_ACC_NOTIFY`) is matched against the scheme's own
+source -- the source listed in `test_<scheme>.cmake` that defines a
+`<scheme>_<phase>` subroutine:
+
+- ON-GPU: at least one kernel from the scheme's own source.
+- CALLEE-GPU (new): kernels only from routines it calls.
+- CPU-ONLY, NOT-BUILT, FAILED: unchanged.
+
+`gpu_kernels.txt` and `capture_gpu_status.txt` gain an `own` column (own
+launches) before `launches` (all launches). Checked by running the new
+classifier on the existing GPU ctest logs (no rebuild): exactly four
+tests change, ON-GPU -> CALLEE-GPU: `micro_pumas_ccpp` (PUMAS's kernels;
+the wrapper has no directives), `pumas_post_main` (data regions around
+PUMAS kernels, its own loops on the CPU), `prognostic_cloud_water`
+(`wv_saturation` `qsat` kernels only) and `bretherton_park_diff` (no
+directives). Corrected count: 66 unique schemes ON-GPU (110 tests),
+4 CALLEE-GPU. The capture directories' own status files change format on
+the next `build_capture_tests.sh --arch gpu` run.
+
+## `gpu-pumas-testmod`: PUMAS GPU FPHYStest (step 1 of `gpu-fphystest-pumas`) (confirmed 2026-11-12)
+
+The PUMAS FPHYStest runs on the GPU and matches the nvhpc CPU run
+bit-for-bit. Pieces (CAM-SIMA, all committed: `80245f0`, `1993662`,
+`605f837`):
+
+- Testmod `cam/outfrq_pumas_derecho_gpu`: includes
+  `outfrq_pumas_derecho`, sets `OPENACC_GPU_OFFLOAD=TRUE`,
+  `GPU_TYPE=a100`, `NGPUS_PER_NODE=4`, `OVERSUBSCRIBE_GPU=TRUE`, 24 ranks
+  (6 per GPU). Judged only against the CPU test (zero tolerance), so its
+  `shell_commands` delete the inherited `ncdata_check*` and
+  `min_difference` settings; the open question of a looser snapshot
+  tolerance on the GPU went away with that.
+- `testlist_cam.xml`: `SMS_Ln2` nvhpc, category `aux_sima_gpu`, paired
+  with an `SMS_Ln2` nvhpc CPU reference in `aux_sima` (PUMAS gets `-acc`
+  only when `DEBUG=FALSE`).
+- The first run (s47b) aborted on `qic(:vlen)` not present: host-only
+  arrays passed to PUMAS's `default(present)` kernels by
+  `pumas_post_main`; fixed 2026-11-06 with data regions there
+  (`gpu-port-pumas-interface-schemes`).
+
+Evidence: xdsl80gpu and xdsl81gpu (`nvhpc gpu
+compare=20261109-efc0937-nvhpc`): RUN, BASELINE (GPU against the CPU
+baseline, cprnc "IDENTICAL") and MEMLEAK PASS; NLCOMP FAIL is the new
+`wv_sat_nl` group, expected. `micro_pumas_v1.F90` and
+`micro_pumas_utils.F90` compile with `-acc
+-gpu=cc80,lineinfo,nofma,math_uniform -Knoieee`. The CPU reference
+(xdsl81n `SMS_Ln2`) passes its snapshot check ("No differences found!",
+`min_difference = 2e-9`).
+
+## `pumas-nvhpc-optimized-cpu-snapshot`: optimized nvhpc CPU PUMAS matches its snapshot and the GPU run (confirmed 2026-11-12)
+
+The first optimized (`SMS_Ln2`) nvhpc CPU PUMAS run, s54b (2026-11-06),
+aborted in the snapshot check with large, few-point differences (rain
+number 4.4, rain mixing ratio 0.99), and the CPU/GPU pair could not be
+compared. Fixed by two changes, both made before this check:
+
+- ccs_config: the nvhpc production rules no longer use `-Mfprelaxed`
+  (PUMAS had `-Mfprelaxed=sqrt`; see the `capture-size-bounds` entry,
+  "Related, outside xdsl-ccpp"). PUMAS now compiles on the CPU with
+  `-O3 -fastsse -Mnofma -Mflushz -Knoieee -noacc`.
+- CAM-SIMA `69930ce`: the pumas testmod's
+  `cross_compiler_min_difference = 2e-9` (nvhpc against the intel
+  snapshot; `min_difference = 2e-15` stays for intel).
+
+The flag isolation planned against `SMS_D_Ln2` (s54a) was not needed:
+with `-Mfprelaxed` gone, the large differences are gone. The flag-or-tolerance
+decision is settled: the flags changed (CPU/GPU agree bit for bit), and the
+2e-9 tolerance is only the cross-compiler one.
+
+Evidence: xdsl81n `SMS_Ln2` nvhpc pumas (CPU): snapshot check "No
+differences found!" at `min_difference = 2e-9`, RUN and BASELINE PASS;
+xdsl80gpu/xdsl81gpu GPU test against that CPU baseline: cprnc
+"IDENTICAL" (zero tolerance).
+
+## `gpu-port-pumas-interface-schemes`: `pumas_post_main` fully on the GPU; the PUMAS suite's own schemes are ported (2026-11-12)
+
+`pumas_post_main` (atmospheric_physics, uncommitted) was the last of the
+PUMAS suite's per-step CPU schemes; `micro_pumas_ccpp_dimensions_pre`,
+`micro_pumas_ccpp_dimensions_post` and `micro_pumas_ccpp_optics_limiter`
+were ported earlier (in `GPU_SCHEME_OBJS`, ON-GPU in the replays). Its
+first step (2026-11-06) only put data regions around its two PUMAS
+size-distribution calls; its own arithmetic stayed on the host.
+
+- One `!$acc data` region over the scheme: `copyin` of the 11 input fields
+  and `mg_ice_props`/`mg_liq_props`, `copyout` of the 7 outputs (exactly
+  `ncol` wide, `horizontal_loop_extent`), `create` of the 12 local arrays.
+- Kernel 1 (`parallel loop collapse(2)`, all levels): the inputs of the
+  size-distribution calls (`icimrst`, `niic`, `rei = 25`, `rho`, `icwmrst`,
+  `ncic`, `mu`, `lambdac`) and `qs`, `ns`, `qg`, `ng`.
+- The `size_dist_param_basic`/`_liq` level loops are unchanged (host
+  loops, one PUMAS kernel per call).
+- Kernel 2 (`collapse(2)`): every former `where` block as a per-point `if`,
+  same expressions in the same order and the same level ranges (`rei`
+  over all levels; `mu` reset, `rel`, snow and graupel diameters from
+  `trop_cloud_top_lev`); `dsout2`, `desm`, `dgout2` become private
+  scalars.
+- PUMAS (submodule branch `props-device`, uncommitted): `!$acc routine seq`
+  in the elemental `avg_diameter` (`micro_pumas_utils.F90`), called per
+  point from kernel 2.
+
+The PUMAS submodule branch `props-device` now also carries the
+reflectivity rewrite (`13cd79d`, cherry-picked from `f44fb77`; the user
+needs CPU/GPU bit-for-bit now). Without it the c07g replay of
+`micro_pumas_ccpp` failed on the CPU in the 5 reflectivity diagnostics
+(<= 2.8e-14): c07g was captured with the rewrite.
+
+Verification (user, `build_capture_tests.sh --tests pumas`, c07g):
+CPU 8/8 and GPU 8/8 pass; `pumas_post_main` ON-GPU (8 own launches of
+1400). Full model: GPU test s61 (`SMS_Ln2...cam-outfrq_pumas_derecho_gpu`,
+xdsl-ccpp `main` 72f4788, PUMAS `props-device` with the reflectivity
+rewrite and `avg_diameter` routine): RUN and MEMLEAK PASS, history file
+cprnc "IDENTICAL" against the nvhpc CPU baseline `20261109-efc0937-nvhpc`
+(the reflectivity diagnostics are not on the FPHYStest history file). In
+the suite cap the `update self(airT_in, pmid_in, strat_cldfrc_in, const)`
+before `pumas_post_main` and the `update device(effc, effi, deffi, ...)`
+after it are gone; `pumas_post_main` now gets a per-call `data copy` of
+its 8 constituent views (`constituent-device-residency`). Run-phase data
+movement left in the PUMAS suite: the constituent views (`data copy`
+around `dimensions_pre`, `pumas_post_main` and `airq_in`), the 4 host
+arguments of `micro_pumas_ccpp_run` (`update self`), `proc_rates` inside
+PUMAS, and `update self` before `sima_state_diagnostics` (history).
+
+## Capture driver: derived types compared by the CPU build only; classifier: a mapped array passed to a call is not a host use (2026-11-12)
+
+Two xdsl-ccpp changes made for `pumas-proc-rates-residency`.
+
+**Capture test driver.** A new reusable op, `PreprocessorIfdefOp`
+(`ccpp_utils.preprocessor_ifdef`: `#ifdef <macro>` / `#else` / `#endif`,
+printed by `print_ftn` at the enclosing indentation). With a directive
+(always, in the generated drivers), `_DriverBuilder.compare_components`
+puts a derived-type output's component compares in the `#else` of
+`#ifdef USE_GPU`, and a GPU build prints `SKIP: <name> (derived type) not
+compared in a GPU build (call <n>)` instead. xdsl-ccpp never moves
+derived-type data -- the scheme does (`gpu-ddt-deep-copy-residency`) -- so
+in a GPU build the host copy need not be the result: PUMAS now keeps
+`proc_rates` on the device only. The CPU replay of the same capture still
+compares every component. Tests: `test_capture_driver_ir.py` (3 new).
+
+**Residency classifier** (`fparser2_to_meta._note_host_uses`). An "either"
+argument referenced in the entry point's host code becomes host data
+(`acc-copy-residency`). A whole array passed (bare name, positional or
+keyword) to a `call` inside a structured data region (`!$acc data` /
+`!$omp target data`) whose clauses name it is no longer such a reference
+(`_mapped_call_arguments`): the routine mapped it for that callee. PUMAS's
+`micro_pumas_tend` passes `relvar`, `accre_enhan`, `rndst`, `nacon` that way
+to `kk2000_liq_autoconversion`, `contact_freezing`, ... (their own kernels,
+`default(present)`), so they stayed host and the suite cap pulled them
+before every `micro_pumas_ccpp_run` for nothing. A section actual, a call
+outside the region, a region not naming the array, or any other host
+reference still makes it host. Tests:
+`test_fparser2_to_meta_memory_space.py` (8 new).
+
+cap_oracle `diff` against `main`, all 34 xdsl81gpu cases: pumas and cam7
+caps lose `!$acc update self(pumas_relvar, pumas_accre_enhan, pumas_rndst,
+pumas_nacon)`; cam4: `set_surface_coupling_vars` passes `phis`, `ps` and
+the bottom-level `tbot`/`pbot`/`psl` to `calc_sea_level_pressure` (own
+`parallel loop`) inside its data region, so they become device data: the
+suite cap adds `data present(phis)`/`present(ps)` around the call and the
+host cap adds `cam_out%tbot`, `pbot`, `psl` to its `copyout` (the same
+handling as the other `cam_out` fields); the host-cap `enter data` list
+order differs (set order; differs between case groups too). Every other
+case IDENTICAL. pytest 1494 passed. Not yet run: cam4 and PUMAS GPU tests
+(bit-for-bit against the nvhpc CPU baseline expected).
+
+## `pumas-proc-rates-residency`: PUMAS process rates stay on the device (2026-11-12)
+
+`micro_pumas_tend`'s data region copied about 80 `proc_rates` components
+(`proc_rates_type`, 119 allocatable arrays, owned by the suite cap) back
+to the host on every call, and nothing read them (`pumas_diagnostics_run`
+is a placeholder in no suite). User's choice (option (b)): device-only, no
+copy back. Changes, all uncommitted at the time:
+
+- PUMAS (submodule branch `props-device`): `micro_pumas_diags.F90` gets
+  `proc_rates_device_create(pr)` / `proc_rates_device_delete(pr)` (plain
+  `type(proc_rates_type)` dummies; `enter data create` / `exit data delete`
+  of the parent and of each `allocated()` component). `micro_pumas_ccpp_run`
+  calls the create after its allocate and the delete right after
+  `micro_pumas_tend`: the device copies live for the call only, so nothing
+  stays mapped between calls (the replay makes back-to-back run calls and
+  the `intent(out)` frees the host components on entry). The allocation
+  stays per step (`pumas-proc-rates-allocate-once`).
+- Tripwire (user's option (2)): `micro_pumas_diags` parameter
+  `proc_rates_on_host` (`.false.` under `_OPENACC`); the
+  `pumas_diagnostics_run` placeholder (atmospheric_physics) returns
+  `errflg = 1` while it is false, so a GPU run that outputs the process
+  rates stops instead of writing unset host values (its `errmsg`/`errflg`
+  fixed to `intent(out)`). Proper output: todo under
+  `gpu-history-accumulate`.
+- ccs_config `Depends.nvhpc`: `micro_pumas_diags.o` in `PUMAS_OBJS` (it was
+  compiled `-noacc`).
+- xdsl-ccpp: the capture driver compares derived-type outputs in a CPU
+  build only (see the capture-driver/classifier entry above).
+
+Verification: capture replays from c07g with regenerated drivers, CPU and
+GPU (user); PUMAS GPU test s62 (`SMS_Ln2...cam-outfrq_pumas_derecho_gpu`):
+RUN and MEMLEAK PASS, `END OF MODEL RUN`, history cprnc "IDENTICAL"
+against the nvhpc CPU baseline `20261109-efc0937-nvhpc`;
+`micro_pumas_diags.F90` compiled `-acc`, the executable calls
+`proc_rates_device_create`/`_delete`, and the suite cap has no `update
+self` of `pumas_relvar` & co. (the classifier change, same build).

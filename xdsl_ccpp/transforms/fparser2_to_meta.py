@@ -752,11 +752,26 @@ def _classify_acc_residency(
 
     interpret = _acc_directive if language == "acc" else _omp_directive
     bodies: list[tuple[int, int]] = []
+    # Structured data regions: (first line, last line, the dummies their
+    # clauses name), for _note_host_uses.
+    data_regions: list[tuple[int, int, set[str]]] = []
+    open_regions: list[tuple[int, set[str]]] = []
     for index, (line_no, text) in enumerate(directives):
         words, clauses = _split_directive(text, f"{filename}:{line_no}")
+        if _is_data_region_end(words, language):
+            if open_regions:
+                start, region_names = open_regions.pop()
+                data_regions.append((start, line_no, region_names))
+            continue
         if not words or words[0] in ("end", "routine", "wait", "atomic", "cache"):
             continue
         named, compute = interpret(words, clauses)
+        if _is_data_region_start(words, language):
+            open_regions.append((line_no, {
+                name for _category, _how, arg_text in named
+                for name, is_component in _clause_variables(arg_text)
+                if not is_component and name in decl_map
+            }))
         for category, how, arg_text in named:
             for name, is_component in _clause_variables(arg_text):
                 if name not in decl_map:
@@ -794,7 +809,7 @@ def _classify_acc_residency(
                     result.note(name, ACC_DEVICE, line_no, how)
                 else:
                     result.note(name, ACC_EITHER, line_no, "implicit")
-    _note_host_uses(sub, source_lines, bodies, result)
+    _note_host_uses(sub, source_lines, bodies, data_regions, result)
     return result
 
 
@@ -894,17 +909,71 @@ def apply_callee_residency(acc_residency: dict[str, AccResidency]) -> list[str]:
     return report
 
 
+def _is_data_region_start(words: list[str], language: str) -> bool:
+    """A structured data construct's directive: `!$acc data`, `!$omp
+    target data` (not `enter`/`exit data`)."""
+    if language == "acc":
+        return words[:1] == ["data"]
+    return words[:2] == ["target", "data"]
+
+
+def _is_data_region_end(words: list[str], language: str) -> bool:
+    """The end directive of a structured data construct."""
+    if language == "acc":
+        return words[:2] == ["end", "data"]
+    return words[:3] == ["end", "target", "data"]
+
+
+def _mapped_call_arguments(sub, data_regions: list[tuple[int, int, set[str]]],
+                           names: set[str]) -> set[tuple[int, str]]:
+    """(line, name) for each of *names* passed whole (a bare name) to a
+    call inside a structured data region whose clauses name it: the routine
+    put it on the device for that callee (PUMAS's micro_pumas_tend passes
+    `relvar` to kk2000_liq_autoconversion, whose own kernels use it with
+    default(present)), so the reference is not a use on the host."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    exempt: set[tuple[int, str]] = set()
+    if not data_regions:
+        return exempt
+    for call in walk(sub, f03.Call_Stmt):
+        span = _node_line_span(call)
+        if span is None:
+            continue
+        mapped = set()
+        for first, last, region_names in data_regions:
+            if first < span[0] and span[1] < last:
+                mapped |= region_names
+        if not mapped:
+            continue
+        actual_list = call.children[1]
+        bare = set()
+        for item in (actual_list.items if actual_list is not None else ()):
+            if isinstance(item, f03.Actual_Arg_Spec):
+                item = item.children[1]
+            if isinstance(item, f03.Name):
+                bare.add(str(item).lower())
+        for name in bare & mapped & names:
+            exempt.update((line_no, name) for line_no in range(span[0], span[1] + 1))
+    return exempt
+
+
 def _note_host_uses(sub, source_lines: list[str], bodies: list[tuple[int, int]],
+                    data_regions: list[tuple[int, int, set[str]]],
                     result: AccResidency) -> None:
     """Turn the "either" arguments that the entry point's execution part
     also references outside every compute construct body (*bodies*) into
-    ACC_HOST (see there), at the first such line."""
+    ACC_HOST (see there), at the first such line. A whole array passed to
+    a call inside a data region that maps it is not such a reference
+    (_mapped_call_arguments)."""
     import fparser.two.Fortran2003 as f03
     from fparser.two.utils import walk
 
     either = {name for name, use in result.args.items() if use.category == ACC_EITHER}
     if not either:
         return
+    exempt = _mapped_call_arguments(sub, data_regions, either)
     parts = [_node_line_span(p) for p in walk(sub, f03.Execution_Part)]
     for part in parts:
         if part is None:
@@ -913,6 +982,8 @@ def _note_host_uses(sub, source_lines: list[str], bodies: list[tuple[int, int]],
             if any(first <= line_no <= last for first, last in bodies):
                 continue
             for name in _referenced_names(source_lines, line_no, line_no, skip_inquired=True) & either:
+                if (line_no, name) in exempt:
+                    continue
                 result.args[name] = AccArgUse(ACC_HOST, line_no, "host use")
                 either.discard(name)
 

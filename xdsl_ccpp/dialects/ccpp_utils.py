@@ -1778,6 +1778,39 @@ class CppIncludeOp(IRDLOperation):
 
 
 @irdl_op_definition
+class PreprocessorIfdefOp(IRDLOperation):
+    """Two alternative regions selected at compile time by whether a
+    preprocessor macro is defined.
+
+    Emits::
+
+        #ifdef {macro}
+        {defined_body}
+        #else
+        {undefined_body}
+        #endif
+
+    (the ``#else`` part only when ``undefined_body`` has ops). The bodies
+    print at the enclosing statement's indentation. Used by the capture test
+    driver, one source built for both the CPU and the GPU (``USE_GPU``), for
+    the statements that differ between the two builds.
+    """
+
+    name = "ccpp_utils.preprocessor_ifdef"
+    macro          = prop_def(StringAttr)
+    defined_body   = region_def("single_block")
+    undefined_body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, macro: str, defined_ops: list, undefined_ops: "list | None" = None):
+        super().__init__(
+            properties={"macro": StringAttr(macro)},
+            regions=[Region([Block(defined_ops)]), Region([Block(undefined_ops or [])])],
+        )
+
+
+@irdl_op_definition
 class ExternCGuardOp(IRDLOperation):
     """Wraps a region in the ``#ifdef __cplusplus`` / ``extern "C"`` guard
     block used by every generated C++-interop header.
@@ -3339,6 +3372,7 @@ CCPPUtils = Dialect(
         DerivedTypeDefOp,
         CppIncludeOp,
         ExternCGuardOp,
+        PreprocessorIfdefOp,
         CFunctionSigOp,
         CppFieldDeclOp,
         CppStructDefOp,
