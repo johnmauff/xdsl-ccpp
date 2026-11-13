@@ -74,17 +74,15 @@ measured data, and will drift as items are reassessed.
 | `pumas-proc-rates-allocate-once` | 1-3 days (lazy allocate in the run or an init dimension, `inout` intent, device copies with the allocation, recapture, CPU/GPU replay and PUMAS GPU test) plus ESCOMP/PUMAS review; first a profile showing it matters | XS-S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-port-dme-adjust` | 1-2 days (host-side constituent mask, one column-parallel kernel, capture replay CPU+GPU; on hold) | XS |
-| `gpu-port-wv-saturation` | 2-5 days after the recapture (device `qsat` path through `wv_saturation`: `!$acc routine seq`, constants already on the device; `wv_sat_methods` already has its directives; tested through the `zm_conv_evap` GPU replay) | S |
 | `pumas-refl-single-division-upstream` | <1 day plus PUMAS review (one-file PR, submodule bump) | XS |
 | `zm-convr-init-gathered-outputs` | <1 day plus review (6 lines, regression run) | XS |
-| `gpu-port-zm-convr` | 8-15 days after `gpu-port-wv-saturation` (~2640-line scheme; gather/scatter over convecting columns, scalar `qsat_hPa` inside column loops, module state from `zm_conv_options`; GPU replay in capture_zm) | M |
+| `gpu-port-zm-convr` | 8-15 days (~2640-line scheme; gather/scatter over convecting columns, scalar `qsat_hPa` inside column loops, module state from `zm_conv_options`; GPU replay in capture_zm) | M |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
 | `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
 | `cloud-optical-properties-drop-ppgrid` | ~1 day (replace `pcols` in 17 array dimensions, `pverp` in `cldclw`, drop `use ppgrid`; rk_stratiform CPU snapshot and GPU FPHYStest bit-for-bit; rerun the rk_stratiform capture and build its 11 replays) | XS |
-| `wv-sat-methods-to-utilities` | ~0.5 day (`git mv` to `schemes/utilities/`, one `wv_saturation.meta` `dependencies` line, `r8` -> `kind_phys`; one cap generation and one CPU snapshot test; small upstream PR) | XS |
 | `tropopause-find-untested-algorithms` | 1-3 days (a capture or replay that selects analytic, Stobie and WMO through `tropopause_findWithBackup`, or a pFUnit test; then port them like the other five and check CPU and GPU) | XS-S |
 | `cap-pulls-unwritten-device-data` | 1-3 days (track per variable whether any device scheme can write it; skip the pull at function/block entry when none does; cap_oracle cam4; GPU regression) | XS-S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
@@ -107,7 +105,8 @@ measured data, and will drift as items are reassessed.
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
 | `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
-| `scheme-io-capture-rte-objects` | 6-10 days (handlers for the RTE optical-property, source-function and flux types through their public procedures, with compare for outputs; then `ty_gas_concs`; `kdist` by setup-scheme replay; handler registry supplied by the physics side; tests; recapture rrtmgp and c03e) | S-M |
+| `scheme-io-capture-rte-objects` | 5-7 days left (stage 1 done 2026-11-13; stage 2: handlers for the optical-property, source-function and flux types, CAM-SIMA passing the registry, recapture rrtmgp; stage 3: `ty_gas_concs`, `kdist` by setup replay, plain-NetCDF `ccpp_io_reader`) | S |
+| `capture-interpolate-data` | 1-3 days (move or copy the few `interpolate_data` routines the physics uses into atmospheric_physics, or a capture-side stand-in like the share stubs; recapture mcsp, gw_cam7, rrtmgp) | XS-S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
 | `dropsonde-cuda-gdb-device-read` | 6-10 days (1-2 feasibility, 2-3 address table in xdsl-ccpp, 3-5 cuda-gdb read in dropsonde and `compare_captures.py`) | S-M |
 | `scheme-io-capture-ctest-automation` | 2-4 days (only the in-repo `examples/` registration is left; the generated driver build exists) | S |
@@ -115,7 +114,7 @@ measured data, and will drift as items are reassessed.
 | `acc-host-written-device-arg` | 1-2 days (classifier: written-in-kernel flag on ACC_HOST arguments; warning when device data elsewhere; tests) | XS |
 | `scheme-io-capture-callee-device-args` | 1-2 days (device arguments from the present/copy clauses of the procedures a scheme calls, via the closure's call graph; tests; pumas GPU replay) | XS-S |
 | `scheme-io-capture-generation-speed` | 1-2 days (scan the repository and source roots with the `--jobs` pool and seed the main process; closures only for schemes defining a read module; measure on c03e) | XS-S |
-| `wv-sat-methods-move` | <1 day plus a coordinated PUMAS PR (one `dependencies` path in `micro_pumas_ccpp.meta`, PUMAS submodule bump, `git mv`) | XS |
+| `wv-sat-methods-move` | <1 day plus a coordinated PUMAS PR (`git mv`; `dependencies` paths in PUMAS `micro_pumas_ccpp.meta` and `wv_saturation.meta`, PUMAS submodule bump; cap generation and a CPU snapshot test) | XS |
 | `scheme-io-capture-mpi-reach-renames` | 0.5 day (follow USE-renamed procedures in `mpi_reach`, as `module_state_access` does; test; check which captured phases it newly leaves out) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
@@ -1486,6 +1485,21 @@ Moving it to `schemes/utilities/` beside `wv_saturation.F90` needs a
 one-line PUMAS PR and the PUMAS submodule bump in the same
 atmospheric_physics PR (else cam5, cam7 and pumas fail at generation).
 Do it with the next PUMAS change; build-only, no answer change.
+Details added 2026-11-13: not blocking (the user's call) -- the capture
+replays find modules by name anywhere in the atmospheric_physics checkout
+(`module_definitions`), so the location does not matter to them. Keep it
+a pure library (no `.meta`, no phases; module name and public interface
+unchanged): `wv_saturation_init` is its only initializer and PUMAS
+(`micro_pumas_v1`, `micro_mg1_0`) `use`s it directly. The same commit
+changes `schemes/utilities/wv_saturation.meta`
+`dependencies = ../../to_be_ccppized/wv_sat_methods.F90` to
+`wv_sat_methods.F90`, and may switch its private `r8` to `kind_phys`
+(same kind, bit-for-bit; keep the `wv_sat_methods_init` `kind`
+argument). No CAM-SIMA change; ESCOMP CAM's `bld/configure` already has
+`src/atmos_phys/schemes/utilities` on its Filepath. Test: cap generation
+of pumas and cam4, and a CPU snapshot test. Upstream: propose
+`schemes/utilities/` (reviewers may prefer `phys_utils/`, which needs
+human confirmation per AGENTS.md).
 
 **ID: `scheme-io-capture-mpi-reach-renames`. The MPI check does not follow
 renamed procedures.** Added 2026-11-06. `mpi_reach` follows calls by
@@ -1611,6 +1625,34 @@ Additions (2026-11-12, re-sized S -> S-M):
    `wv_saturation_init` before the pumas replay) sets module state, but
    `kdist` is an argument the setup scheme produces: extend the
    mechanism so a setup call's output feeds a replayed argument.
+Plan (2026-11-13, three stages): (1) xdsl-ccpp: handlers from a
+registry file (`--capture-ddt-handlers`) -- **done 2026-11-13**, CHANGELOG
+`scheme-io-capture-rte-objects` stage 1; (2) atmospheric_physics handler
+module and registry in `schemes/rrtmgp/objects/` for the optical
+properties, LW source functions and fluxes, and CAM-SIMA's
+`cam_autogen.py` passing the registry: replays of `rrtmgp_pre_run`, sw/lw
+`aerosols`, `sw_rte`, sw/lw `calculate_fluxes`, `rrtmgp_post`; (3) `kdist`
+by setup replay (a setup output feeding a replayed argument), the
+`ty_gas_concs` handler (`dims=` for ncol/nlay) and a plain-NetCDF
+`ccpp_io_reader` submodule: `inputs`, both `mcica`, both `gas_optics`,
+`lw_rte`. Phases using `radiation_utils` stay blocked by
+`capture-interpolate-data`.
+
+**ID: `capture-interpolate-data`. CAM-SIMA's `interpolate_data` blocks
+capture replays.** Added 2026-11-13. `src/utils/interpolate_data.F90` is a
+CAM-SIMA host module (`interp_type`, `lininterp_init`, `lininterp`,
+`lininterp_finish`, `vertinterp`), so a capture driver that needs it is
+not built. Users: `mcsp` (`vertinterp`; c08d), `gw_common` -- and so the
+CAM7 gravity-wave schemes `moving_mountain`, `convection_deep`,
+`frontogenesis`, `ridge_beta` (c08e) -- and RRTMGP's `radiation_utils`
+(`get_mu_lambda_weights_ccpp`) and both `cloud_optics`, which also blocks
+both `gas_optics_pre`, `inputs_setup`, `sw_solar_var(_setup)` and
+`rrtmgp_constituents` (they use `radiation_utils`). Options: move the
+routines the physics uses into atmospheric_physics (upstream PR), or a
+capture-side stand-in as for `shr_log_mod`/`shr_sys_mod`
+(`framework_src/capture_stubs`) -- but a stand-in must reproduce the real
+interpolation bit for bit, so a copy is a stand-in in name only. Check
+which routines each user needs first.
 
 **ID: `scheme-io-capture-group-replay`. Replay a whole generated group
 subroutine.** Added 2026-10-28. Per-scheme replay checks one scheme's
@@ -2342,31 +2384,6 @@ Supporting items (not tracked elsewhere):
   (ON-GPU, bit-for-bit; check the captured calls have `is_dycore_moist`
   true: all 3 c02h calls do, so the real path is covered). No GPU testmod
   for the `dme_adjust` suite yet.
-- `wv-sat-methods-to-utilities` — **Move `wv_sat_methods.F90` out of
-  `to_be_ccppized/`, next to `wv_saturation.F90` (atmospheric_physics).**
-  Added 2026-11-13; not blocking (the user's call): it does not affect the
-  capture replays, which find modules by name anywhere in the
-  atmospheric_physics checkout (`module_definitions`); only a `use` of a
-  module outside the repository blocks a replay. Since
-  `wv-saturation-ccppize`, `wv_sat_methods` is a pure library: the SVP
-  formulas plus `wv_sat_methods_init`/`wv_sat_set_default`, called only by
-  `wv_saturation_init` (a CCPP scheme that gets every constant by standard
-  name); PUMAS (`micro_pumas_v1`, `micro_mg1_0`) `use`s it directly. So no
-  CCPP scheme of its own (no `.meta`, no phases), keep the module name and
-  public interface. Steps: `git mv to_be_ccppized/wv_sat_methods.F90
-  schemes/utilities/`; `schemes/utilities/wv_saturation.meta`
-  `dependencies = ../../to_be_ccppized/wv_sat_methods.F90` ->
-  `wv_sat_methods.F90` (same change, or cap generation and the capture
-  build fail); its private `r8 = selected_real_kind(12)` -> `kind_phys`
-  from `ccpp_kinds` (AGENTS.md; same kind, bit-for-bit; keep the
-  `wv_sat_methods_init` `kind` argument, its interface). No CAM-SIMA change
-  (`cam_autogen.py` copies what remains in `to_be_ccppized/`); ESCOMP CAM's
-  `bld/configure` already has `src/atmos_phys/schemes/utilities` on its
-  Filepath. Test: cap generation of a suite with `wv_saturation` (pumas or
-  cam4) and a CPU snapshot test, bit-for-bit. Upstream: a small ESCOMP PR
-  after the `wv_saturation` CCPP-ization PR; reviewers may prefer
-  `phys_utils/` (AGENTS.md: only with human confirmation) -- propose
-  `schemes/utilities/`.
 - `cloud-optical-properties-drop-ppgrid` — **Remove CAM's `ppgrid` from
   `to_be_ccppized/cloud_optical_properties.F90` so the rk_stratiform
   schemes get capture replays (atmospheric_physics).** Added 2026-11-12.
@@ -2392,49 +2409,7 @@ Supporting items (not tracked elsewhere):
   the 11 replays CPU and GPU (`build_capture_tests.sh --tests
   rk_stratiform`). Unblocks replay-based GPU ports of the RK
   macro/microphysics chain.
-- `gpu-port-wv-saturation` — **Device `qsat` for the convection
-  schemes.** Added 2026-11-05. `hack_convect_shallow` and `zm_conv_evap`
-  (and `zm_convr`, `compute_cloud_fraction`, `prognostic_cloud_water`)
-  call `qsat` from `src/physics/ncar_ccpp/schemes/utilities/wv_saturation.F90`
-  (~1450 lines; a CCPP scheme since `wv-saturation-ccppize`; generic
-  `qsat` over `qsat_line`/`qsat_vect`/`qsat_2D`,
-  built on `wv_sat_methods`). Calling it inside a kernel needs
-  `!$acc routine seq` on the call path down to `wv_sat_methods` and
-  its module data present on the device. Since `wv-saturation-ccppize`
-  the constants (`epsilo`, `latvap`, `latice`, `rh2o`, `cpair`, `tmelt`,
-  `h2otrip`) are `wv_saturation` module variables with `!$acc declare
-  create` and an `update device` at init, beside `estbl`, `omeps`, `c3`,
-  `pcf`; still host-only: `wv_sat_methods`' `default_idx` (the selected
-  method). Generation now notes that `compute_cloud_fraction_run` calls
-  OpenACC code (`svp_ice_vect`) without directives of its own.
-  `to_be_ccppized/wv_sat_methods.F90` already has its OpenACC (55
-  directives, used from PUMAS's kernels); the gap is the `wv_saturation`
-  wrapper (`qsat`, `qsat_water`, `calc_hltalt`, ... `!$acc routine seq`)
-  and its module constants (`!$acc declare`, `update device` after init).
-  Decided 2026-11-09: no standalone `qsat` test. First recapture zm,
-  hack_shallow, rk_stratiform and pumas (`/cam-sima-capture`) and check
-  the CPU replays of `zm_convr`, `zm_conv_evap`, `hack_convect_shallow`,
-  `compute_cloud_fraction`, `prognostic_cloud_water` and
-  `micro_pumas_ccpp` now build and pass (pumas failed with NaNs from an
-  unset `h2otrip`); the capture's module-state setup must run
-  `wv_saturation_init` (fix the capture if not; it does). Then this,
-  tested through the GPU replays of its in-kernel callers (zero
-  tolerance). Prerequisite for `gpu-port-zm-convr`.
-  Narrowed 2026-11-11: `zm_conv_evap` and `compute_cloud_fraction` were
-  ported without it (CHANGELOG.md L14878) -- they call the vector forms
-  from the host, which already run their own kernels on present data.
-  `hack_convect_shallow` was ported the same way (CHANGELOG.md L14909).
-  Still needed for the
-  scalar calls inside column loops: `zm_convr` (`qsat_hPa`, four sites,
-  plus `qsat_water`), `prognostic_cloud_water` (`qsat`, `svp_to_qsat`,
-  `estblf` per point; `findsp_vc`).
-  Done 2026-11-13, pending the GPU build and regression (CHANGELOG.md
-  `gpu-port-wv-saturation` entry): `!$acc routine seq` on the scalar path
-  in `wv_saturation` and `wv_sat_methods`, `default_idx` on the device.
-  `findsp_vc` stays host (error message); a device port of
-  `prognostic_cloud_water` calls `findsp` per point and reduces the
-  status. First device use, and so the real test: `gpu-port-zm-convr` or
-  the `prognostic_cloud_water` port. Resolve after the regression.
+- `gpu-port-wv-saturation` — resolved 2026-11-13, see CHANGELOG.md L15235.
 - **ID: `pumas-refl-cpu-gpu-diffs`. Resolved (2026-11-11)** -- CHANGELOG.md L14838.
 - `pumas-refl-single-division-upstream` — **Upstream the PUMAS reflectivity
   rewrite.** Added 2026-11-11 (from `pumas-refl-cpu-gpu-diffs`). The local

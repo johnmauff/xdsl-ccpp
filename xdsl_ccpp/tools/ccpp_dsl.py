@@ -28,6 +28,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     set_verbosity,
     verbosity,
 )
+from xdsl_ccpp.util.capture_ddt_handlers import parse_ddt_handlers
 from xdsl_ccpp.util.errors import CcppInputError, report_input_errors, warn_once
 from xdsl_ccpp.util.options_db import coerce_list_option
 
@@ -444,6 +445,16 @@ class ccppMain:
                  "named by absolute path in the drivers' CMake build.",
         )
         parser.add_argument(
+            "--capture-ddt-handlers",
+            default=None,
+            metavar="FILE",
+            help="Only meaningful together with --capture-scheme: a registry "
+                 "of capture handlers for derived types the capture cannot "
+                 "record itself (format: xdsl_ccpp.util.capture_ddt_handlers). "
+                 "Their sources are compiled into the model and into the "
+                 "test drivers that use a handled type.",
+        )
+        parser.add_argument(
             "--capture-label",
             default=None,
             metavar="LABEL",
@@ -678,6 +689,12 @@ class ccppMain:
         for root in options_db["capture_source_root"]:
             if not os.path.isdir(root):
                 raise ValueError(f"--capture-source-root '{root}' is not a directory")
+        if options_db.get("capture_ddt_handlers"):
+            handlers = os.path.abspath(options_db["capture_ddt_handlers"])
+            if not os.path.isfile(handlers):
+                raise ValueError(f"--capture-ddt-handlers '{handlers}' is not a file")
+            options_db["capture_ddt_handlers"] = handlers
+            parse_ddt_handlers(handlers)  # report a malformed registry now
         options_db["jobs"] = int(options_db.get("jobs") or 1)
         if options_db["jobs"] < 1:
             raise ValueError("--jobs must be at least 1")
@@ -1242,6 +1259,11 @@ class ccppMain:
                 capture_opts.append("role=setup")
             if getattr(self, "_ddt_layouts", ""):
                 capture_opts.append(f'ddt_layouts="{self._ddt_layouts}"')
+            handlers = self.options_db.get("capture_ddt_handlers")
+            if handlers:
+                # Quoted and escaped as test_driver_dir is, below.
+                escaped = handlers.replace("\\", "\\\\").replace('"', '\\"')
+                capture_opts.append(f'ddt_handlers="{escaped}"')
             if directive:
                 # Needed so the pass knows whether/how to sync a
                 # device-resident argument to the host immediately before
@@ -1619,6 +1641,8 @@ class ccppMain:
         root_el = build_datatable_from_module(
             self._parse_frontend(mlir_file), cap_files, host_name=host_name,
             framework_src_dir=self.options_db.get("framework_src_dir") or "",
+            capture_sources=(self._capture_handler_sources()
+                             if self.options_db.get("capture_scheme") else ()),
         )
         write_datatable(root_el, datatable_path)
         self.print_verbose_message(f"  -> Wrote datatable: {datatable_path}")
@@ -1852,6 +1876,11 @@ class ccppMain:
         return capture_provided_modules(
             support_sources(os.path.join(out_dir, "ccpp_kinds.F90"), kind_srcs))
 
+    def _capture_handler_sources(self) -> tuple:
+        """The --capture-ddt-handlers registry's sources (none without one)."""
+        registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
+        return registry.sources if registry else ()
+
     def _plan_ddt_layouts(self, mlir_file: str, out_dir: str) -> None:
         """scheme-io-capture-ddt-args: for the derived-type arguments of the
         captured schemes (other than the constituent properties), read each
@@ -1872,6 +1901,8 @@ class ccppMain:
         meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
         provided = self._capture_provided(module, out_dir)
         schemes = {_capture_spec(spec)[0] for spec in self.options_db["capture_scheme"]}
+        registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
+        handled = set(registry.handlers) if registry else set()
         types_of: dict = {}  # scheme -> derived types of its arguments
         for op in module.walk():
             if not isinstance(op, TablePropertiesOp) or op.table_name.data not in schemes:
@@ -1880,7 +1911,11 @@ class ccppMain:
                 if not isinstance(arg, ArgumentOp):
                     continue
                 arg_type = arg.arg_type.data.lower()
-                if arg_type not in _INTRINSIC_TYPES and arg_type not in _DDT_CAPTURES:
+                if arg_type in handled:
+                    # Its registry handler's sources go into the scheme's
+                    # driver build (_write_capture_cmake).
+                    self._handled_schemes.add(op.table_name.data)
+                elif arg_type not in _INTRINSIC_TYPES and arg_type not in _DDT_CAPTURES:
                     types_of.setdefault(op.table_name.data, set()).add(arg_type)
         layouts: dict = {}
         for scheme, types in sorted(types_of.items()):
@@ -2016,6 +2051,12 @@ class ccppMain:
                 for path in self._capture_scheme_files(module, other, meta_files) or ():
                     if path not in files:
                         files.append(path)
+            if self._handled_schemes & {scheme, *(o for o, _p in self._capture_setups.get(
+                    scheme, ()))}:
+                # The --capture-ddt-handlers sources (scheme-io-capture-rte-objects).
+                for path in self._capture_handler_sources():
+                    if path not in files:
+                        files.append(path)
             for note in self._state_notes.get(scheme, ()):
                 warn_once(f"scheme I/O capture: {scheme}: {note}")
                 self._append_skipped(driver_dir, scheme, note)
@@ -2077,6 +2118,9 @@ class ccppMain:
         # option; scheme -> [why a derived type is not recorded].
         self._ddt_layouts: str = ""
         self._ddt_notes: dict = {}
+        # scheme-io-capture-rte-objects: schemes with an argument of a
+        # --capture-ddt-handlers type.
+        self._handled_schemes: set = set()
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend

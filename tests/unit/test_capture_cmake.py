@@ -689,9 +689,18 @@ def test_driver_needing_a_host_module_is_not_built(tmp_path):
 
 # scheme-io-capture-ddt-args: derived types recorded component by component.
 
-def _run_ddthost_capture(tmp_path, flat: bool):
+_VMR_HANDLERS = (
+    "# vmr_type has derived-type components: recorded by its own handler.\n"
+    "handler vmr_type module=vmr_capture type_module=make_ddt write=vmr_write "
+    "read=vmr_read compare=vmr_compare dims=horizontal_loop_end\n"
+    "source vmr_capture.F90\n"
+)
+
+
+def _run_ddthost_capture(tmp_path, flat: bool, handlers: bool = False):
     """examples/ddthost in a repository of its own, make_ddt captured;
-    *flat*: its vmr_type without the nested derived-type components."""
+    *flat*: its vmr_type without the nested derived-type components;
+    *handlers*: vmr_type in a --capture-ddt-handlers registry."""
     import shutil
 
     repo = tmp_path / "ddthost"
@@ -705,6 +714,13 @@ def _run_ddthost_capture(tmp_path, flat: bool):
     tool = ccppMain()
     options_db = tool.default_options_db()
     scheme_dir = repo / "scheme"
+    if handlers:
+        (scheme_dir / "vmr_capture.F90").write_text(
+            "module vmr_capture\n  use ccpp_capture_mod\n  use make_ddt, only: vmr_type\n"
+            "end module vmr_capture\n")
+        (scheme_dir / "capture_handlers.txt").write_text(_VMR_HANDLERS)
+        options_db["capture_ddt_handlers"] = str(scheme_dir / "capture_handlers.txt")
+        options_db["emit_datatable"] = str(tmp_path / "datatable.xml")
     options_db.update({
         "host_files": [str(scheme_dir / "host_ccpp_ddt.meta")] + [
             str(repo / "host_ftn" / f"{name}.meta")
@@ -749,3 +765,31 @@ def test_nested_derived_type_is_reported(tmp_path):
     assert "make_ddt_run: argument 'vmr' is of derived type vmr_type" in report
     assert "derived type vmr_type is not recorded: component error_maybe of type " \
         "vmr_type is ty_ddt2" in report
+
+
+def test_registry_handler_captures_compares_and_builds_its_type(tmp_path):
+    """scheme-io-capture-rte-objects: vmr_type, which the capture cannot
+    record (a derived-type component), through the handler the registry
+    names: written before and after make_ddt_run with the call's
+    horizontal_loop_end, read and compared in the driver, its source in the
+    driver build."""
+    pytest.importorskip("fparser")
+    drivers, cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True)
+    assert cap.count("call vmr_write('vmr', vmr, cole)") == 2
+    assert "use vmr_capture, only: vmr_write" in cap
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    assert "call vmr_read('in', 'vmr', vmr, cole)" in driver
+    assert "call vmr_compare('out', 'vmr', vmr, tolerance, call_count, n_failed, cole)" \
+        in driver
+    report = (drivers / "test_make_ddt.skipped").read_text()
+    assert "vmr_type is not recorded" not in report
+    # make_ddt_timestep_final has no horizontal_loop_end.
+    assert ("make_ddt_timestep_final: argument 'vmr' is of derived type vmr_type, whose "
+            "capture handler needs the call's 'horizontal_loop_end', which is not an "
+            "argument of the call") in report
+    assert "vmr_capture.F90" in (drivers / "test_make_ddt.cmake").read_text()
+    # The model compiles it too: a utility file of the datatable.
+    import xml.etree.ElementTree as ET
+    utilities = [el.text for el in ET.parse(tmp_path / "datatable.xml").getroot().iter("file")
+                 if el.text]
+    assert str(tmp_path / "ddthost" / "scheme" / "vmr_capture.F90") in utilities

@@ -15263,6 +15263,45 @@ Verification: `/cam-sima-test s63 pumas gpu ref` (xdsl-ccpp `main`
 in the `Depends.nvhpc` PUMAS objects and compile `-acc`. Build and run
 PASS; cprnc of `cam.h1i.0001-01-01-01800.nc` against the nvhpc CPU
 baseline `20261109-efc0937-nvhpc` (`...cam-outfrq_pumas_derecho`): 42 of 42
-fields bit-for-bit, files identical. The full GPU regression has not been
-run with this change.
+fields bit-for-bit, files identical. No full GPU regression: the user
+judged it unnecessary (the directives add device copies only; host code
+is unchanged). Resolved 2026-11-13.
 
+
+## `scheme-io-capture-rte-objects` stage 1: capture handlers from a registry (2026-11-13)
+
+The scheme I/O capture can now record a derived type it cannot read itself
+(private or pointer components, type extension) through handler routines
+the type's owner writes. xdsl_ccpp holds no knowledge of the types: a
+registry file names them, and the host passes it with the new
+`--capture-ddt-handlers FILE`.
+
+- **Registry** (`xdsl_ccpp/util/capture_ddt_handlers.py`, line-oriented,
+  `file:line` errors): `handler <type> module= type_module= write= read=
+  compare= [dims=<std_name>,...]` and `source <path>`. `dims` are standard
+  names of the scheme call's arguments passed to the routines after the
+  object (a handler that cannot get sizes from the object, e.g.
+  `ty_gas_concs`).
+- **Cap** (`scheme_io_capture_pass.py`): `_DdtCapture` gains `compare`,
+  `dims` and `intents`. Registry types are scalars of any intent, written
+  before the call (in/inout) and after it (out/inout) as `call
+  <write>(name, obj, dims...)`. A call without one of the `dims` standard
+  names leaves the phase out, with the reason in `test_<scheme>.skipped`.
+  The built-in constituent-properties handler is unchanged (intent(in),
+  rebuilt, not compared).
+- **Driver** (`capture_driver_ir.py`): `<read>('in', name, obj, dims...)`
+  before the call for in/inout; for out/inout `<compare>('out', name,
+  obj, tolerance, call_count, n_failed, dims...)` while the capture file
+  is open, reporting each part through `ccpp_capture_report`. A handled
+  scalar is a plain local, not allocatable.
+- **Builds**: the registry's sources join the driver build of every scheme
+  (or setup scheme) with a handled argument, and the datatable's utility
+  files when capturing, so the model compiles them too.
+- **Tests**: `test_capture_ddt_handlers.py` (parser), driver IR read/
+  compare per intent, and examples/ddthost end to end with a handler for
+  its nested `vmr_type` (cap, driver, `.skipped` reason, fragment,
+  datatable). `pytest tests/unit`: 1512 passed.
+
+Nothing changes without `--capture-ddt-handlers`. Next: stage 2, the
+atmospheric_physics handlers for the RTE optical properties, source
+functions and fluxes, and CAM-SIMA passing the registry.

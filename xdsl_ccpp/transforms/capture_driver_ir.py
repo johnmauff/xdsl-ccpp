@@ -72,8 +72,11 @@ class TestDriverParam:
     array is sized from the capture file. `is_device` asks for a device
     copy around the call (scheme-io-capture-gpu-residency). A captured
     derived-type argument (scheme-io-capture-ddt-args) has `ddt_read`, the
-    procedure (in module `ddt_read_module`) that rebuilds it, and
-    `type_module`, the module declaring its type `arg_type`; or, captured
+    procedure (in module `ddt_read_module`) that rebuilds it, `ddt_compare`
+    (same module), when given, the one that compares it with the captured
+    outputs, `ddt_dims`, the other arguments both take after the object
+    (scheme-io-capture-rte-objects), and `type_module`, the module
+    declaring its type `arg_type`; or, captured
     component by component, `components` ((name, base type, rank,
     allocatable), ...), read from and compared in the sub-group
     in/<name> and out/<name>.
@@ -88,6 +91,8 @@ class TestDriverParam:
     is_device: bool = False
     ddt_read: "str | None" = None
     ddt_read_module: "str | None" = None
+    ddt_compare: "str | None" = None
+    ddt_dims: tuple = ()
     type_module: "str | None" = None
     components: tuple = ()
 
@@ -214,7 +219,7 @@ class _DriverBuilder:
                                   allocatable=True)
             return self.local(name, i8, shape=[length])  # character(len=N) :: x
         elem = self.element_type(p)
-        if p.rank or p.ddt_read is not None:
+        if p.rank:
             return self.local(name, elem, shape=[0] * p.rank, allocatable=True)
         return self.local(name, elem)
 
@@ -404,10 +409,20 @@ class _DriverBuilder:
             kwargs.append(KeywordArgExprOp(p.name, _var(name)))
             self.declare_param(p, name)
             if p.ddt_read is not None:
-                # A derived type: rebuilt from the capture (its read
-                # allocates it), never compared.
-                array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
-                                         _str("in"), _str(p.name), _var(name)))
+                # A derived type its own handler records: rebuilt from the
+                # capture (an array one is allocated by the read) and, with
+                # a compare routine, compared with the captured outputs
+                # while the file is open; the routine reports each part.
+                def dims(p=p):
+                    return [_var(local(d)) for d in p.ddt_dims]
+                if p.category in ("in", "inout"):
+                    array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
+                                             _str("in"), _str(p.name), _var(name), *dims()))
+                if p.category in ("out", "inout") and not setup and p.ddt_compare:
+                    after_reads.append(_call(
+                        self.use(p.ddt_compare, p.ddt_read_module),
+                        _str("out"), _str(p.name), _var(name), _var("tolerance"),
+                        _var("call_count"), _var("n_failed"), *dims()))
                 continue
             if p.components:
                 # A derived type recorded component by component
