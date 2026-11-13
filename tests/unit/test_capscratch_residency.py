@@ -185,9 +185,14 @@ class TestFrameworkMappedResidency:
         init_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_initialize_constituents")
         finalize_fn = _fn_body(fortran, "ccpp_final")
 
-        assert "enter data copyin(lc_constituent_array)" in init_fn
+        # lc_constituent_array: entered/exited around each group call by the
+        # host cap (_inject_constituent_step_syncs), not at init/final.
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        assert "enter data copyin(lc_constituent_array)" in run_fn
+        assert "exit data copyout(lc_constituent_array)" in run_fn
+        assert "enter data copyin(lc_constituent_array)" not in init_fn
+        assert "lc_constituent_array" not in finalize_fn
         assert "enter data copyin(lc_const_tend)" not in init_fn
-        assert "exit data delete(lc_constituent_array)" in finalize_fn
         assert "exit data delete(lc_const_tend)" not in finalize_fn
 
     def test_no_memory_space_leaves_both_arrays_unaffected(self, run_host_match, ccpp_context):

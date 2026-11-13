@@ -215,7 +215,9 @@ def _generate_constituent_api(
 
     framework_var_residency: cap var name ("lc_constituent_array",
     "lc_const_tend") -> True if CapScratch GPU residency should be
-    established for it (see ccpp_cap.py's _build_cap_var_map): an
+    established for it (see ccpp_cap.py's _build_cap_var_map). For
+    lc_constituent_array that happens per suite-group call (ccpp_cap.py's
+    _inject_constituent_step_syncs), not here; for the others an
     AccEnterDataOp copyin directly after the array's allocate-and-initialize
     block in initialize_constituents (scratch vars with needs_gpu likewise),
     balanced by the AccExitDataOp ccpp_cap.py's _inject_capscratch_gpu_exit
@@ -812,8 +814,10 @@ def _generate_constituent_api(
             ),
         ),
     ]
-    if framework_var_residency.get("lc_constituent_array"):
-        ic_body_ops += _enter_data_copyin("lc_constituent_array", 3)
+    # A resident lc_constituent_array is not entered here: ccpp_cap.py's
+    # _inject_constituent_step_syncs enters and exits it around each suite
+    # group call (direct host calls of ported schemes between groups must
+    # not find a stale device copy).
     if needs_const_tend:
         ic_body_ops += [
             SafeDeallocOp(target_op=_ref_expr("lc_const_tend")),

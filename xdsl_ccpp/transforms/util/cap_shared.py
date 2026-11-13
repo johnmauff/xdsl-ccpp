@@ -1198,12 +1198,14 @@ def is_constituent_view_arg(arg) -> bool:
     """True for a host-bound advected arg: a CapScratch pointer view into
     lc_constituent_array (see classify_arg_ownership).
 
-    These views are never device-resident across calls. Constituents are
-    updated on the host (by the host model and by host-side schemes)
-    through other views of the same memory, so gpu_data_pass wraps each
-    device scheme call that takes a view in its own copy() region instead
-    (_emit_constituent_view_copies), and the residency, divergence and
-    debug-sync machinery skips them.
+    A view never makes lc_constituent_array resident by itself, and
+    gpu_data_pass wraps each device scheme call that takes a view in its
+    own copy() region (_emit_constituent_view_copies). When the whole array
+    is resident (a device user of it, resolve-constituent-residency), those
+    regions find the view present, and the divergence machinery counts the
+    view as lc_constituent_array (find_diverged_capscratch_vars), so CPU
+    users of a view are synced through the whole array. The residency and
+    debug-sync machinery otherwise skips views.
     """
     return (
         arg.hasAttr("advected")

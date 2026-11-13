@@ -20,9 +20,8 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AccEnterDataOp,
     AccExitDataOp,
-    AccUpdateDeviceOp,
-    AccUpdateSelfOp,
     AllocateOp,
     AssignOp,
     CallExprOp,
@@ -344,10 +343,11 @@ def _build_cap_var_map(
                              _resolved_cap_var_cv]
                         )
                         # A tendency view makes lc_const_tend (physics-owned)
-                        # device-resident. A constituent view does not: the
-                        # host model updates the constituents on the host, so
-                        # their device copies are made around the scheme
-                        # calls (generate-gpu-data), not for the cap's life.
+                        # device-resident. A constituent view does not: only a
+                        # device user of the whole array (above) makes
+                        # lc_constituent_array resident; otherwise the view's
+                        # device copies are made around the scheme calls
+                        # (generate-gpu-data), not for the cap's life.
                         if _const_std_name and _needs_gpu_cv and _resolved_cap_var_cv == "lc_const_tend":
                             framework_var_residency[_resolved_cap_var_cv] = True
                     elif _needs_gpu_cv:
@@ -398,18 +398,26 @@ def _inject_constituent_step_syncs(
     all_definitions, framework_var_residency, scratch_var_list,
     instance_local_name: "str | None" = None,
 ):
-    """constituent-device-residency, stage 2: keep the device copy of a
-    resident lc_constituent_array in step with the host model.
+    """constituent-device-residency, stage 2: make a resident
+    lc_constituent_array device data for the duration of each suite-group
+    call, and only then.
 
-    lc_constituent_array is entered once, in initialize_constituents
-    (framework_var_residency). The host model reads and writes the
-    constituents on the host between physics calls, so around every call
-    from a physics-phase function (ccpp_physics_init ... _final) into a suite
-    group that passes the array or one of its views (lc_qv, ...): an `update
-    device` of the whole array before, an `update self` after. Inside the
-    groups the device copy is current (no CPU scheme writes the
-    constituents: resolve-constituent-residency); CPU readers get their
-    own update self (generate-gpu-data).
+    Around every call from a physics-phase function (ccpp_physics_init ...
+    _final) into a suite group that passes the array or one of its views
+    (lc_qv, ...): an `enter data copyin` of the whole array before, an `exit
+    data copyout` after. Inside the group the device copy is current (CPU
+    readers and writers get their own update self / update device:
+    generate-gpu-data); outside it the array is not on the device at all.
+
+    Not entered once at init and kept (before 2026-11-12): the host model
+    calls GPU-ported schemes directly, outside the cap -- the SE and MPAS
+    dynamics coupling calls qneg_run, geopotential_temp_run and
+    update_dry_static_energy_run on the constituents -- and their
+    present-or-copy clauses then found a present but stale device copy
+    (cam4 on SE/MPAS: NaN geopotential at the first coupling call). Not
+    present between groups, those clauses copy the current host data, as
+    in a CPU-resident build. Same transfer volume as the update device /
+    update self pair it replaces.
     """
     if not framework_var_residency.get("lc_constituent_array"):
         return
@@ -438,9 +446,11 @@ def _inject_constituent_step_syncs(
         ]
         for call in calls:
             before = ref()
-            Rewriter.insert_op([before, AccUpdateDeviceOp([before.res])], InsertPoint.before(call))
+            Rewriter.insert_op([before, AccEnterDataOp(copyin=[before.res])],
+                               InsertPoint.before(call))
             after = ref()
-            Rewriter.insert_op([after, AccUpdateSelfOp([after.res])], InsertPoint.after(call))
+            Rewriter.insert_op([after, AccExitDataOp(copyout=[after.res])],
+                               InsertPoint.after(call))
 
 
 def _inject_capscratch_gpu_exit(
@@ -457,7 +467,8 @@ def _inject_capscratch_gpu_exit(
     ``lc_const_tend``, and any generic CapScratch scratch array) are
     module-global, not suite-scoped -- the exit is unconditional, in the
     combined cap's own finalize function, not gated on any suite dispatch
-    branch. Constituent-tendency scratch vars (``const_std_name`` set) are
+    branch. Not lc_constituent_array: it is resident per group call only
+    (_inject_constituent_step_syncs). Constituent-tendency scratch vars (``const_std_name`` set) are
     Fortran pointer slices into ``lc_const_tend`` -- already covered via
     ``framework_var_residency["lc_const_tend"]`` -- so only generic scratch
     vars need their own entry here.
@@ -467,8 +478,11 @@ def _inject_capscratch_gpu_exit(
     reference the matching AccEnterDataOp in initialize_constituents uses;
     the finalize function must then take that instance argument.
     """
+    # lc_constituent_array is entered and exited around each group call
+    # (_inject_constituent_step_syncs), so it is not on the device here.
     resident: dict = {
-        name: 3 for name, needed in framework_var_residency.items() if needed
+        name: 3 for name, needed in framework_var_residency.items()
+        if needed and name != "lc_constituent_array"
     }
     for lc_name, rank, _alloc_dims, cst_std, needs_gpu, _base in scratch_var_list:
         if needs_gpu and not cst_std:

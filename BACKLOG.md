@@ -64,11 +64,12 @@ measured data, and will drift as items are reassessed.
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
-| `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
+| `constituent-group-entry-host-current` | 1-2 days (flag through `emit_coalesced_updates` and its callers, set by gpu_data_pass from the host cap's group syncs; tests; cap_oracle; GPU regression) | XS |
+| `constituent-residency-across-groups` | 2-4 days (audit of the host code between groups; span-based enter/exit in the host cap; tests; cap_oracle; GPU regression; perf run) | S |
 | `constituent-residency-from-source` | 3-5 days (classifier: `enter`/`exit data` and phase-level `update` in a scheme's lifecycle routines mean "manages residency"; precedence over the automatic rule; a residency scheme and its metadata; Kessler GPU test) | S |
 | `gpu-ddt-deep-copy-residency` | not planned (2026-11-02): schemes move their own derived-type data | -- |
-| `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below plus `constituent-device-residency`; plus ESCOMP/PUMAS review time | L-XL |
-| `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below plus `constituent-device-residency` (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
+| `gpu-fphystest-pumas` | umbrella, ~20-35 days in total: the sum of its steps below; plus ESCOMP/PUMAS review time | L-XL |
+| `gpu-fphystest-rrtmgp` | umbrella, ~35-55 days in total: its steps below (items shared with `gpu-fphystest-pumas` count once if both are done) | XL |
 | `pumas-module-props-device` | code done and verified (2026-11-12); only the ESCOMP/PUMAS PR and its review left | XS |
 | `pumas-proc-rates-allocate-once` | 1-3 days (lazy allocate in the run or an init dimension, `inout` intent, device copies with the allocation, recapture, CPU/GPU replay and PUMAS GPU test) plus ESCOMP/PUMAS review; first a profile showing it matters | XS-S |
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
@@ -82,11 +83,12 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
 | `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
 | `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
+| `cloud-optical-properties-drop-ppgrid` | ~1 day (replace `pcols` in 17 array dimensions, `pverp` in `cldclw`, drop `use ppgrid`; rk_stratiform CPU snapshot and GPU FPHYStest bit-for-bit; rerun the rk_stratiform capture and build its 11 replays) | XS |
 | `tropopause-find-untested-algorithms` | 1-3 days (a capture or replay that selects analytic, Stobie and WMO through `tropopause_findWithBackup`, or a pFUnit test; then port them like the other five and check CPU and GPU) | XS-S |
 | `cap-pulls-unwritten-device-data` | 1-3 days (track per variable whether any device scheme can write it; skip the pull at function/block entry when none does; cap_oracle cam4; GPU regression) | XS-S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
-| `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes`, `dropsonde-cuda-gdb-device-read` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
+| `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes` and `dropsonde-cuda-gdb-device-read` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -1890,47 +1892,49 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   change, full test suites + a CAM-SIMA regression run. Enables
   `gpu-conversion-residency` with upstream dialects and, later, replacing
   xdsl_ccpp's hand-written `Acc*`/`Omp*` data-directive ops.
-- `constituent-device-residency` — **Constituent views and the whole
-  constituent array alias on the device: make the syncs correct by
-  construction (correctness; reclassified from performance by the user
-  2026-11-12).** Found 2026-11-12 in the PUMAS GPU cap (s61): the whole
-  array is already resident -- `enter data copyin(lc_constituent_array)`
-  in `ccpp_initialize_constituents`, `update device` at physics entry and
-  `update self` on return (host cap) -- and the per-constituent views
-  (`cldice_in`, ...) are pointers into it, so the per-call `data
-  copy(<view>)` regions find the views present and move nothing. Hazard:
-  the generator tracks a view and the whole array (`const`) as separate
-  variables, so a CPU scheme writing a view (or the whole array) on the
-  host between device schemes would leave the device copy stale with no
-  error -- the per-call `copy` meant to protect the next device call
-  degenerates to `present`. No current suite has such a writer (PUMAS
-  CPU/GPU bit-for-bit). Fix: treat views and the whole array as one
-  variable for last-writer tracking, `update self`/`update device` where
-  the writing side changes, device calls under `present`. Original
-  (performance) description: Since `advected-constituent-host-binding`,
-  `generate-gpu-data` wraps each scheme call that takes a
-  `memory_space = device` constituent view in its own
-  `!$acc data copy(<view>)` region
-  (`GPUDataPass._emit_constituent_view_copies`). That is correct by
-  construction but moves each view host→device→host on every device call,
-  every step. Instead: `enter data` `lc_constituent_array` once in
-  `<host>_ccpp_initialize_constituents` and `exit data delete` it in the
-  deallocate routine; `update device` at physics entry and `update self`
-  before returning to the host model; inside the suite, track per call
-  which side last wrote each constituent and `update self`/`update device`
-  only where that changes, run device calls under `present`. The hard
-  part is aliasing: the same memory is reached through per-constituent
-  views, the whole array (`ccpp_constituents`, e.g. `qneg`) and the
-  tendency appliers, so the existing per-cap-var divergence routing
-  (`find_diverged_capscratch_vars`) must treat a view and the whole array
-  as overlapping. The host model's syncs also change if CAM's dynamics
-  moves to the GPU. A missed sync gives silently wrong values, so it needs
-  a GPU Kessler/advection regression with physics checks. Related: a
-  device-resident whole-array `ccpp_constituents` arg still makes
-  `lc_constituent_array` resident (`framework_var_residency`), and a
-  per-call `copy` of a view of it then degenerates to `present` with no
-  sync; no current suite has that mix. Worth doing once GPU physics
-  coverage is large enough for the transfers to matter.
+- `constituent-device-residency` — resolved 2026-11-13, see CHANGELOG.md L15158.
+- `constituent-group-entry-host-current` — **Skip the first constituent
+  pull of each group.** Added 2026-11-12. `emit_coalesced_updates`
+  (cap_shared.py) starts every suite function with the host copy stale,
+  so the first run of CPU users in a group pulls the whole constituent
+  array, although the host cap's `exit data copyout` after the previous
+  group call and `enter data copyin` before this one leave host and
+  device equal.
+  cam4: ~4 of ~25 whole-array transfers per step (the pull before
+  `prescribed_ozone`, the timestep_init groups, ...). Needs a per-identity
+  "host current at entry" flag passed into the shared core (used by every
+  residency kind), set for `lc_constituent_array` when the host cap syncs
+  the group call. Tests: `test_gpu_data_coalescing.py`; cap_oracle; GPU
+  regression.
+- `constituent-residency-across-groups` — **Keep the constituents on the
+  GPU across consecutive group calls (performance).** Added 2026-11-12 from
+  perf12. Since the cam4 NaN fix (`constituent-device-residency`) the host
+  cap enters `lc_constituent_array` before and exits it (`copyout`) after
+  every group call, because SE/MPAS dynamics coupling calls ported schemes
+  (`qneg`, `geopotential_temp`) directly between groups. That costs a
+  whole-array round trip per group: perf12 (MPAS cam4 GPU)
+  `phys_timestep_init` went 0.74 -> 1.58 s/simulated day (perf10 -> perf12)
+  while `phys_run1`+`phys_run2` dropped 54.1 -> 48.0. Idea: one enter at
+  the first group call of a span and one exit at the last, where no host
+  code between the calls touches the constituents -- e.g. from the
+  timestep_init groups through `physics_before_coupler`. In CAM-SIMA
+  (`control/cam_comp.F90`, `physics/utils/phys_comp.F90`) nothing in CAM
+  runs between `cam_ccpp_physics_timestep_initial` and `phys_run1`, but the
+  NUOPC driver gets control back in between (`cam_timestep_init` and
+  `cam_run1` are separate calls), and the coupler/surface models run
+  between `phys_run1` and `phys_run2` (`cam_import` may set constituent
+  surface fluxes or the constituents themselves); `d_p_coupling` and
+  `p_d_coupling` stay outside any span. Steps: audit every host path
+  between the candidate group calls (including the null dycore's
+  `physics_read_data` in `phys_timestep_init`, before the timestep_init
+  groups); decide where the span is declared -- generator knowledge of the
+  host's call order would be host knowledge in xdsl-ccpp, so probably a
+  neutral host input (an option or metadata naming the group sequence) or
+  host-side enter/exit calls the cap exposes; then span-based
+  enter/exit in `_inject_constituent_step_syncs`. Measure first with an
+  `acc_time` perf run: which of the new timestep_init syncs (the two
+  enter/exit pairs, `update self/device(const_array)`) dominates. Related:
+  `constituent-group-entry-host-current`.
 - `constituent-residency-from-source` — **Let a scheme's own directives
   manage the constituents' device copy.** Added 2026-11-02, alongside
   `constituent-device-residency` (whose first version decides residency
@@ -2067,7 +2071,7 @@ is derived from the Fortran source's OpenACC clauses
      `micro_pumas_v1.F90`; no data-movement gain.
   4. `micro_proc_rates`: done 2026-11-12 (`pumas-proc-rates-residency`,
      CHANGELOG.md L15120); allocating it once is `pumas-proc-rates-allocate-once`.
-  5. `constituent-device-residency` — PUMAS's main inputs (cloud
+  5. `constituent-device-residency` (done 2026-11-13) — PUMAS's main inputs (cloud
      liquid/ice, number concentrations, rain, snow, graupel) are
      constituents, copied per device call today.
   6. `gpu-port-pumas-interface-schemes` (done 2026-11-12, CHANGELOG.md
@@ -2101,7 +2105,7 @@ is derived from the Fortran source's OpenACC clauses
      wrappers, if profiling asks for it, is scheme-side `enter`/`exit
      data` in their init/final (`gpu-ddt-deep-copy-residency`, not
      planned).
-  4. `constituent-device-residency` — the gas concentrations come from
+  4. `constituent-device-residency` (done 2026-11-13) — the gas concentrations come from
      constituents.
   5. `suite-cap-loop-gpu-sync` — syncs for host schemes inside the
      subcycle loop (and `package-cap-loop-gpu-sync` for the composite
@@ -2150,7 +2154,7 @@ is derived from the Fortran source's OpenACC clauses
   5. `dropsonde-cuda-gdb-device-read` — once enough schemes are ported
      that data stays on the GPU between them, dropsonde (host memory
      only) stops seeing it; read device copies through cuda-gdb.
-  6. `constituent-device-residency` — `qv`/`qc`/`qr` and the whole
+  6. `constituent-device-residency` (done 2026-11-13) — `qv`/`qc`/`qr` and the whole
      array `qneg` takes. Riskiest step (a missed sync gives silently
      wrong values); localized with dropsonde's device reads (step 5).
   7. Validation per the acceptance criteria above, on every Kessler GPU
@@ -2337,6 +2341,31 @@ Supporting items (not tracked elsewhere):
   (ON-GPU, bit-for-bit; check the captured calls have `is_dycore_moist`
   true: all 3 c02h calls do, so the real path is covered). No GPU testmod
   for the `dme_adjust` suite yet.
+- `cloud-optical-properties-drop-ppgrid` — **Remove CAM's `ppgrid` from
+  `to_be_ccppized/cloud_optical_properties.F90` so the rk_stratiform
+  schemes get capture replays (atmospheric_physics).** Added 2026-11-12.
+  All ten `rk_stratiform_*` schemes (one file,
+  `schemes/rasch_kristjansson/rk_stratiform.F90`, which uses `cldefr`) and
+  `cloud_particle_sedimentation` (`reltab`, `reitab`) have generated replay
+  drivers that are never built: `test_<scheme>.skipped` in
+  `capture_rk_stratiform` says the build "needs modules the capture build
+  cannot supply: ppgrid (used by cloud_optical_properties.F90)". In
+  CAM-SIMA `ppgrid` re-exports `physics_grid`'s `columns_on_task` and
+  `vert_coord`'s `pver`, which bring MPI and CAM grid setup with them (and
+  `pcols` would be 0 in a replay), so supplying it to the replay build is
+  not the way; teaching xdsl-ccpp about it would be host knowledge. The
+  module uses `ppgrid` only for dimensions: 17 `pcols` in dummy and local
+  array dimensions (`clwp(pcols, pver)`, ...) become `ncol` (every scheme
+  caller passes `(:ncol,:)` slices, so bit-for-bit expected); `pver` is
+  already a dummy argument almost everywhere; `cldclw`'s `pverp` becomes an
+  argument or `pver+1` (no scheme calls `cldclw` or `cldems`, so their
+  interfaces are free). Then drop `use ppgrid`. Also a step toward
+  CCPP-izing the file upstream (ESCOMP/atmospheric_physics; state answer
+  impact: none). Test: rk_stratiform CPU snapshot and GPU FPHYStest
+  bit-for-bit; rerun the rk_stratiform capture (`/cam-sima-capture`), build
+  the 11 replays CPU and GPU (`build_capture_tests.sh --tests
+  rk_stratiform`). Unblocks replay-based GPU ports of the RK
+  macro/microphysics chain.
 - `gpu-port-wv-saturation` — **Device `qsat` for the convection
   schemes.** Added 2026-11-05. `hack_convect_shallow` and `zm_conv_evap`
   (and `zm_convr`, `compute_cloud_fraction`, `prognostic_cloud_water`)

@@ -1,8 +1,12 @@
-"""initialize_constituents makes the constituent arrays and GPU scratch
+"""initialize_constituents makes the constituent tendencies and GPU scratch
 arrays device-resident with AccEnterDataOp copyins (raw-fortran-in-ir), not
 raw `!$acc` text, so passes see the enter that balances the AccExitDataOp
 ccpp_cap.py's _inject_capscratch_gpu_exit emits in ccpp_final. Both sides
 reference a multi-instance cap's arrays through lc_instances(instance).
+
+lc_constituent_array is neither entered at init nor exited at final: the
+host cap enters and exits it around each suite-group call
+(_inject_constituent_step_syncs; test_constituent_residency.py).
 """
 
 from io import StringIO
@@ -66,22 +70,24 @@ def _printed(fn) -> str:
 
 def test_residency_is_ops_not_raw_text():
     fn = _init_fn()
-    assert _entered(fn) == ["lc_constituent_array", "lc_const_tend", "lc_scratch"]
+    assert _entered(fn) == ["lc_const_tend", "lc_scratch"]
     assert "!$acc" not in str(fn)  # no directive text in the IR
 
 
 def test_printed_directives():
     text = _printed(_init_fn())
-    for name in ("lc_constituent_array", "lc_const_tend", "lc_scratch"):
+    for name in ("lc_const_tend", "lc_scratch"):
         assert f"!$acc enter data copyin({name})" in text
-    assert text.count("#ifdef USE_GPU") == 3
+    assert "lc_constituent_array)" not in text.split("enter data", 1)[1]
+    assert text.count("#ifdef USE_GPU") == 2
 
 
 def test_multi_instance_directives_reach_the_instance_component():
     fn = _init_fn(instances=InstancePair("instance", "ninstances"))
     text = _printed(fn)
-    for name in ("lc_constituent_array", "lc_const_tend", "lc_scratch"):
+    for name in ("lc_const_tend", "lc_scratch"):
         assert f"!$acc enter data copyin(lc_instances(instance)%{name})" in text
+    assert "enter data copyin(lc_instances(instance)%lc_constituent_array)" not in text
 
 
 def _final_fn(arg_names: list) -> func.FuncOp:
@@ -103,15 +109,17 @@ def _exits(fn, **kwargs) -> str:
 
 def test_exit_data_single_instance():
     text = _exits(_final_fn(["suite_name"]))
-    for name in ("lc_constituent_array", "lc_const_tend", "lc_scratch"):
+    for name in ("lc_const_tend", "lc_scratch"):
         assert f"!$acc exit data delete({name})" in text
+    assert "lc_constituent_array" not in text
 
 
 def test_exit_data_reaches_the_instance_component():
     text = _exits(_final_fn(["suite_name", "instance", "ninstances"]),
                   instance_local_name="instance")
-    for name in ("lc_constituent_array", "lc_const_tend", "lc_scratch"):
+    for name in ("lc_const_tend", "lc_scratch"):
         assert f"!$acc exit data delete(lc_instances(instance)%{name})" in text
+    assert "lc_constituent_array" not in text
 
 
 def test_exit_data_needs_the_instance_argument():
