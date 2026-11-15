@@ -33,6 +33,30 @@ def test_handlers_and_sources(tmp_path):
     assert registry.sources == (str(tmp_path / "handlers.F90"),)
 
 
+def test_driver_sources_are_kept_apart(tmp_path):
+    """driver_source: compiled into the test drivers only, so listed apart
+    from the sources the model compiles too."""
+    path = _registry(tmp_path, (
+        "handler t module=m type_module=m write=w read=r compare=c\n"
+        "source handlers.F90\n"
+        "driver_source reader.F90\n"
+    ), sources=("handlers.F90", "reader.F90"))
+    registry = parse_ddt_handlers(path)
+    assert registry.sources == (str(tmp_path / "handlers.F90"),)
+    assert registry.driver_sources == (str(tmp_path / "reader.F90"),)
+
+
+def test_device_routines(tmp_path):
+    path = _registry(tmp_path, (
+        "handler t module=m type_module=m write=w read=r compare=c "
+        "device_enter=on device_exit=off\n"
+        "handler u module=m type_module=m write=w read=r compare=c\n"
+    ))
+    registry = parse_ddt_handlers(path)
+    assert (registry.handlers["t"].device_enter, registry.handlers["t"].device_exit) == ("on", "off")
+    assert registry.handlers["u"].device_enter is None
+
+
 def test_no_registry():
     assert parse_ddt_handlers(None) is None
 
@@ -42,12 +66,16 @@ def test_no_registry():
     ("handler t module=m type_module=m write=w read=r\n", "handler t: missing compare"),
     ("handler t module=m type_module=m write=w read=r compare=c size=3\n",
      "handler t: unknown key 'size'"),
+    ("handler t module=m type_module=m write=w read=r compare=c device_enter=on\n",
+     "handler t: device_enter and device_exit go together"),
     ("handler t module=m module=n type_module=m write=w read=r compare=c\n",
      "handler t: 'module' given twice"),
     ("handler t module type_module=m write=w read=r compare=c\n",
      "handler t: expected key=value, got 'module'"),
     ("source\n", "source: expected one path"),
     ("source missing.F90\n", "source: no file"),
+    ("driver_source\n", "driver_source: expected one path"),
+    ("driver_source missing.F90\n", "driver_source: no file"),
     ("type t\n", "unknown keyword 'type'"),
 ])
 def test_malformed_lines_name_the_file_and_line(tmp_path, line, message):
@@ -62,4 +90,10 @@ def test_a_type_listed_twice(tmp_path):
     entry = "handler t module=m type_module=m write=w read=r compare=c\n"
     path = _registry(tmp_path, entry + entry)
     with pytest.raises(CcppInputError, match=r":2: handler t: listed twice"):
+        parse_ddt_handlers(path)
+
+
+def test_a_source_listed_twice(tmp_path):
+    path = _registry(tmp_path, "source handlers.F90\ndriver_source handlers.F90\n")
+    with pytest.raises(CcppInputError, match=r":2: driver_source: handlers.F90 listed twice"):
         parse_ddt_handlers(path)

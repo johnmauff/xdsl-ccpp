@@ -135,8 +135,9 @@ def _check_fortran_source(
 
     Returns (the messages, the classification of the .F90's subroutines by
     their *language* directives, "acc" or "omp": entry point -> {argument:
-    "device" | "either"}), the latter for derive_memory_space (--directive
-    acc or omp)."""
+    "device" | "either" | ...}), the latter for derive_memory_space
+    (--directive acc or omp). A derived-type argument the directives name
+    is "derived" (ACC_DERIVED), for the capture test drivers only."""
     from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
     from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
     from xdsl_ccpp.transforms.validate_source import compare_memory_space, compare_modules
@@ -168,10 +169,13 @@ def _check_fortran_source(
                 print(f"Warning: {finding}", file=sys.stderr)
             elif verbose >= 2:
                 print(f"  {finding}", file=sys.stderr)
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DERIVED
+
     classification = {
-        proc: {arg: use.category for arg, use in residency.args.items()}
+        proc: {**{arg: ACC_DERIVED for arg in residency.derived_types},
+               **{arg: use.category for arg, use in residency.args.items()}}
         for proc, residency in acc_residency.items()
-        if residency.args and proc in own_procs
+        if (residency.args or residency.derived_types) and proc in own_procs
     }
     return err.getvalue(), classification
 
@@ -453,6 +457,18 @@ class ccppMain:
                  "record itself (format: xdsl_ccpp.util.capture_ddt_handlers). "
                  "Their sources are compiled into the model and into the "
                  "test drivers that use a handled type.",
+        )
+        parser.add_argument(
+            "--capture-accel-variants",
+            action="store_true",
+            default=False,
+            help="Only meaningful together with --capture-test-driver-dir: "
+                 "the host model compiles the OpenACC version (accel/) of "
+                 "each module with a CPU and an OpenACC version even in a "
+                 "CPU build (e.g. CAM-SIMA's RRTMGP_KERNELS=accel), so the "
+                 "drivers' CPU build uses it too "
+                 "(CCPP_CAPTURE_ACCEL_VARIANTS defaults to ON) and the "
+                 "replay runs the captured model's code.",
         )
         parser.add_argument(
             "--capture-label",
@@ -1029,14 +1045,31 @@ class ccppMain:
         the driver's own enter/exit data; with --directive the derived
         memory_space already says so. Nothing else uses this: the module
         and the caps are not touched."""
+        self._capture_device_args = self._classified_args(handle, "device")
+
+    def _capture_driver_device_ddts(self, handle) -> None:
+        """--capture-test-driver-dir (with or without --directive): the
+        derived-type arguments the schemes' own directives name ("derived";
+        the caps never move derived-type data), per entry point. A test
+        driver keeps such an argument of a handled type on the device across
+        the call, through its handler's device routines, as a production
+        run with resident data would (scheme-io-capture-rte-objects)."""
+        from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DERIVED
+
+        self._capture_device_ddts = self._classified_args(handle, ACC_DERIVED)
+
+    @staticmethod
+    def _classified_args(handle, wanted: str) -> dict:
+        """{entry point: sorted arguments} the Fortran check classified as
+        *wanted*."""
         pool, reports = handle
-        device: dict = {}
+        found: dict = {}
         for report in reports:
             for table, uses in (report if pool is None else report.result())[1].items():
-                names = sorted(a for a, category in uses.items() if category == "device")
+                names = sorted(a for a, category in uses.items() if category == wanted)
                 if names:
-                    device[table] = names
-        self._capture_device_args = device
+                    found[table] = names
+        return found
 
     @staticmethod
     def _cancel_fortran_check(handle) -> None:
@@ -1259,6 +1292,11 @@ class ccppMain:
                 capture_opts.append("role=setup")
             if getattr(self, "_ddt_layouts", ""):
                 capture_opts.append(f'ddt_layouts="{self._ddt_layouts}"')
+            produced = getattr(self, "_produced", {}).get(scheme_name)
+            if produced:
+                from xdsl_ccpp.transforms.scheme_io_capture_pass import format_produced
+
+                capture_opts.append(f'produced="{format_produced(produced)}"')
             handlers = self.options_db.get("capture_ddt_handlers")
             if handlers:
                 # Quoted and escaped as test_driver_dir is, below.
@@ -1270,20 +1308,24 @@ class ccppMain:
                 # reading it for capture -- with no --directive, there's
                 # no GPU residency to sync in the first place.
                 capture_opts.append(f"directive={directive}")
-            else:
-                # The test drivers' own device data (see
-                # _capture_driver_device_args): "table:arg,...", only this
-                # scheme's entry points (the pass matches tables exactly).
-                device_args = ",".join(
-                    f"{table}:{arg}"
-                    for table, args in sorted(getattr(self, "_capture_device_args", {}).items())
-                    if table.startswith(tuple(
-                        f"{name.lower()}_"
-                        for name in [scheme_name] + [other for other, _p in setups]))
-                    for arg in args
-                )
+            # The test drivers' own device data: "table:arg,...", only this
+            # scheme's entry points (the pass matches tables exactly).
+            prefixes = tuple(f"{name.lower()}_"
+                             for name in [scheme_name] + [other for other, _p in setups])
+
+            def table_args(found: dict) -> str:
+                return ",".join(f"{table}:{arg}" for table, args in sorted(found.items())
+                                if table.startswith(prefixes) for arg in args)
+            if not directive:
+                # Arrays (_capture_driver_device_args); with --directive the
+                # derived memory_space says so.
+                device_args = table_args(getattr(self, "_capture_device_args", {}))
                 if device_args:
                     capture_opts.append(f'driver_device_args="{device_args}"')
+            # Derived types (_capture_driver_device_ddts), either way.
+            device_ddts = table_args(getattr(self, "_capture_device_ddts", {}))
+            if device_ddts:
+                capture_opts.append(f'driver_device_ddts="{device_ddts}"')
             test_driver_dir = self.options_db.get("capture_test_driver_dir")
             if test_driver_dir:
                 # Quoted, not bare: a real path routinely contains "-"/"/"
@@ -1883,6 +1925,12 @@ class ccppMain:
         registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
         return registry.sources if registry else ()
 
+    def _capture_driver_sources(self) -> tuple:
+        """The registry's driver_source files: test drivers only, never the
+        model (none without a registry)."""
+        registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
+        return registry.driver_sources if registry else ()
+
     def _plan_ddt_layouts(self, mlir_file: str, out_dir: str) -> None:
         """scheme-io-capture-ddt-args: for the derived-type arguments of the
         captured schemes (other than the constituent properties), read each
@@ -1934,6 +1982,146 @@ class ccppMain:
                         f"derived type {type_name} is not recorded: {why} "
                         f"(scheme-io-capture-ddt-args)")
         self._ddt_layouts = format_ddt_layouts(layouts.values())
+        self._layout_types = set(layouts)
+
+    # Phases that may produce an argument for the replay: they run once,
+    # before any time step.
+    _PRODUCER_PHASES = ("register", "initialize")
+
+    def _plan_produced_args(self, mlir_file: str, out_dir: str) -> None:
+        """scheme-io-capture-rte-objects stage 3b: a derived-type argument
+        the capture cannot record (no handler, no layout) does not stop a
+        phase's replay when one register/initialize phase of the suite
+        produces it (the same standard name and type, intent out): the
+        driver replays that phase first -- a setup phase
+        (scheme-io-capture-module-state-setup), or the scheme's own -- and
+        passes its result on, never comparing it. The RRTMGP gas optics
+        tables (`kdist`): rrtmgp_lw/sw_gas_optics_init rebuild them from the
+        coefficient file. Sets self._produced (the capture passes'
+        `produced` option), adds the producers to the capture and the
+        setups, and notes in test_<scheme>.skipped what is not compared.
+        Done after _plan_ddt_layouts (which types are recorded)."""
+        from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TablePropertiesOp
+        from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
+        from xdsl_ccpp.transforms.scheme_io_capture_pass import _DDT_CAPTURES, _INTRINSIC_TYPES
+        from xdsl_ccpp.transforms.util.cap_shared import split_scheme_table_name
+
+        module = self._parse_frontend(mlir_file)
+        meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
+        provided = self._capture_provided(module, out_dir)
+        registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
+        handled = set(registry.handlers) if registry else set()
+
+        def recorded(arg_type: str) -> bool:
+            return (arg_type in _INTRINSIC_TYPES or arg_type in _DDT_CAPTURES
+                    or arg_type in handled or arg_type in self._layout_types)
+
+        def attr(arg, name: str) -> str:
+            value = getattr(arg, name, None)
+            return value.data if value is not None else ""
+
+        # (scheme, phase, table) -> [ArgumentOp]; scheme -> its argument types
+        tables: dict = {}
+        types_of: dict = {}
+        for op in module.walk():
+            if not isinstance(op, TablePropertiesOp):
+                continue
+            scheme = op.table_name.data
+            for table in op.walk():
+                if not isinstance(table, ArgumentTableOp):
+                    continue
+                split = split_scheme_table_name(table.table_name.data)
+                if split is None or split[0] != scheme:
+                    continue
+                args = [a for a in table.walk() if isinstance(a, ArgumentOp)]
+                tables[(scheme, split[1], table.table_name.data)] = args
+                types_of.setdefault(scheme, set()).update(a.arg_type.data.lower() for a in args)
+
+        # (standard name, type) -> [(scheme, phase, table)] producing it
+        producers: dict = {}
+        for (scheme, phase, table), args in tables.items():
+            if phase not in self._PRODUCER_PHASES or scheme not in meta_files:
+                continue
+            for arg in args:
+                arg_type = arg.arg_type.data.lower()
+                if (attr(arg, "intent") == "out" and attr(arg, "standard_name")
+                        and not recorded(arg_type) and not attr(arg, "dimensions")):
+                    key = (attr(arg, "standard_name").lower(), arg_type)
+                    producers.setdefault(key, []).append((scheme, phase, table))
+
+        specs = list(self.options_db["capture_scheme"])
+        listed = {_capture_spec(spec)[0]: spec for spec in specs}
+        extra: dict = {}  # producer scheme not listed -> [phases]
+        for spec in specs:
+            scheme, phases = _capture_spec(spec)
+            if scheme in self._setup_only:
+                continue  # captured for other drivers only: no driver
+            wanted = phases.split(",") if phases else list(_CAPTURE_PHASES)
+            for (owner, phase, table), args in tables.items():
+                if owner != scheme or phase not in wanted:
+                    continue
+                for arg in args:
+                    arg_type = arg.arg_type.data.lower()
+                    std = attr(arg, "standard_name").lower()
+                    if (recorded(arg_type) or not std or attr(arg, "dimensions")
+                            or attr(arg, "intent") not in ("in", "inout")):
+                        continue
+                    found = producers.get((std, arg_type), [])
+                    name = arg.arg_name.data
+                    if len(found) != 1:
+                        if len(found) > 1:
+                            self._produced_notes.setdefault(scheme, []).append(
+                                f"{table}: argument '{name}' ({arg_type}) is produced by "
+                                f"several init phases ({', '.join(t for _s, _p, t in found)}), "
+                                f"so the replay cannot tell which to run")
+                        continue
+                    producer, producer_phase, producer_table = found[0]
+                    type_module = self._type_module(module, (scheme, producer), arg_type,
+                                                    meta_files, provided)
+                    if type_module is None:
+                        self._produced_notes.setdefault(scheme, []).append(
+                            f"{table}: argument '{name}' ({arg_type}): no definition of "
+                            f"the type in the sources of {scheme} or {producer}")
+                        continue
+                    if std not in self._produced.get(scheme, {}):
+                        self._produced.setdefault(scheme, {})[std] = (type_module,
+                                                                      producer_table)
+                    if producer == scheme:
+                        if phases and producer_phase not in wanted:
+                            wanted.append(producer_phase)
+                            listed[scheme] = f"{scheme}:{','.join(wanted)}"
+                        continue
+                    setups = self._capture_setups.setdefault(scheme, [])
+                    if (producer, producer_phase) not in setups:
+                        setups.append((producer, producer_phase))
+                    if producer in listed:
+                        other_phases = _capture_spec(listed[producer])[1]
+                        if other_phases and producer_phase not in other_phases.split(","):
+                            listed[producer] = f"{producer}:{other_phases},{producer_phase}"
+                    elif producer_phase not in extra.setdefault(producer, []):
+                        extra[producer].append(producer_phase)
+        # A producer captured for the drivers only: its handled argument
+        # types still bring the handler sources into those drivers.
+        for producer in extra:
+            if types_of.get(producer, set()) & handled:
+                self._handled_schemes.add(producer)
+            self._setup_only.add(producer)
+        self.options_db["capture_scheme"] = list(listed.values()) + [
+            f"{other}:{','.join(p for p in _CAPTURE_PHASES if p in phases)}"
+            for other, phases in extra.items()
+        ]
+
+    def _type_module(self, module, schemes, type_name: str, meta_files: dict,
+                     provided) -> "str | None":
+        """The module defining derived type *type_name*, from the closure
+        of the first of *schemes* whose sources define it."""
+        for scheme in schemes:
+            found = self._scheme_closure_facts(module, scheme, meta_files, provided)
+            for facts in (found[1] if found else ()):
+                for t in facts.types:
+                    if t.name == type_name and t.module:
+                        return t.module
+        return None
 
     def _plan_state_setup(self, mlir_file: str, out_dir: str) -> None:
         """scheme-io-capture-module-state-setup: for each captured scheme,
@@ -2055,12 +2243,17 @@ class ccppMain:
                         files.append(path)
             if self._handled_schemes & {scheme, *(o for o, _p in self._capture_setups.get(
                     scheme, ()))}:
-                # The --capture-ddt-handlers sources (scheme-io-capture-rte-objects).
-                for path in self._capture_handler_sources():
+                # The --capture-ddt-handlers sources (scheme-io-capture-rte-objects),
+                # and those only the drivers compile.
+                for path in (*self._capture_handler_sources(),
+                             *self._capture_driver_sources()):
                     if path not in files:
                         files.append(path)
             for note in self._state_notes.get(scheme, ()):
                 warn_once(f"scheme I/O capture: {scheme}: {note}")
+                self._append_skipped(driver_dir, scheme, note)
+            for note in self._produced_notes.get(scheme, ()):
+                # Why an argument no init produces for the replay stays unproduced.
                 self._append_skipped(driver_dir, scheme, note)
             closure = self._capture_closure(module, files, provided)
             if closure.unresolved:
@@ -2081,8 +2274,9 @@ class ccppMain:
             )
         label = self.options_db.get("capture_label")
         data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
-        for path in write_capture_cmake(driver_dir, scheme_sources, support, data_dir,
-                                        scheme_variants):
+        for path in write_capture_cmake(
+                driver_dir, scheme_sources, support, data_dir, scheme_variants,
+                bool(self.options_db.get("capture_accel_variants"))):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):
@@ -2123,6 +2317,13 @@ class ccppMain:
         # scheme-io-capture-rte-objects: schemes with an argument of a
         # --capture-ddt-handlers type.
         self._handled_schemes: set = set()
+        self._layout_types: set = set()
+        # Stage 3b (_plan_produced_args): scheme -> {standard name: (type
+        # module, producing table)} of the arguments an init phase produces
+        # for its driver;
+        # scheme -> [report lines].
+        self._produced: dict = {}
+        self._produced_notes: dict = {}
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files
         # builds ops in-process; run_frontend/run_py_frontend
@@ -2189,10 +2390,15 @@ class ccppMain:
                 if self.options_db.get("capture_test_driver_dir"):
                     self._plan_state_setup(mlir_file, out_dir)
                 self._plan_ddt_layouts(mlir_file, out_dir)
+                if self.options_db.get("capture_test_driver_dir"):
+                    self._plan_produced_args(mlir_file, out_dir)
             if self.options_db.get("directive") in ("acc", "omp"):
                 self._apply_derived_memory_space(mlir_file, fortran_check)
             elif self.options_db.get("capture_scheme"):
                 self._capture_driver_device_args(fortran_check)
+            if (self.options_db.get("capture_scheme")
+                    and self.options_db.get("capture_test_driver_dir")):
+                self._capture_driver_device_ddts(fortran_check)
             wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
             target = "ftn_and_cpp_header" if wants_cpp else "ftn"
             opt = self._start_opt(tmp_dir, mlir_file, target=target)

@@ -15310,9 +15310,11 @@ functions and fluxes, and CAM-SIMA passing the registry.
 
 ## `scheme-io-capture-rte-objects` stage 2: handlers for the RTE optical properties, sources and fluxes (2026-11-13)
 
-atmospheric_physics and CAM-SIMA only; uses stage 1's registry.
+CAM-SIMA only; uses stage 1's registry. The handlers are xdsl_ccpp test
+tooling, so they live in CAM-SIMA `src/physics/capture/` (not compiled
+by a normal build), not in atmospheric_physics.
 
-- `schemes/rrtmgp/objects/ccpp_capture_rte_objects.F90` (new): write/read/
+- `src/physics/capture/ccpp_capture_rte_objects.F90` (new): write/read/
   compare for `ty_optical_props_1scl_ccpp`, `ty_optical_props_2str_ccpp`,
   `ty_source_func_lw_ccpp`, `ty_fluxes_broadband_ccpp` and
   `ty_fluxes_byband_ccpp`, through RTE's public procedures: the spectral
@@ -15323,8 +15325,8 @@ atmospheric_physics and CAM-SIMA only; uses stage 1's registry.
   new arrays). A part present on one side only, or of another shape, is
   reported as a failure. Uses only `ccpp_capture_mod` from xdsl_ccpp, and
   is compiled only into capture builds.
-- `schemes/rrtmgp/objects/capture_handlers.txt` (new): the registry.
-- CAM-SIMA `cime_config/cam_autogen.py`: passes `--capture-ddt-handlers`
+- `src/physics/capture/capture_handlers.txt` (new): the registry.
+- `cime_config/cam_autogen.py`: passes `--capture-ddt-handlers`
   with that file when capturing and the file exists.
 
 Generation check (rrtmgp FPHYStest case c06a regenerated with a capture of
@@ -15340,3 +15342,210 @@ Verification: rrtmgp capture c08f (nvhpc) passed every phase and recorded
 the RTE objects as sub-groups (e.g. `rrtmgp_sw_rte_run`: the optical
 properties, `aersw`, `flux_clrsky`, `flux_allsky`); the six new drivers
 built, and all CPU replays passed. Pending (user): the GPU replays.
+
+## `scheme-io-capture-rte-objects` stage 3a: `ty_gas_concs` through an ESCOMP wrapper (2026-11-13)
+
+atmospheric_physics and CAM-SIMA only. RRTMGP keeps the gas concentrations'
+shape (`ncol`, `nlay`) private with no getter, and stage 1's per-type `dims=`
+cannot supply it (the SW object is sized by `nday`, the LW one by `ncol`).
+Interim fix, chosen over waiting for an upstream rte-rrtmgp getter (design:
+CAM-SIMA `src/physics/capture/capture_rte_objects_plan.md`):
+
+- atmospheric_physics `schemes/rrtmgp/objects/ccpp_gas_concentrations.F90`:
+  `ty_gas_concs_ccpp` keeps a copy of the shape, updated by its own `init`,
+  `set_vmr` (scalar/1-D/2-D, after RRTMGP accepts the call) and `reset`,
+  which forward to RRTMGP; `get_ncol`/`get_nlay` return it. The `.meta`
+  lists `mo_rte_kind.F90`. Schemes call the wrapper: `rrtmgp_inputs` and
+  `rrtmgp_pre` (`init`), sw/lw `gas_optics_pre` (`set_vmr`), `rrtmgp_post`
+  (`reset`). Read-only uses (gas optics, `load`, the `!$acc` clauses) still
+  pass `%gas_concs`. Bit-for-bit.
+- CAM-SIMA `src/physics/capture/ccpp_capture_rte_objects.F90`: write/read/
+  compare for `ty_gas_concs_ccpp` -- `n_gases`, `gas_names`, `ncol`, `nlay`,
+  `vmr_<gas>` per set gas, and `consistent` (every set gas reads back with
+  the tracked shape; `.false.` flags code that bypassed the wrapper). Rebuilt
+  with the wrapper's `init`/`set_vmr` in the captured representation.
+  Registered in `capture_handlers.txt`; `dims=` is not used.
+
+Generation check (c08f's case, full rrtmgp list, no build): `rrtmgp_pre`
+(now with `rrtmgp_pre_init`) and `rrtmgp_post` get drivers with no skipped
+phase; the cap records 12 `ty_gas_concs_ccpp` arguments. Still skipped:
+`kdist` users (`inputs`, `mcica`, `cloud_optics`, `lw_rte`) and the
+`interpolate_data` users.
+
+Verification (wrapper, normal builds): rrtmgp reference tests s64 (nvhpc
+CPU; snapshot check: no differences at both steps, cross-compiler
+tolerance 1e-8) and s65 (nvhpc GPU) PASS, and `cs.status` COMPARE_cpu_gpu
+(s65 vs s64, zero tolerance) PASS. Recapture c08g PASS; its CPU replays
+pass (user), including the new `test_rrtmgp_post` and the
+`rrtmgp_pre_init` phase. GPU replays pending. Every captured SW call so far
+is on rank 0 with `nday = 0` (night), so the SW replays cover only the
+no-daylight path: BACKLOG `scheme-io-capture-rank-select`.
+
+## `scheme-io-capture-rte-objects` stage 3b-1: a plain-NetCDF `ccpp_io_reader` for the test drivers (2026-11-14)
+
+The RRTMGP gas optics init (`rrtmgp_sw/lw_gas_optics_init`, which
+produces `kdist`) reads its coefficient file through `ccpp_io_reader`. In
+the model CAM-SIMA's PIO reader implements it; the test drivers have no
+PIO. Stage 3b-2 replays that init in the drivers to rebuild `kdist`, so
+they need another implementation.
+
+- CAM-SIMA `src/physics/capture/ccpp_netcdf_reader.F90`: module
+  `ccpp_netcdf_reader` (`netcdf_reader_t`, extends
+  `abstract_netcdf_reader_t`) and the `ccpp_io_reader` submodule whose
+  `create_netcdf_reader_t` returns it. netcdf-fortran calls; the PIO
+  reader's checks, error codes and start/count rules (character variables:
+  the string length is the first file dimension). The 18 `get_var`
+  routines come from one template.
+- Registry keyword `driver_source <path>`
+  (`xdsl_ccpp/util/capture_ddt_handlers.py`): compiled into the test
+  drivers that get the registry's sources, never into the model (where
+  the reader's submodule would clash with PIO's). A path listed as both
+  `source` and `driver_source`, or twice, is an error. `ccpp_dsl.py`
+  `_capture_driver_sources`.
+- CAM-SIMA `capture_handlers.txt`: `driver_source ccpp_netcdf_reader.F90`.
+
+Tests: `test_capture_ddt_handlers.py` (driver sources kept apart, their
+errors), `test_capture_cmake.py`
+`test_registry_driver_source_builds_into_the_driver_only` (in the driver
+fragment, not in the datatable). `pytest tests/unit`: 1518 passed.
+Pending (user): compile, through any rrtmgp capture driver build that
+uses a handled type (e.g. regenerate c08g's drivers).
+
+## `scheme-io-capture-rte-objects` stage 3b-2: `kdist` from the gas optics init (2026-11-14)
+
+The RRTMGP gas optics tables (`ty_gas_optics_rrtmgp_ccpp`, `kdist`) have
+private components and are loaded from a file, so the capture cannot
+record them, and every phase taking them was left out of its driver.
+They have one producer each: `rrtmgp_sw/lw_gas_optics_init` (intent out),
+whose inputs (the coefficient file name, `available_gases` through the
+stage 3a handler) are captured. The driver now replays that init and
+passes its result on.
+
+- `ccpp_dsl.py` `_plan_produced_args` (after `_plan_ddt_layouts`): for
+  each captured scheme, an argument of a type the capture does not record
+  (no handler, no layout), intent in/inout, scalar, whose standard name
+  and type exactly one register/initialize phase of the suite has as
+  intent out. The producer becomes a setup phase of the driver
+  (`scheme-io-capture-module-state-setup`'s mechanism; captured for the
+  drivers only when not listed), or one of the scheme's own phases. The
+  type's module comes from the scheme's closure. Several producers, or no
+  type definition: a line in `.skipped`.
+- Capture pass option `produced="standard_name:type_module:producing_table,..."`
+  (`parse_produced`/`format_produced`); `_build_test_driver_params` makes
+  such an argument category `produced` instead of leaving the phase out.
+  `_drop_unproduced`: a phase whose producer is not replayed (left out
+  itself) is left out too, with the reason, until nothing changes.
+  `_produced_notes`: `.skipped` lists each produced argument a replayed
+  phase passes, not compared.
+- `capture_driver_ir.py`: `TestDriverParam.shared_local`; a produced
+  argument is one local named after its standard name
+  (`longwave_gas_optics_object_for_rrtmgp`), declared with its type's
+  module, passed by the producer and every user, never read or compared.
+  The setup comment names what it sets.
+
+Generation check (c08g's inputs, this tree vs HEAD, scratch output): the
+model caps are identical (only the output paths and version string differ;
+the datatable has no reader); new drivers `test_rrtmgp_inputs` (after both
+gas optics inits), `test_rrtmgp_lw_gas_optics`, `test_rrtmgp_sw_gas_optics`
+(init then run), `test_rrtmgp_lw_rte` (after the LW init). Still not
+built: both McICA schemes (`shr_RandNum_mod`, new BACKLOG
+`capture-shr-randnum`) and both `cloud_optics` (`capture-interpolate-data`).
+c08g already has both inits' captures, so no new capture run is needed.
+`examples/ddthost`: `make_ddt_init` produces `vmr`, but it is not replayed
+(`ccpp_info_t`), so `make_ddt_run` is now left out for that reason.
+
+Tests: `test_produced_argument_is_passed_from_its_init` (ddthost with a
+replayable init); `test_nested_derived_type_is_reported` updated.
+`pytest tests/unit`: 1519 passed. Pending (user): regenerate the c08g
+drivers, build them CPU and GPU (first compile of `ccpp_netcdf_reader.F90`
+too), replay.
+
+
+## `scheme-io-capture-rte-objects` stage 3b: first c08g CPU replays (2026-11-14)
+
+The new drivers and `ccpp_netcdf_reader.F90` compile, and
+`test_rrtmgp_sw_gas_optics` passes (with `nday = 0` on the captured rank it
+checks little). Three drivers fail, for three reasons:
+
+- **Empty strings** (`aer_lw%name` and the others in `test_rrtmgp_inputs`):
+  `ccpp_capture_char_0d` writes `''` as one character it never writes, so
+  it reads back as NetCDF's fill character, NUL, which `trim` keeps. Other
+  drivers passed only because both sides came from the same read. Fix:
+  `framework_src/ccpp_capture_mod.F90` `lc_strip_fill` blanks a NUL and
+  everything after it in the character reads (0-D, 1-D).
+- **Kernel version** (`test_rrtmgp_lw_gas_optics`, differences of about
+  1e-15 relative): c08g has `RRTMGP_KERNELS=accel`, so its CPU model
+  compiles the `accel/` kernels with `-noacc`, while the drivers' CPU build
+  compiled the CPU kernels. Fix: new option `--capture-accel-variants`
+  (CMake `CCPP_CAPTURE_ACCEL_VARIANTS`, default from the option) builds
+  the `accel/` version of each CPU/OpenACC pair in a CPU build too. CAM-SIMA
+  `cam_autogen.py` passes it when the build uses the accel kernels (a GPU
+  build, or `RRTMGP_KERNELS=accel`).
+- **Outputs the scheme never sets**: `rrtmgp_inputs_run` allocated the
+  optical property and source arrays and left them unset, and
+  `rrtmgp_lw_rte_run` set `lw_Ds` (intent out) only with
+  `use_LW_optimal_angles`, so both sides compared undefined memory. Fixed in
+  the schemes (atmospheric_physics; the user chose this over skipping the
+  comparisons, since allocated memory has no defined value):
+  `rrtmgp_inputs.F90` zeroes `tau` (and `ssa`, `g` for SW) and the LW
+  sources after each allocation; `rrtmgp_lw_rte.F90` sets `lw_Ds = 0` on
+  the device when the optimal angles are off. Answer-neutral: later
+  schemes overwrite every one of these before it is read, and `lw_Ds` is
+  unused without the optimal angles.
+
+Tests: `test_accel_variants_default_follows_the_captured_build`,
+`test_capture_accel_variants_sets_the_cmake_default`; the variant fragment
+test updated.
+
+After the fixes, c08g was rebuilt and recaptured. All 20 rrtmgp drivers
+pass on CPU (user, `build_capture_tests.sh --arch cpu --tests rrtmgp`,
+2026-11-14). GPU replays pending.
+
+## `scheme-io-capture-rte-objects` stage 3c: RTE objects stay on the device in GPU drivers (2026-11-14)
+
+The c08g GPU replay of `rrtmgp_lw_rte` failed on
+`lw_optical_props_clrsky%tau` (differences of 1.1 to 3.1). The scheme adds
+the aerosol and cloud optical depths to it on the device, but its own data
+region has it in `copyin`, so the result never reached the host. In a
+production run with every scheme on the GPU, the object would already be on
+the device and stay there. The user chose to model that in the driver, not
+to add data movement to the scheme or the caps: the drivers mimic how the
+code will run in production, not how it runs today.
+
+- Registry (`capture_ddt_handlers.py`): optional `device_enter=<r>
+  device_exit=<r>` on a `handler` line, both or neither.
+  `device_enter(obj)` puts the object's data on the device;
+  `device_exit(obj, copy_out)` copies it back (out/inout) or deletes it.
+- The scan of the schemes' directives already recorded the derived-type
+  arguments they name (`AccResidency.derived_types`). It now reports them
+  as `"derived"` (`fparser2_to_meta.ACC_DERIVED`; `derive_memory_space`
+  ignores the category). `ccpp_dsl` passes them as the pass option
+  `driver_device_ddts`, with or without `--directive`.
+- Pass and driver IR: a handled argument the scheme names, whose handler
+  has device routines, gets `ddt_device_enter`/`ddt_device_exit`. The
+  driver calls them around the scheme call inside `#ifdef USE_GPU`. The
+  caps are unchanged: xdsl-ccpp still never moves derived-type data.
+- CAM-SIMA `ccpp_capture_rte_objects.F90`: device routines for all six
+  handled types. Each puts the RTE object, then each allocated or
+  associated array, on the device. On exit it copies the arrays back or
+  deletes them, and always deletes the object (copying it back could
+  overwrite scalars set on the host). For gas concentrations only the
+  object moves, since its contents are private. `capture_handlers.txt`
+  names them.
+
+Generation check (c08g's inputs): the caps are identical to before. Device
+calls appear in `test_rrtmgp_lw_rte`, `test_rrtmgp_sw_rte`,
+`test_rrtmgp_lw_gas_optics` and `test_rrtmgp_sw_gas_optics`, and nothing
+else in the drivers changes. Tests: `test_device_routines` and its pairing
+error, `test_derived_type_arguments_are_reported_for_the_drivers`,
+`test_handled_type_kept_on_the_device_by_its_handler`,
+`test_handled_type_without_device_use_stays_on_the_host`. Pending (user):
+regenerate the c08g drivers, then the GPU and CPU replays.
+
+After regenerating c08g's drivers (no new capture), all 20 rrtmgp drivers
+pass on the GPU, bit for bit against the nvhpc CPU capture (user,
+`build_capture_tests.sh --arch gpu --tests rrtmgp`, 2026-11-14).
+`gpu_kernels.txt` reports `rrtmgp_lw_rte` as ON-GPU (143 kernel launches),
+and `lw_gas_optics`, `sw_gas_optics`, `inputs`, `lw_aerosols` and `post` as
+CALLEE-GPU (the kernels launch from RTE). `sw_rte` and `sw_gas_optics`
+check little: `nday = 0` on the captured rank.

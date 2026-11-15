@@ -100,6 +100,10 @@ _TOP_TEMPLATE = """\
 # otherwise compiles a scheme's !$acc directives and the "CPU" replay runs
 # them on the GPU -- and every build gets -Mnofma, as CAM-SIMA's nvhpc
 # builds do, so a replay can match a capture bit for bit.
+# A module with a CPU and an OpenACC version (the latter in accel/) is built
+# from the OpenACC version with -DOPENACC=ON or
+# -DCCPP_CAPTURE_ACCEL_VARIANTS=ON (default: {accel_default}, the version the
+# captured model compiled), else from the CPU version.
 # CCPP_CAPTURE_TOLERANCE in the environment overrides the drivers'
 # real-valued tolerance at run time.
 #
@@ -122,6 +126,9 @@ if(NOT CCPP_CAPTURE_DIR)
   set(CCPP_CAPTURE_DIR {data_dir_arg})
 endif()
 option(OPENACC "Build the drivers with OpenACC (GPU replay)" OFF)
+option(CCPP_CAPTURE_ACCEL_VARIANTS
+       "Build the OpenACC (accel/) version of CPU/OpenACC module pairs in a CPU build too"
+       {accel_default})
 set(CCPP_CAPTURE_ACC_FLAGS "-acc" CACHE STRING "OpenACC compile and link flags")
 set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING
     "nvfortran GPU target (-gpu=<target>; cc80: Derecho's A100s, as CAM-SIMA builds)")
@@ -250,9 +257,11 @@ add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY "${{CCPP_CAP
 {variants}"""
 
 _VARIANTS_TEMPLATE = """# Modules with a CPU and an OpenACC version (the latter in accel/), of which
-# a build compiles one, as CAM-SIMA does (cime_config/cam_autogen.py,
-# _set_rrtmgp_dependencies).
-if(OPENACC)
+# a build compiles one, as the host model does (e.g. CAM-SIMA's
+# cime_config/cam_autogen.py, _set_rrtmgp_dependencies): the OpenACC version
+# for an OpenACC build, or when the captured model used it on the CPU
+# (CCPP_CAPTURE_ACCEL_VARIANTS).
+if(OPENACC OR CCPP_CAPTURE_ACCEL_VARIANTS)
   target_sources(test_{scheme} PRIVATE
 {gpu})
 else()
@@ -299,12 +308,16 @@ def scheme_source_root(path: str) -> "str | None":
 
 
 def render_capture_cmakelists(support_sources, data_dir: str,
-                              scheme_root: "str | None" = None) -> str:
+                              scheme_root: "str | None" = None,
+                              accel_variants: bool = False) -> str:
     """CMakeLists.txt text: support library from *support_sources* (in
     compile order), NetCDF, options, the default capture directory
-    *data_dir*, the default CCPP_CAPTURE_SCHEME_ROOT *scheme_root*, include
-    of every test fragment."""
+    *data_dir*, the default CCPP_CAPTURE_SCHEME_ROOT *scheme_root*, the
+    default of CCPP_CAPTURE_ACCEL_VARIANTS (*accel_variants*: the captured
+    model built the OpenACC version of CPU/OpenACC pairs), include of every
+    test fragment."""
     return _TOP_TEMPLATE.format(
+        accel_default="ON" if accel_variants else "OFF",
         support_sources=_source_lines(support_sources),
         data_dir=os.path.abspath(data_dir),
         data_dir_arg=_cmake_path(data_dir),
@@ -318,8 +331,8 @@ def render_capture_fragment(scheme: str, sources,
     """test_<scheme>.cmake text: the driver plus *sources* (the scheme's
     .F90 and its dependencies), those under *scheme_root* relative to
     CCPP_CAPTURE_SCHEME_ROOT, and the (CPU file, GPU file) *variants*
-    (SourceClosure.variants): the GPU files with -DOPENACC=ON, else the
-    CPU files."""
+    (SourceClosure.variants): the GPU files with -DOPENACC=ON or
+    -DCCPP_CAPTURE_ACCEL_VARIANTS=ON, else the CPU files."""
     variant_text = ""
     if variants:
         variant_text = _VARIANTS_TEMPLATE.format(
@@ -491,10 +504,12 @@ def capture_provided_modules(support) -> frozenset:
 
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
-                        data_dir: str, scheme_variants=None) -> list:
+                        data_dir: str, scheme_variants=None,
+                        accel_variants: bool = False) -> list:
     """Write test_<scheme>.cmake for every {scheme: [sources]} entry (with
     its (CPU file, GPU file) pairs from *scheme_variants*, {scheme: [pairs]})
-    and the CMakeLists.txt, whose tests run against *data_dir*; return the
+    and the CMakeLists.txt, whose tests run against *data_dir* and build
+    the GPU file of each pair in a CPU build too when *accel_variants*; return the
     paths written. The scheme sources are named relative to the repository
     root of the first scheme's source (scheme_source_root)."""
     scheme_variants = scheme_variants or {}
@@ -510,6 +525,7 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:
-        f.write(render_capture_cmakelists(support_sources, data_dir, scheme_root))
+        f.write(render_capture_cmakelists(support_sources, data_dir, scheme_root,
+                                          accel_variants))
     written.append(path)
     return written

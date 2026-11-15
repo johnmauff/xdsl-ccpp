@@ -738,3 +738,64 @@ end module
         str(tmp_path / "s.meta"), str(tmp_path / "s.F90"), None, 1, "acc"
     )
     assert classification == {"s_run": {"x": ACC_DEVICE, "y": ACC_HOST}}
+
+
+def test_derived_type_arguments_are_reported_for_the_drivers(tmp_path):
+    """scheme-io-capture-rte-objects stage 3c: a derived-type argument the
+    directives name (a component here) is "derived" in the classification,
+    for the capture test drivers; derive_memory_space ignores it."""
+    from xdsl_ccpp.tools.ccpp_dsl import _check_fortran_source
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DERIVED
+
+    (tmp_path / "s.F90").write_text("""
+module s
+  type :: box_t
+    real, allocatable :: v(:)
+  end type
+contains
+  subroutine s_run(b, x, errmsg, errflg)
+    type(box_t), intent(inout) :: b
+    real, intent(inout) :: x(:)
+    character(len=*), intent(out) :: errmsg
+    integer, intent(out) :: errflg
+    errmsg = ''
+    errflg = 0
+    !$acc data copyin(b%v) present(x)
+    !$acc end data
+  end subroutine
+end module
+""")
+    (tmp_path / "s.meta").write_text("""[ccpp-table-properties]
+  name = s
+  type = scheme
+[ccpp-arg-table]
+  name = s_run
+  type = scheme
+[ b ]
+  standard_name = box_var
+  dimensions = ()
+  type = box_t
+  intent = inout
+[ x ]
+  standard_name = x_var
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+  units = 1
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character | kind = len=*
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+""")
+    _, classification = _check_fortran_source(
+        str(tmp_path / "s.meta"), str(tmp_path / "s.F90"), None, 1, "acc"
+    )
+    assert classification == {"s_run": {"b": ACC_DERIVED, "x": ACC_DEVICE}}

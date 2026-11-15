@@ -399,6 +399,12 @@ ACC_DEVICE = "device"
 ACC_EITHER = "either"
 ACC_HOST = "host"
 ACC_SYNCED = "synced"
+# Not a residency: a derived-type argument the directives name (itself or a
+# component, AccResidency.derived_types). Reported to the capture test
+# drivers only (scheme-io-capture-rte-objects stage 3c), which keep such an
+# argument on the device across the call through its capture handler's
+# device routines, as in a production run with resident data.
+ACC_DERIVED = "derived"
 
 # AccResidency.note: the stronger of two uses of one argument by the
 # entry point's own directives.
