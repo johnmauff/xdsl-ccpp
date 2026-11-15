@@ -15549,3 +15549,10 @@ pass on the GPU, bit for bit against the nvhpc CPU capture (user,
 and `lw_gas_optics`, `sw_gas_optics`, `inputs`, `lw_aerosols` and `post` as
 CALLEE-GPU (the kernels launch from RTE). `sw_rte` and `sw_gas_optics`
 check little: `nday = 0` on the captured rank.
+
+`.skipped` notes (2026-11-14): the stage 3b notes about arguments a
+replayed init supplies started with `<table>:`, the form of a left-out
+phase. CAM-SIMA's `tools/gpu_scheme_status.py` therefore did not count
+`rrtmgp_inputs`, `rrtmgp_lw_rte`, `rrtmgp_lw_gas_optics` or
+`rrtmgp_sw_gas_optics` as unit-tested. Notes now start with `note: `
+(`_report_skipped`). Test: `test_produced_argument_is_passed_from_its_init`.
