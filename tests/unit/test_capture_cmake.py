@@ -833,8 +833,10 @@ def test_produced_argument_is_passed_from_its_init(tmp_path):
     assert "ccpp_capture_read('in', 'vmr'" not in driver
     assert "vmr_expected" not in driver
     report = (drivers / "test_make_ddt.skipped").read_text()
-    assert ("make_ddt_run: argument 'vmr' (vmr_type) is not recorded: the driver gets it "
-            "from make_ddt_init, replayed first, and does not compare it") in report
+    assert ("note: make_ddt_run: argument 'vmr' (vmr_type) is not recorded: the driver "
+            "gets it from make_ddt_init, replayed first, and does not compare it") in report
+    # Not a left-out phase: no line starts with the phase's name.
+    assert not any(line.startswith("make_ddt_run:") for line in report.splitlines())
     assert "make_ddt_run: argument 'vmr' is of derived type" not in report
 
 

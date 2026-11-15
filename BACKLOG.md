@@ -107,6 +107,7 @@ measured data, and will drift as items are reassessed.
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
 | `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3a `ty_gas_concs` done 2026-11-13 (ESCOMP wrapper; c08g CPU replays pass, GPU replays pending); 3b-1 plain-NetCDF `ccpp_io_reader` and 3b-2 `kdist` from the gas optics init code done 2026-11-14, all 20 c08g CPU replays pass; 3c RTE objects kept on the device by the GPU drivers done 2026-11-14, all 20 c08g GPU replays pass; left: a daylit capture for the SW schemes (`scheme-io-capture-rank-select`), then McICA (`capture-shr-randnum`) and cloud optics (`capture-interpolate-data`)) | S |
 | `capture-interpolate-data` | 1-3 days (move or copy the few `interpolate_data` routines the physics uses into atmospheric_physics, or a capture-side stand-in like the share stubs; recapture mcsp, gw_cam7, rrtmgp) | XS-S |
+| `capture-cam-thermo-formula` | 1-2 days (check what `check_energy_chng` needs from `cam_thermo`/`cam_thermo_formula`; move the formula constants into atmospheric_physics or supply the host modules to the capture build; recapture FKESSLER and gw_cam4, replay CPU+GPU) | XS-S |
 | `capture-shr-randnum` | 1-2 days (C sources in the driver build: `LANGUAGES C Fortran`, `.c` files in the closure; the share `RandNum` source root from CAM-SIMA; regenerate rrtmgp and replay both McICA schemes CPU+GPU) | XS-S |
 | `unit-test-scheme-changes` | 1-2 days (review the listed scheme edits once every scheme has a replay; keep, rework or upstream each; perf check with `/cam-sima-perf`) | XS-S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
@@ -1693,6 +1694,25 @@ capture-side stand-in as for `shr_log_mod`/`shr_sys_mod`
 (`framework_src/capture_stubs`) -- but a stand-in must reproduce the real
 interpolation bit for bit, so a copy is a stand-in in name only. Check
 which routines each user needs first.
+
+**ID: `capture-cam-thermo-formula`. CAM-SIMA's `cam_thermo_formula`
+blocks the `check_energy_chng` replays.** Added 2026-11-14. The drivers
+in capture_FKESSLER.mpas, capture_FKESSLER.se_cslam and capture_gw_cam4
+(generated 2026-11-04) fail to compile:
+`cam_thermo_formula.F90` uses `runtime_obj` (`unset_int`;
+`src/control/runtime_obj.F90`) and `phys_vars_init_check`
+(`mark_as_initialized`), CAM-SIMA host modules the capture build does not
+supply ("Unable to open MODULE file runtime_obj.mod").
+`check_energy_chng.meta` names CAM-SIMA's `src/data/cam_thermo.F90` and
+`cam_thermo_formula.F90` as `dependencies`. The scheme itself only uses
+the `ENERGY_FORMULA_DYCORE_FV/SE/MPAS` parameters from
+`cam_thermo_formula`, but check what it needs from `cam_thermo` too.
+Options: move those constants (and whatever `cam_thermo` routines it
+calls) into atmospheric_physics, which is an upstream change, or supply
+the host modules to the capture build. A current generation should report
+the driver as not built in `.skipped` rather than write a fragment that
+fails; check that when recapturing. Needed for unit tests of
+`gpu-port-check-energy-chng`.
 
 **ID: `capture-shr-randnum`. CESM share's `shr_RandNum_mod` blocks the
 McICA replays.** Added 2026-11-14. With `kdist` produced by the gas
