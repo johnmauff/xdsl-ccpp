@@ -366,3 +366,39 @@ def test_array_output_compared_in_both_builds():
                 directive="acc")
     assert "ok = ccpp_capture_compare(t, t_expected, tolerance," in text
     assert "SKIP:" not in text
+
+
+# scheme-io-capture-rte-objects: a derived type its own handler records.
+
+def _handled(category: str) -> P:
+    return P("props", category, "ty_props_ccpp", None, 0, ddt_read="props_read",
+             ddt_read_module="props_capture", ddt_compare="props_compare",
+             ddt_dims=("ncol",), type_module="props_mod")
+
+
+def test_handled_derived_type_is_read_and_compared_by_its_handler():
+    text = _run([P("ncol", "in", "integer", None, 0), _handled("inout")])
+    assert "use props_mod, only: ty_props_ccpp" in text
+    assert "use props_capture, only: props_read\n" in text
+    assert "use props_capture, only: props_compare\n" in text
+    assert "type(ty_props_ccpp) :: props\n" in text  # a scalar, not allocatable
+    read = "call props_read('in', 'props', props, ncol)"
+    compare = ("call props_compare('out', 'props', props, tolerance, call_count, "
+               "n_failed, ncol)")
+    call = text.index("call kessler_run(")
+    assert text.index("call ccpp_capture_read('in', 'ncol', ncol)") < text.index(read) < call
+    # Compared while the capture file is open, after the call.
+    assert call < text.index(compare) < text.index("call ccpp_capture_close()", call)
+    assert "props_expected" not in text
+
+
+def test_handled_derived_type_intent_in_is_read_only():
+    text = _run([P("ncol", "in", "integer", None, 0), _handled("in")])
+    assert "call props_read('in', 'props', props, ncol)" in text
+    assert "props_compare(" not in text
+
+
+def test_handled_derived_type_intent_out_is_compared_only():
+    text = _run([P("ncol", "in", "integer", None, 0), _handled("out")])
+    assert "props_read(" not in text
+    assert "call props_compare('out', 'props', props, tolerance," in text

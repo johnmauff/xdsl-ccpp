@@ -955,6 +955,7 @@ contains
     slen = min(slen, len(value))
     if (slen > 0) then
       if (.not. lc_check(nf90_get_var(grpid, varid, value(1:slen), count=[slen]), 'read', name)) return
+      call lc_strip_fill(value)
     end if
     if (present(found)) found = .true.
   end subroutine ccpp_capture_read_char_0d
@@ -974,10 +975,22 @@ contains
       do i = 1, size(value)
         if (.not. lc_check(nf90_get_var(grpid, varid, value(i)(1:slen), start=[1, i], &
                                         count=[slen, 1]), 'read', name)) return
+        call lc_strip_fill(value(i))
       end do
     end if
     if (present(found)) found = .true.
   end subroutine ccpp_capture_read_char_1d
+
+  ! A string read back: an empty string is written as one unwritten
+  ! character (ccpp_capture_char_0d), which reads as NetCDF's character
+  ! fill value, NUL; blank it and anything after it so that '' reads as ''.
+  subroutine lc_strip_fill(value)
+    character(len=*), intent(inout) :: value
+    integer :: i
+
+    i = index(value, achar(0))
+    if (i > 0) value(i:) = ''
+  end subroutine lc_strip_fill
 
 
   ! ---------------------------------------------------------------------

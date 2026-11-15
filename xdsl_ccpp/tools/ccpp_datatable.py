@@ -314,9 +314,13 @@ def build_datatable_from_module(
     cap_files: list[str],
     host_name: str = "",
     framework_src_dir: str = "",
+    capture_sources: "tuple[str, ...]" = (),
 ) -> ET.Element:
     """``build_datatable`` for an already-parsed frontend module, which it
-    only reads (ccpp_dsl shares one parse with its other consumers)."""
+    only reads (ccpp_dsl shares one parse with its other consumers).
+    *capture_sources* (the --capture-ddt-handlers registry's sources,
+    scheme-io-capture-rte-objects) are utility files after the framework's:
+    the capture calls in the caps use their handler modules."""
     # Locate the @ccpp named sub-module
     ccpp_mod = None
     for child in module.body.block.ops:
@@ -379,6 +383,8 @@ def build_datatable_from_module(
     else:
         for framework_file in _resolve_framework_f90_files():
             utility_file_texts.append(framework_file)
+    utility_file_texts += [os.path.abspath(p) for p in capture_sources
+                           if os.path.abspath(p) not in utility_file_texts]
 
     # ── ccpp_files ────────────────────────────────────────────────────────────
     # Cap files are listed as <file path="..."/> for cmake/parse_xdsl_ccpp_

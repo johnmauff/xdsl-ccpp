@@ -35,8 +35,11 @@ Scope: {integer, logical, real(kind_phys)} x {rank 0..3}, plus character
 scalars and rank-1 arrays -- in practice the cross product that appears
 in CCPP metadata. Derived types listed in _DDT_CAPTURES (the constituent
 properties, ccpp_constituent_prop_ptr_t) are captured by their own
-procedure as a subgroup and rebuilt, not compared, in a driver.
-Everything else (other derived types, any other real kind) is silently
+procedure as a subgroup and rebuilt, not compared, in a driver; so are
+the types of a --capture-ddt-handlers registry (handler routines the
+physics side writes, xdsl_ccpp.util.capture_ddt_handlers), which are also
+compared. Flat derived types are recorded component by component
+(ddt_layouts). Everything else (other derived types, any other real kind) is silently
 skipped, not a hard error -- a scheme mixing supported and unsupported
 arguments should still get the supported ones captured.
 Also skipped: errmsg/errflg (not physically meaningful to dump) and
@@ -168,6 +171,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
+from xdsl_ccpp.util.capture_ddt_handlers import parse_ddt_handlers
 from xdsl_ccpp.util.errors import warn_once
 
 # Default absolute tolerance used by every generated driver's real-valued
@@ -227,18 +231,30 @@ _MAX_SUPPORTED_RANK = 3
 class _DdtCapture:
     """How one derived type is captured (scheme-io-capture-ddt-args):
     `write` (module `module`) writes an argument of the type as subgroup
-    in/<name> of the capture file, `read` rebuilds it in a generated
-    driver; `type_module` declares the type. Only intent(in) arguments of
-    rank `rank`: a derived type is rebuilt, never compared."""
+    <name> of the capture file's in/ or out/ group, `read` rebuilds it in a
+    generated driver and `compare`, when given, compares it there with the
+    captured out/ values; `type_module` declares the type. Only arguments
+    of rank `rank` and an intent in `intents`. `dims` are standard names of
+    the call's arguments passed to all three routines after the object
+    (scheme-io-capture-rte-objects: the handler cannot get them from the
+    object). `device_enter`/`device_exit`, when given, keep the argument on
+    the device across a GPU driver's call (TestDriverParam)."""
 
     rank: int
     write: str
     read: str
     module: str
     type_module: str
+    compare: "str | None" = None
+    dims: tuple = ()
+    intents: frozenset = frozenset({"in"})
+    device_enter: "str | None" = None
+    device_exit: "str | None" = None
 
 
-# Derived types the capture handles, by type name. Others are skipped.
+# Derived types the capture handles, by type name, besides those of the
+# --capture-ddt-handlers registry (_registry_captures). The constituent
+# properties are rebuilt, never compared. Others are skipped.
 _DDT_CAPTURES = {
     "ccpp_constituent_prop_ptr_t": _DdtCapture(
         rank=1,
@@ -294,16 +310,36 @@ def _ddt_layout(arg, layouts: "dict | None") -> "tuple | None":
     return layout
 
 
-def _ddt_capture(arg) -> "_DdtCapture | None":
-    """The _DDT_CAPTURES entry for a capturable derived-type argument:
-    its type is in the table, its rank matches and it is intent(in)."""
+@functools.lru_cache(maxsize=None)
+def _registry_captures(path: "str | None") -> dict:
+    """The handlers of the --capture-ddt-handlers registry in *path*
+    (scheme-io-capture-rte-objects) as _DdtCapture entries, by lower-case
+    type name: scalar arguments of any intent, compared after the call."""
+    registry = parse_ddt_handlers(path)
+    if registry is None:
+        return {}
+    return {
+        name: _DdtCapture(rank=0, write=h.write, read=h.read, module=h.module,
+                          type_module=h.type_module, compare=h.compare, dims=h.dims,
+                          intents=frozenset({"in", "out", "inout"}),
+                          device_enter=h.device_enter, device_exit=h.device_exit)
+        for name, h in registry.handlers.items()
+    }
+
+
+def _ddt_capture(arg, handlers: "dict | None" = None) -> "_DdtCapture | None":
+    """The handler for a capturable derived-type argument: its type is in
+    _DDT_CAPTURES or *handlers* (_registry_captures), and its rank and
+    intent are ones the handler takes."""
     arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
     handler = _DDT_CAPTURES.get(arg_type)
+    if handler is None and handlers:
+        handler = handlers.get((arg_type or "").lower())
     if handler is None:
         return None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
     intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
-    if rank != handler.rank or intent != "in":
+    if rank != handler.rank or intent not in handler.intents:
         return None
     return handler
 # Character values: scalars and rank-1 arrays (scheme-io-capture-netcdf).
@@ -410,7 +446,8 @@ _INTRINSIC_TYPES = frozenset({"integer", "real", "logical", "character", "comple
 
 
 def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
-                           layouts: "dict | None" = None) -> str:
+                           layouts: "dict | None" = None,
+                           handlers: "dict | None" = None) -> str:
     """Classify one real call argument for test-driver generation:
     "optional" (omit from the generated call entirely), "error_arg"
     (errmsg/errflg -- always declared and passed, never compared),
@@ -434,7 +471,7 @@ def _driver_param_category(arg, real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
     kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
     if (not _is_capture_supported(arg_type, kind, rank, real_kinds)
-            and _ddt_capture(arg) is None and _ddt_layout(arg, layouts) is None):
+            and _ddt_capture(arg, handlers) is None and _ddt_layout(arg, layouts) is None):
         return "unverified"
     return intent
 
@@ -563,10 +600,42 @@ def _enclosing_module(op) -> "builtin.ModuleOp | None":
     return cur
 
 
+def parse_produced(text: "str | None") -> dict:
+    """The `produced` option, "standard_name:type_module:table,...", as
+    {lower-case standard name: (module declaring the type, the table of
+    the init phase producing it)}."""
+    produced = {}
+    for item in (text or "").split(","):
+        parts = item.strip().split(":")
+        if len(parts) == 3 and all(parts):
+            produced[parts[0].lower()] = (parts[1], parts[2])
+    return produced
+
+
+def format_produced(produced: dict) -> str:
+    """The `produced` option text for {standard name: (type module,
+    producing table)}."""
+    return ",".join(f"{std}:{module}:{table}"
+                    for std, (module, table) in sorted(produced.items()))
+
+
+# Fortran's limit on a name's length.
+_MAX_NAME_LEN = 63
+
+
+def produced_local(std_name: str) -> str:
+    """The test driver's local for a produced argument: its standard name,
+    the same in every phase that passes it."""
+    return std_name.lower()[:_MAX_NAME_LEN]
+
+
 def _build_test_driver_params(
     param_names: list, args_by_name: dict, device_names: "set[str]",
     real_kinds: "frozenset[str]" = _PHYS_REAL_KINDS,
     layouts: "dict | None" = None,
+    handlers: "dict | None" = None,
+    produced: "dict | None" = None,
+    device_ddts: "set[str]" = frozenset(),
 ) -> "tuple[list[TestDriverParam] | None, str]":
     """Resolve CCPP metadata for one real scheme call site into the
     TestDriverParam list capture_driver_ir.build_test_driver needs -- all CCPP-specific
@@ -587,6 +656,16 @@ def _build_test_driver_params(
     re-derived) -- a param's own `is_device` flag is just membership in
     this set, and print_ftn.py uses it to decide whether the driver needs
     to establish/tear down a device copy of that argument around the call.
+
+    `produced` ({standard name: (type module, producing table)},
+    scheme-io-capture-rte-objects stage 3b): derived types the capture does not record but an init phase
+    the driver replays first produces; such an argument is passed, not
+    read or compared (category "produced").
+
+    `device_ddts` (lower-case names; stage 3c): derived-type arguments the
+    scheme's own directives name; one whose handler has device routines
+    gets them (ddt_device_enter/exit), so a GPU driver keeps it on the
+    device across the call.
     """
     std_name_to_param = {
         a.getAttr("standard_name"): pname
@@ -601,7 +680,7 @@ def _build_test_driver_params(
         arg = args_by_name.get(pname)
         if arg is None:
             return None, f"argument '{pname}' has no metadata"
-        category = _driver_param_category(arg, real_kinds, layouts)
+        category = _driver_param_category(arg, real_kinds, layouts, handlers)
         if category == "optional":
             continue
 
@@ -617,10 +696,23 @@ def _build_test_driver_params(
             dims = _resolve_array_dims(arg, std_name_to_param)
             if dims is None:
                 return None, _unresolved_dims_reason(pname, arg, std_name_to_param)
-        handler = _ddt_capture(arg)
+        handler = _ddt_capture(arg, handlers)
         layout = _ddt_layout(arg, layouts)
+        handler_dims: list = []
+        for std in handler.dims if handler else ():
+            if std not in std_name_to_param:
+                return None, _missing_handler_dim_reason(pname, arg_type, std)
+            handler_dims.append(std_name_to_param[std])
         if (handler is None and layout is None and arg_type is not None
                 and arg_type.lower() not in _INTRINSIC_TYPES):
+            std = (arg.getAttr("standard_name") or "").lower() \
+                if arg.hasAttr("standard_name") else ""
+            if produced and std in produced and not rank:
+                # An init phase replayed first produces it.
+                params.append(TestDriverParam(
+                    pname, "produced", arg_type, kind, 0,
+                    type_module=produced[std][0], shared_local=produced_local(std)))
+                continue
             # The capture does not record it, so the driver could only pass
             # an undefined object (scheme-io-capture-ddt-args).
             return None, (
@@ -636,18 +728,35 @@ def _build_test_driver_params(
             pname in device_names and handler is None and layout is None,
             ddt_read=handler.read if handler else None,
             ddt_read_module=handler.module if handler else None,
+            ddt_compare=handler.compare if handler else None,
+            ddt_dims=tuple(handler_dims),
+            ddt_device_enter=(handler.device_enter
+                              if handler and pname.lower() in device_ddts else None),
+            ddt_device_exit=(handler.device_exit
+                             if handler and pname.lower() in device_ddts else None),
             type_module=(handler.type_module if handler else
                          layout[0] if layout else None),
             components=layout[1] if layout else (),
         ))
 
     if not any_captured and not is_call_only_phase(params):
-        needed = next(p for p in params if p.category not in ("error_arg", "log_unit"))
+        needed = next(p for p in params
+                      if p.category not in ("error_arg", "log_unit", "produced"))
         return None, (
             f"nothing in it is captured, and the driver cannot supply argument "
             f"'{needed.name}' ({_type_text(args_by_name[needed.name])})"
         )
     return params, ""
+
+
+def _missing_handler_dim_reason(pname: str, arg_type: str, std_name: str) -> str:
+    """Why a handled derived-type argument cannot be replayed: its handler
+    takes the call's argument *std_name*, which the call does not have."""
+    return (
+        f"argument '{pname}' is of derived type {arg_type}, whose capture handler "
+        f"needs the call's '{std_name}', which is not an argument of the call "
+        f"(scheme-io-capture-rte-objects)"
+    )
 
 
 def _uncaptured_param_reason(params: list, captured: "set[str]") -> str:
@@ -729,6 +838,13 @@ class SchemeIOCapturePass(ModulePass):
     # Used only for the generated test driver's enter/exit data: the cap
     # gets no directives without --directive.
     driver_device_args: "str | None" = None
+    # scheme-io-capture-rte-objects stage 3c: "table:arg,..." -- the
+    # derived-type arguments the scheme's own directives name (ccpp_dsl,
+    # from the source check, with or without --directive). A test driver
+    # keeps one of a handled type with device routines on the device
+    # across the call (production with resident data); the cap never moves
+    # derived-type data.
+    driver_device_ddts: "str | None" = None
     # scheme-io-capture-module-state-setup: "scheme:phase,..." -- other
     # schemes' phases that set module state this scheme reads; the test
     # driver replays their captured calls first, not compared (ccpp_dsl
@@ -741,6 +857,17 @@ class SchemeIOCapturePass(ModulePass):
     # component (parse_ddt_layouts), from ccpp_dsl's reading of their
     # Fortran definitions.
     ddt_layouts: "str | None" = None
+    # scheme-io-capture-rte-objects: the --capture-ddt-handlers registry
+    # file (xdsl_ccpp.util.capture_ddt_handlers).
+    ddt_handlers: "str | None" = None
+    # scheme-io-capture-rte-objects stage 3b:
+    # "standard_name:type_module:producing_table,..." -- derived types the
+    # capture does not record that an init phase the driver replays first
+    # produces (ccpp_dsl, parse_produced).
+    produced: "str | None" = None
+
+    def _handlers(self) -> dict:
+        return _registry_captures(self.ddt_handlers)
 
     def _setup_phases(self) -> "set[tuple[str, str]]":
         pairs = set()
@@ -750,9 +877,12 @@ class SchemeIOCapturePass(ModulePass):
                 pairs.add((scheme, phase))
         return pairs
 
-    def _driver_device_names(self, table_name: str) -> "set[str]":
+    def _driver_device_names(self, table_name: str, option: "str | None" = None) -> "set[str]":
+        """The lower-case arguments of *table_name* in a "table:arg,..."
+        option (default driver_device_args)."""
         names = set()
-        for item in (self.driver_device_args or "").split(","):
+        option = self.driver_device_args if option is None else option
+        for item in (option or "").split(","):
             table, _, arg = item.strip().partition(":")
             if arg and table.lower() == table_name.lower():
                 names.add(arg.lower())
@@ -809,6 +939,7 @@ class SchemeIOCapturePass(ModulePass):
         captured_any = False
         setup_phases = self._setup_phases()
         layouts = parse_ddt_layouts(self.ddt_layouts)
+        handlers = self._handlers()
         setup_tables: dict = {}  # in suite order: {table_name: (params, module)}
 
         for if_op, call_op, scheme_name, phase, table_name in iter_scheme_call_sites(op):
@@ -829,10 +960,15 @@ class SchemeIOCapturePass(ModulePass):
             if param_names is None:
                 continue
 
-            # (value, param name, metadata arg, device-resident?) captured
-            # before / after the call.
+            # (value, param name, metadata arg, device-resident?, handler
+            # dimension values) captured before / after the call.
             before: list = []
             after: list = []
+            value_by_std_name = {
+                args_by_name[p].getAttr("standard_name"): _uncast(v)
+                for v, p in zip(_call_args(call_op), param_names)
+                if p in args_by_name and args_by_name[p].hasAttr("standard_name")
+            }
             for value, param_name in zip(_call_args(call_op), param_names):
                 arg = args_by_name.get(param_name)
                 if arg is None:
@@ -848,11 +984,15 @@ class SchemeIOCapturePass(ModulePass):
                 arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
                 kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-                handler = _ddt_capture(arg)
+                handler = _ddt_capture(arg, handlers)
                 layout = _ddt_layout(arg, layouts)
                 if (not _is_capture_supported(arg_type, kind, rank, real_kinds)
                         and handler is None and layout is None):
                     continue
+                dim_values = [value_by_std_name.get(std) for std in
+                              (handler.dims if handler else ())]
+                if not all(v is not None and has_definite_name(v) for v in dim_values):
+                    continue  # the handler's dimensions are not in the call
                 # A character(len=*) argument arrives through a cast of the
                 # fixed-length variable; capture that variable.
                 value = _uncast(value)
@@ -867,7 +1007,8 @@ class SchemeIOCapturePass(ModulePass):
 
                 # A derived type lives on the host: no device sync.
                 entry = (value, param_name, arg,
-                         param_name in device_names and handler is None and layout is None)
+                         param_name in device_names and handler is None and layout is None,
+                         dim_values)
                 if intent in ("in", "inout"):
                     before.append(entry)
                 if intent in ("out", "inout"):
@@ -893,7 +1034,9 @@ class SchemeIOCapturePass(ModulePass):
                     p for p in param_names if p.lower() in self._driver_device_names(table_name)
                 }
                 params, reason = _build_test_driver_params(
-                    param_names, args_by_name, driver_device, real_kinds, layouts,
+                    param_names, args_by_name, driver_device, real_kinds, layouts, handlers,
+                    parse_produced(self.produced),
+                    self._driver_device_names(table_name, self.driver_device_ddts or ""),
                 )
                 if params is not None:
                     reason = _uncaptured_param_reason(
@@ -908,6 +1051,8 @@ class SchemeIOCapturePass(ModulePass):
 
         if captured_any:
             self._capture_constituent_table(op, mpi_root_ref, declared_decls)
+        if self.test_driver_dir:
+            self._drop_unproduced(captured_tables, setup_tables, skipped)
 
         # A driver needs at least one compared phase; call-only phases
         # (scheme-io-capture-uncaptured-phases) only set up for those.
@@ -917,7 +1062,8 @@ class SchemeIOCapturePass(ModulePass):
                 for _phase, params, _module in captured_tables.values()
             ):
                 self._maybe_emit_test_driver(self.scheme, captured_tables, setup_tables)
-                self._report_skipped(skipped)
+                self._report_skipped(skipped,
+                                     notes=self._produced_notes(captured_tables, setup_tables))
             else:
                 # No driver: one an earlier generation wrote is stale (and
                 # would get a CMake fragment).
@@ -932,15 +1078,72 @@ class SchemeIOCapturePass(ModulePass):
                         f"captured, so there is nothing to compare"
                     ))
 
-    def _report_skipped(self, skipped: dict, no_driver: "str | None" = None) -> None:
+    def _drop_unproduced(self, captured_tables: dict, setup_tables: dict,
+                         skipped: dict) -> None:
+        """A phase passing a produced argument (stage 3b) is replayed only
+        when the driver also replays the init phase producing it -- one of
+        the scheme's own phases or a setup phase; otherwise the argument
+        would be an undefined object. Such a phase moves to *skipped*,
+        repeatedly, as dropping one may strand another. A producer's own
+        produced argument is its output, not a need."""
+        producer_of = {produced_local(std): table
+                       for std, (_module, table) in parse_produced(self.produced).items()}
+        if not producer_of:
+            return
+        dropped = True
+        while dropped:
+            dropped = False
+            replayed = set(captured_tables) | set(setup_tables)
+            for table in list(setup_tables) + list(captured_tables):
+                params = (setup_tables[table][0] if table in setup_tables
+                          else captured_tables[table][1])
+                missing = next((p for p in params if p.category == "produced"
+                                and producer_of.get(p.shared_local) not in (table, *replayed)),
+                               None)
+                if missing is None:
+                    continue
+                reason = (f"argument '{missing.name}' ({missing.arg_type}) comes from "
+                          f"{producer_of.get(missing.shared_local)}, which the replay does "
+                          f"not run (see its entry), so it would be undefined "
+                          f"(scheme-io-capture-rte-objects)")
+                if table in setup_tables:
+                    del setup_tables[table]
+                    skipped[table] = f"not replayed before the scheme's phases: {reason}"
+                else:
+                    del captured_tables[table]
+                    skipped[table] = reason
+                dropped = True
+                break
+
+    def _produced_notes(self, captured_tables: dict, setup_tables: dict) -> list:
+        """One line per replayed phase passing a produced argument it did not
+        produce itself (stage 3b): what the replay does not compare."""
+        producer_of = {produced_local(std): table
+                       for std, (_module, table) in parse_produced(self.produced).items()}
+        notes = []
+        for table in list(setup_tables) + list(captured_tables):
+            params = (setup_tables[table][0] if table in setup_tables
+                      else captured_tables[table][1])
+            for p in params:
+                producer = producer_of.get(p.shared_local) if p.category == "produced" else None
+                if producer and producer != table:
+                    notes.append(
+                        f"{table}: argument '{p.name}' ({p.arg_type}) is not recorded: the "
+                        f"driver gets it from {producer}, replayed first, and does not "
+                        f"compare it (scheme-io-capture-rte-objects)")
+        return notes
+
+    def _report_skipped(self, skipped: dict, no_driver: "str | None" = None,
+                        notes: "list | None" = None) -> None:
         """scheme-io-capture-skip-message: warn about each phase left out of
         the test driver, and list them in test_<scheme>.skipped next to the
         drivers (removed when nothing is skipped). The file is what the user
         sees: in CAM-SIMA the warnings appear only in the case.build output
         (generation runs in buildnml), not in atm.bldlog. *no_driver* says
-        why no driver was written at all."""
+        why no driver was written at all. *notes* are listed too, without a
+        warning: parts of replayed phases that are not compared."""
         path = os.path.join(self.test_driver_dir, f"test_{self.scheme}.skipped")
-        if not skipped and no_driver is None:
+        if not skipped and no_driver is None and not notes:
             if os.path.exists(path):
                 os.remove(path)
             return
@@ -951,6 +1154,7 @@ class SchemeIOCapturePass(ModulePass):
         if no_driver is not None:
             warn_once(f"scheme I/O capture: {self.scheme}: {no_driver}")
             lines.append(f"{self.scheme}: {no_driver}")
+        lines += notes or []
         os.makedirs(self.test_driver_dir, exist_ok=True)
         with open(path, "w") as f:
             f.write(
@@ -1116,7 +1320,11 @@ class SchemeIOCapturePass(ModulePass):
             p for p in param_names if p.lower() in self._driver_device_names(table_name)
         }
         params, reason = _build_test_driver_params(param_names, args_by_name, device, real_kinds,
-                                                   parse_ddt_layouts(self.ddt_layouts))
+                                                   parse_ddt_layouts(self.ddt_layouts),
+                                                   self._handlers(),
+                                                   parse_produced(self.produced),
+                                                   self._driver_device_names(
+                                                       table_name, self.driver_device_ddts or ""))
         if params is None:
             skipped[table_name] = (
                 f"not replayed before the scheme's phases, so module state it sets "
@@ -1214,7 +1422,7 @@ class SchemeIOCapturePass(ModulePass):
         """
         syncs = []
         if self.directive:
-            device_values = [value for value, _, _, is_device in entries if is_device]
+            device_values = [value for value, _, _, is_device, _ in entries if is_device]
             if device_values:
                 syncs.append(directive_op(
                     self.directive,
@@ -1231,11 +1439,12 @@ class SchemeIOCapturePass(ModulePass):
                 StringLiteralExprOp(_STEP_STD_NAME),
                 VarRefExprOp(step_var, result_type=i32),
             ]))
-        for value, param_name, arg, _ in entries:
-            handler = _ddt_capture(arg)
+        for value, param_name, arg, _, dim_values in entries:
+            handler = _ddt_capture(arg, self._handlers())
             if handler is not None:
                 writes.append(CallStatementOp(handler.write, arg_ops=[
                     StringLiteralExprOp(param_name), ValueExprOp(value),
+                    *(ValueExprOp(v) for v in dim_values),
                 ]))
                 continue
             layout = _ddt_layout(arg, parse_ddt_layouts(self.ddt_layouts))

@@ -72,11 +72,28 @@ class TestDriverParam:
     array is sized from the capture file. `is_device` asks for a device
     copy around the call (scheme-io-capture-gpu-residency). A captured
     derived-type argument (scheme-io-capture-ddt-args) has `ddt_read`, the
-    procedure (in module `ddt_read_module`) that rebuilds it, and
-    `type_module`, the module declaring its type `arg_type`; or, captured
+    procedure (in module `ddt_read_module`) that rebuilds it, `ddt_compare`
+    (same module), when given, the one that compares it with the captured
+    outputs, `ddt_dims`, the other arguments both take after the object
+    (scheme-io-capture-rte-objects), and `type_module`, the module
+    declaring its type `arg_type`; or, captured
     component by component, `components` ((name, base type, rank,
     allocatable), ...), read from and compared in the sub-group
     in/<name> and out/<name>.
+
+    `ddt_device_enter`/`ddt_device_exit` (same module as `ddt_read`;
+    scheme-io-capture-rte-objects stage 3c): for a handled derived type the
+    scheme's own directives name, the handler routines that put it on the
+    device before the call and copy it back (out/inout) or delete it (in)
+    after, in a GPU build only: the scheme then finds its data present, as
+    in a production run where the data stays on the device between schemes,
+    and the comparison checks what it left there.
+
+    "produced" (scheme-io-capture-rte-objects stage 3b): a derived type
+    the capture does not record, produced by an init phase the driver
+    replays first (a setup phase, or the scheme's own). Every phase passes
+    the same local, `shared_local`, of type `arg_type` from `type_module`:
+    the producer fills it, the others use it; it is never read or compared.
     """
 
     name: str
@@ -88,13 +105,18 @@ class TestDriverParam:
     is_device: bool = False
     ddt_read: "str | None" = None
     ddt_read_module: "str | None" = None
+    ddt_compare: "str | None" = None
+    ddt_dims: tuple = ()
+    ddt_device_enter: "str | None" = None
+    ddt_device_exit: "str | None" = None
     type_module: "str | None" = None
     components: tuple = ()
+    shared_local: "str | None" = None
 
 
 # Categories of the arguments a test driver supplies itself, with nothing
 # to read from a capture file.
-_DRIVER_SUPPLIED_CATEGORIES = frozenset({"error_arg", "log_unit"})
+_DRIVER_SUPPLIED_CATEGORIES = frozenset({"error_arg", "log_unit", "produced"})
 
 # Defined by an OpenACC/OpenMP build of the drivers (capture_cmake.py), as
 # by CAM-SIMA's nvhpc GPU builds; the drivers' device directives sit inside it.
@@ -214,7 +236,7 @@ class _DriverBuilder:
                                   allocatable=True)
             return self.local(name, i8, shape=[length])  # character(len=N) :: x
         elem = self.element_type(p)
-        if p.rank or p.ddt_read is not None:
+        if p.rank:
             return self.local(name, elem, shape=[0] * p.rank, allocatable=True)
         return self.local(name, elem)
 
@@ -391,6 +413,7 @@ class _DriverBuilder:
         log_units, scalar_reads, allocations, array_reads = [], [], [], []
         after_reads, compares, kwargs = [], [], []
         copy_in, create, copy_out, delete = [], [], [], []
+        ddt_enter, ddt_exit = [], []
         errmsg = errflg = None
         setup = setup_prefix is not None
         names = {p.name for p in params}
@@ -399,15 +422,38 @@ class _DriverBuilder:
             return f"{setup_prefix}{name}" if setup and name in names else name
 
         for p in params:
+            if p.category == "produced":
+                # Shared by the producing init and the phases using it.
+                self.use_symbol(p.arg_type, p.type_module)
+                self.local(p.shared_local, DerivedType(p.arg_type))
+                kwargs.append(KeywordArgExprOp(p.name, _var(p.shared_local)))
+                continue
             supplied = p.category in _DRIVER_SUPPLIED_CATEGORIES
             name = p.name if supplied else local(p.name)
             kwargs.append(KeywordArgExprOp(p.name, _var(name)))
             self.declare_param(p, name)
             if p.ddt_read is not None:
-                # A derived type: rebuilt from the capture (its read
-                # allocates it), never compared.
-                array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
-                                         _str("in"), _str(p.name), _var(name)))
+                # A derived type its own handler records: rebuilt from the
+                # capture (an array one is allocated by the read) and, with
+                # a compare routine, compared with the captured outputs
+                # while the file is open; the routine reports each part.
+                def dims(p=p):
+                    return [_var(local(d)) for d in p.ddt_dims]
+                if p.category in ("in", "inout"):
+                    array_reads.append(_call(self.use(p.ddt_read, p.ddt_read_module),
+                                             _str("in"), _str(p.name), _var(name), *dims()))
+                if p.category in ("out", "inout") and not setup and p.ddt_compare:
+                    after_reads.append(_call(
+                        self.use(p.ddt_compare, p.ddt_read_module),
+                        _str("out"), _str(p.name), _var(name), _var("tolerance"),
+                        _var("call_count"), _var("n_failed"), *dims()))
+                if p.ddt_device_enter and p.ddt_device_exit:
+                    copy_back = p.category in ("out", "inout")
+                    ddt_enter.append(_call(self.use(p.ddt_device_enter, p.ddt_read_module),
+                                           _var(name)))
+                    ddt_exit.append(_call(self.use(p.ddt_device_exit, p.ddt_read_module),
+                                          _var(name),
+                                          arith.ConstantOp(IntegerAttr(int(copy_back), i1))))
                 continue
             if p.components:
                 # A derived type recorded component by component
@@ -457,17 +503,28 @@ class _DriverBuilder:
         if all(p.category in _DRIVER_SUPPLIED_CATEGORIES for p in params):
             return [CommentOp([f"-- {table} (nothing captured: called once, not compared) --"]),
                     *log_units, _assign("call_count", _int(1), i32), call, *check]
-        title = (f"-- setup: {table} (sets module state the replay reads; not compared) --"
-                 if setup else f"-- {table} --")
+        produced = [p.shared_local for p in params if p.category == "produced"]
+        if setup and produced:
+            title = (f"-- setup: {table} (sets {', '.join(produced)} for the replay; "
+                     f"not compared) --")
+        elif setup:
+            title = f"-- setup: {table} (sets module state the replay reads; not compared) --"
+        else:
+            title = f"-- {table} --"
 
         enter, exit_ = self.device_copies(copy_in, create, copy_out, delete)
+        # Handled derived types on the device: GPU builds only (the
+        # handler's routines carry the data directives).
+        ddt_enter = [PreprocessorIfdefOp(_GPU_BUILD_MACRO, ddt_enter)] if ddt_enter else []
+        ddt_exit = [PreprocessorIfdefOp(_GPU_BUILD_MACRO, ddt_exit)] if ddt_exit else []
         self.local("n_calls", i32)
         self.local("found", i1)
         loop_body = [
             _call(self.use("ccpp_capture_open_call", _CAPTURE_MOD),
                   _str(table), _var("call_count"), _var("found")),
             *log_units, *scalar_reads, *allocations, *array_reads,
-            *([enter] if enter else []), call, *check, *([exit_] if exit_ else []),
+            *([enter] if enter else []), *ddt_enter, call, *check,
+            *ddt_exit, *([exit_] if exit_ else []),
             *after_reads,
             _call(self.use("ccpp_capture_close", _CAPTURE_MOD)),
             *compares,

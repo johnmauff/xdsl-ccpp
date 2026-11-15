@@ -3,6 +3,7 @@
 --capture-scheme's SCHEME[:PHASE] parsing."""
 
 import os
+import re
 
 import pytest
 
@@ -96,7 +97,7 @@ def test_fragment_builds_one_version_of_each_cpu_gpu_variant():
     text = render_capture_fragment(
         "rrtmgp_lw_rte", ["/fork/schemes/rrtmgp_lw_rte.F90"], "/fork",
         [("/fork/k/mo_k.F90", "/fork/k/accel/mo_k.F90")])
-    assert ("if(OPENACC)\n"
+    assert ("if(OPENACC OR CCPP_CAPTURE_ACCEL_VARIANTS)\n"
             "  target_sources(test_rrtmgp_lw_rte PRIVATE\n"
             '  "${CCPP_CAPTURE_SCHEME_ROOT}/k/accel/mo_k.F90")\n'
             "else()\n"
@@ -105,7 +106,20 @@ def test_fragment_builds_one_version_of_each_cpu_gpu_variant():
             "endif()\n") in text
     add_executable = text[:text.index("set_target_properties")]
     assert "mo_k.F90" not in add_executable
-    assert "if(OPENACC)" not in render_capture_fragment("kessler", ["/src/kessler.F90"])
+    assert "CCPP_CAPTURE_ACCEL_VARIANTS" not in render_capture_fragment(
+        "kessler", ["/src/kessler.F90"])
+
+
+def test_accel_variants_default_follows_the_captured_build():
+    # A CPU model built with the OpenACC kernels (CAM-SIMA's
+    # RRTMGP_KERNELS=accel): the drivers' CPU build defaults to them too.
+    off = render_capture_cmakelists(support_sources("/out/ccpp_kinds.F90"), "/d")
+    on = render_capture_cmakelists(support_sources("/out/ccpp_kinds.F90"), "/d",
+                                   accel_variants=True)
+    option = re.compile(r'option\(CCPP_CAPTURE_ACCEL_VARIANTS\n\s+"[^"]*"\n\s+(\w+)\)')
+    assert option.search(off).group(1) == "OFF"
+    assert option.search(on).group(1) == "ON"
+    assert "(default: ON, the version" in on
 
 
 def test_scheme_source_root_is_the_nearest_git_checkout(tmp_path):
@@ -689,9 +703,25 @@ def test_driver_needing_a_host_module_is_not_built(tmp_path):
 
 # scheme-io-capture-ddt-args: derived types recorded component by component.
 
-def _run_ddthost_capture(tmp_path, flat: bool):
+_VMR_HANDLERS = (
+    "# vmr_type has derived-type components: recorded by its own handler.\n"
+    "handler vmr_type module=vmr_capture type_module=make_ddt write=vmr_write "
+    "read=vmr_read compare=vmr_compare dims=horizontal_loop_end\n"
+    "source vmr_capture.F90\n"
+)
+
+
+def _run_ddthost_capture(tmp_path, flat: bool, handlers: bool = False,
+                         driver_source: "str | None" = None, plain_init: bool = False,
+                         accel_variants: bool = False, device_routines: bool = False):
     """examples/ddthost in a repository of its own, make_ddt captured;
-    *flat*: its vmr_type without the nested derived-type components."""
+    *flat*: its vmr_type without the nested derived-type components;
+    *handlers*: vmr_type in a --capture-ddt-handlers registry;
+    *driver_source*: a module of that name, a driver_source of it;
+    *plain_init*: make_ddt_init without its ccpp_info_t argument, so the
+    replay can run it; *accel_variants*: --capture-accel-variants;
+    *device_routines*: make_ddt_run's OpenACC names vmr's component and the
+    handler has device routines (stage 3c)."""
     import shutil
 
     repo = tmp_path / "ddthost"
@@ -702,9 +732,40 @@ def _run_ddthost_capture(tmp_path, flat: bool):
         source.write_text(source.read_text()
                           .replace("      type(ty_ddt2) :: error_maybe\n", "")
                           .replace("      type(ty_ddt3) :: burma_shave\n", ""))
+    if plain_init:
+        source = repo / "scheme" / "make_ddt.F90"
+        source.write_text(source.read_text()
+                          .replace("make_ddt_init(nbox, ccpp_info, vmr,", "make_ddt_init(nbox, vmr,")
+                          .replace("      type(ccpp_info_t),  intent(in)  :: ccpp_info\n", ""))
+        meta = repo / "scheme" / "make_ddt.meta"
+        meta.write_text(meta.read_text().replace(
+            "[ ccpp_info ]\n  standard_name = host_standard_ccpp_type\n  type = ccpp_info_t\n"
+            "  dimensions = ()\n  intent = in\n", "", 1))
+    if device_routines:
+        source = repo / "scheme" / "make_ddt.F90"
+        source.write_text(source.read_text().replace(
+            "      ! Check for correct threading behavior\n",
+            "      !$acc data copyin(vmr%vmr_array)\n      !$acc end data\n"
+            "      ! Check for correct threading behavior\n"))
     tool = ccppMain()
     options_db = tool.default_options_db()
     scheme_dir = repo / "scheme"
+    if handlers:
+        (scheme_dir / "vmr_capture.F90").write_text(
+            "module vmr_capture\n  use ccpp_capture_mod\n  use make_ddt, only: vmr_type\n"
+            "end module vmr_capture\n")
+        registry = _VMR_HANDLERS
+        if device_routines:
+            registry = registry.replace(
+                "dims=horizontal_loop_end\n",
+                "dims=horizontal_loop_end device_enter=vmr_on_device device_exit=vmr_off_device\n")
+        if driver_source:
+            (scheme_dir / f"{driver_source}.F90").write_text(
+                f"module {driver_source}\nend module {driver_source}\n")
+            registry += f"driver_source {driver_source}.F90\n"
+        (scheme_dir / "capture_handlers.txt").write_text(registry)
+        options_db["capture_ddt_handlers"] = str(scheme_dir / "capture_handlers.txt")
+        options_db["emit_datatable"] = str(tmp_path / "datatable.xml")
     options_db.update({
         "host_files": [str(scheme_dir / "host_ccpp_ddt.meta")] + [
             str(repo / "host_ftn" / f"{name}.meta")
@@ -715,6 +776,7 @@ def _run_ddthost_capture(tmp_path, flat: bool):
         "suites": [str(scheme_dir / "ddt_suite.xml"), str(scheme_dir / "temp_suite.xml")],
         "capture_scheme": ["make_ddt"],
         "capture_test_driver_dir": str(tmp_path / "drivers"),
+        "capture_accel_variants": accel_variants,
         "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
     })
     tool.run(options_db)
@@ -746,6 +808,152 @@ def test_nested_derived_type_is_reported(tmp_path):
     drivers, cap = _run_ddthost_capture(tmp_path, flat=False)
     assert "ccpp_capture_begin_ddt('vmr')" not in cap
     report = (drivers / "test_make_ddt.skipped").read_text()
-    assert "make_ddt_run: argument 'vmr' is of derived type vmr_type" in report
+    # make_ddt_init produces vmr (stage 3b), but cannot be replayed itself
+    # (ccpp_info_t), so neither can the phases using vmr.
+    assert "make_ddt_init: argument 'ccpp_info' is of derived type ccpp_info_t" in report
+    assert ("make_ddt_run: argument 'vmr' (vmr_type) comes from make_ddt_init, which "
+            "the replay does not run") in report
     assert "derived type vmr_type is not recorded: component error_maybe of type " \
         "vmr_type is ty_ddt2" in report
+
+
+def test_produced_argument_is_passed_from_its_init(tmp_path):
+    """scheme-io-capture-rte-objects stage 3b: vmr_type, which the capture
+    cannot record, comes from make_ddt_init (intent out): the driver
+    replays the init into one local, named after the standard name, and
+    passes it to the phases using it; it is never read or compared."""
+    pytest.importorskip("fparser")
+    drivers, _cap = _run_ddthost_capture(tmp_path, flat=False, plain_init=True)
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    assert "type(vmr_type) :: volume_mixing_ratio_ddt" in driver
+    init = driver.index("call make_ddt_init(")
+    run = driver.index("call make_ddt_run(")
+    assert init < run
+    assert driver.count("vmr=volume_mixing_ratio_ddt") >= 2
+    assert "ccpp_capture_read('in', 'vmr'" not in driver
+    assert "vmr_expected" not in driver
+    report = (drivers / "test_make_ddt.skipped").read_text()
+    assert ("make_ddt_run: argument 'vmr' (vmr_type) is not recorded: the driver gets it "
+            "from make_ddt_init, replayed first, and does not compare it") in report
+    assert "make_ddt_run: argument 'vmr' is of derived type" not in report
+
+
+def test_registry_handler_captures_compares_and_builds_its_type(tmp_path):
+    """scheme-io-capture-rte-objects: vmr_type, which the capture cannot
+    record (a derived-type component), through the handler the registry
+    names: written before and after make_ddt_run with the call's
+    horizontal_loop_end, read and compared in the driver, its source in the
+    driver build."""
+    pytest.importorskip("fparser")
+    drivers, cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True)
+    assert cap.count("call vmr_write('vmr', vmr, cole)") == 2
+    assert "use vmr_capture, only: vmr_write" in cap
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    assert "call vmr_read('in', 'vmr', vmr, cole)" in driver
+    assert "call vmr_compare('out', 'vmr', vmr, tolerance, call_count, n_failed, cole)" \
+        in driver
+    report = (drivers / "test_make_ddt.skipped").read_text()
+    assert "vmr_type is not recorded" not in report
+    # make_ddt_timestep_final has no horizontal_loop_end.
+    assert ("make_ddt_timestep_final: argument 'vmr' is of derived type vmr_type, whose "
+            "capture handler needs the call's 'horizontal_loop_end', which is not an "
+            "argument of the call") in report
+    assert "vmr_capture.F90" in (drivers / "test_make_ddt.cmake").read_text()
+    # The model compiles it too: a utility file of the datatable.
+    import xml.etree.ElementTree as ET
+    utilities = [el.text for el in ET.parse(tmp_path / "datatable.xml").getroot().iter("file")
+                 if el.text]
+    assert str(tmp_path / "ddthost" / "scheme" / "vmr_capture.F90") in utilities
+
+
+def test_handled_type_kept_on_the_device_by_its_handler(tmp_path):
+    """Stage 3c: a handled argument the scheme's own OpenACC names (here a
+    component, copyin(vmr%vmr_array)) is put on the device by the handler's
+    device_enter before the call and copied back by device_exit after (it
+    is inout), in a GPU build only, as in a production run with resident
+    data. The cap is unchanged: it never moves derived-type data."""
+    pytest.importorskip("fparser")
+    drivers, cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True,
+                                        device_routines=True)
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    block = driver[driver.index("-- make_ddt_run --"):]
+    call = block.index("call make_ddt_run(")
+    enter = block.index("call vmr_on_device(vmr)")
+    assert block.rindex("#ifdef USE_GPU", 0, enter) < enter < call
+    exit_ = block.index("call vmr_off_device(vmr, .true.)")
+    compare = block.index("call vmr_compare('out'")
+    assert call < exit_ < block.index("#endif", exit_) < compare
+    assert "vmr_on_device" not in cap and "vmr_off_device" not in cap
+
+
+def test_handled_type_without_device_use_stays_on_the_host(tmp_path):
+    """The scheme's directives do not name the argument: nothing is moved
+    (a CPU scheme works on the host), whatever its handler offers."""
+    pytest.importorskip("fparser")
+    drivers, _cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True)
+    assert "vmr_on_device" not in (drivers / "test_make_ddt.F90").read_text()
+
+
+def test_registry_driver_source_builds_into_the_driver_only(tmp_path):
+    """driver_source (scheme-io-capture-rte-objects stage 3b): in the
+    driver build of a scheme that uses a handled type, never in the model
+    (a stand-in such as a plain-NetCDF reader clashes with the host's)."""
+    pytest.importorskip("fparser")
+    import xml.etree.ElementTree as ET
+
+    drivers, _cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True,
+                                         driver_source="stand_in_reader")
+    fragment = (drivers / "test_make_ddt.cmake").read_text()
+    assert "stand_in_reader.F90" in fragment
+    assert "vmr_capture.F90" in fragment
+    utilities = [el.text for el in ET.parse(tmp_path / "datatable.xml").getroot().iter("file")
+                 if el.text]
+    assert not any(u.endswith("stand_in_reader.F90") for u in utilities)
+    assert str(tmp_path / "ddthost" / "scheme" / "vmr_capture.F90") in utilities
+
+
+def test_capture_accel_variants_sets_the_cmake_default(tmp_path):
+    """--capture-accel-variants: the host model built the OpenACC version of
+    CPU/OpenACC pairs in a CPU build (CAM-SIMA's RRTMGP_KERNELS=accel), so
+    the drivers' CPU build defaults to it."""
+    pytest.importorskip("fparser")
+    drivers, _cap = _run_ddthost_capture(tmp_path, flat=True, accel_variants=True)
+    top = (drivers / "CMakeLists.txt").read_text()
+    assert re.search(r'option\(CCPP_CAPTURE_ACCEL_VARIANTS\n\s+"[^"]*"\n\s+ON\)', top)
+
+
+def test_registry_sources_only_where_a_handled_type_is_used(tmp_path):
+    """A registry whose types no captured scheme uses adds nothing to the
+    model build (its handlers need modules that suite does not build)."""
+    pytest.importorskip("fparser")
+    import xml.etree.ElementTree as ET
+
+    repo = tmp_path / "ddthost"
+    _run_ddthost_capture(tmp_path, flat=True, handlers=True)  # sets up the repository
+    # Regenerate with a registry whose only type no captured scheme uses.
+    registry = repo / "scheme" / "capture_handlers.txt"
+    registry.write_text(_VMR_HANDLERS.replace("handler vmr_type", "handler other_type"))
+    from xdsl_ccpp.util.capture_ddt_handlers import parse_ddt_handlers
+    parse_ddt_handlers.cache_clear()
+    out = tmp_path / "second"
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    scheme_dir = repo / "scheme"
+    options_db.update({
+        "host_files": [str(scheme_dir / "host_ccpp_ddt.meta")] + [
+            str(repo / "host_ftn" / f"{name}.meta")
+            for name in ("test_host_data", "test_host_mod", "test_host")],
+        "scheme_files": [str(scheme_dir / f"{name}.meta") for name in (
+            "make_ddt", "environ_conditions", "setup_coeffs", "temp_set",
+            "temp_calc_adjust", "temp_adjust")],
+        "suites": [str(scheme_dir / "ddt_suite.xml"), str(scheme_dir / "temp_suite.xml")],
+        "capture_scheme": ["make_ddt"],
+        "capture_test_driver_dir": str(out / "drivers"),
+        "capture_ddt_handlers": str(registry),
+        "emit_datatable": str(out / "datatable.xml"),
+        "out": str(out / "out"), "tempdir": str(out / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+    files = [el.text for el in ET.parse(out / "datatable.xml").getroot().iter("file") if el.text]
+    assert not any(f.endswith("vmr_capture.F90") for f in files)
+    assert "vmr_capture.F90" not in (out / "drivers" / "test_make_ddt.cmake").read_text()
