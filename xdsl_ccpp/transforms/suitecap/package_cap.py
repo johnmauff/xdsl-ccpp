@@ -170,6 +170,7 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
         gen._inject_segment_interface_gpu_update(fn, device_std_names, gen.meta_data)
     # Device-resident private state leaves the device in the delete routine.
     gen._inject_suite_owned_gpu_exit(generated_fns, suite_model)
+    gen._inject_run_local_gpu_residency(generated_fns, suite_model)
 
     seen: set = set()
     stubs = []

@@ -137,6 +137,7 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
             generated_fns, suite_model, self.meta_data, debug_sync=self.debug_sync
         )
         self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
+        self._inject_run_local_gpu_residency(generated_fns, suite_model)
 
         seen_stubs: set = set()
         deduped_stubs = []

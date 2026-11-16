@@ -326,3 +326,46 @@ class TestRealCapgenChainedInterstitialVariable:
         suite_vars_body = _fn_body(fortran, "ccpp_physics_suite_variables")
         assert "dimension_for_interstitial_variable" not in suite_vars_body
         assert "num_model_times" not in register_body
+
+
+# A run-local SuiteOwned array (dimensioned by a _timestep_init output)
+# that a memory_space=device scheme writes: its device copy is created and
+# deleted with each per-call allocation, in the run function -- not in
+# _finalize, where the local does not exist (rrtmgp's toa_src_sw/sfac,
+# nday-sized, once rrtmgp_sw_solar_var ran on the device).
+_DEVICE_SCHEME_A_RUN = f"""\
+[ccpp-table-properties]
+  name = scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_a_run
+  type = scheme
+[ produced ]
+  standard_name = interstitial_var
+  units = count
+  dimensions = (dimension_for_interstitial_variable)
+  type = real
+  kind = kind_phys
+  intent = out
+  memory_space = device
+{CCPP_MANDATORY_ARGS}
+"""
+
+
+def test_run_local_device_var_created_and_deleted_per_call(run_host_match, ccpp_context):
+    module = run_host_match(
+        scheme_metas=[_scheme_c_meta("_timestep_init"), _DEVICE_SCHEME_A_RUN],
+        host_metas=[_HOST_META], suite_xml=_FLAT_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    fortran = out.getvalue()
+    run = _fn_body(fortran, "test_suite_physics")
+    alloc = run.index("allocate(produced(")
+    create = run.index("!$acc enter data create(produced)")
+    delete = run.index("!$acc exit data delete(produced)")
+    dealloc = run.index("if (allocated(produced)) deallocate(produced)")
+    assert alloc < create < delete < dealloc
+    assert "produced" not in _fn_body(fortran, "test_suite_finalize")

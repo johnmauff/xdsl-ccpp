@@ -15828,3 +15828,55 @@ replays.
 Result (user, 2026-11-16): all 61 c10a replays pass on the CPU and the GPU,
 including both McICA drivers (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0).
 `capture-shr-randnum` and `scheme-io-capture-rte-objects` are resolved.
+
+## `gpu-port-dme-adjust`: `dme_adjust` on the GPU (recorded 2026-11-16; ported 2026-11-06)
+
+atmospheric_physics `9fd5ebd` ("dme_adjust: OpenACC port"):
+- The constituent properties are queried once on the host, into a
+  water/thermo-active mask.
+- One parallel loop over columns does the mass adjustment, with the
+  levels in order within a column (`ps` and `pint` accumulate).
+- The per-element arithmetic is unchanged, so CPU answers are
+  bit-for-bit.
+- `dme_adjust.o` is in Depends.nvhpc's GPU object list.
+
+Verified:
+- the `capture_dme_adjust` replay (c02h) on the CPU (2026-11-06) and
+  the GPU (2026-11-11);
+- the GPU FPHYStest `cam-outfrq_dme_adjust_derecho_gpu`, which passes
+  BASELINE against the nvhpc CPU baseline (xdsl91gpu).
+
+`dme_adjust` is commented out in the cam4/5/7 suites (atmospheric_physics
+issue #222: `qini`/`liqini`/`iceini` need initialization), so
+`GPU_SCHEME_STATUS.md` has no row for it until those suites enable it.
+The port was done after the backlog item was put on hold, and the item
+was not updated at the time.
+
+## Run-local SuiteOwned arrays on the device: per-call create/delete (2026-11-16)
+
+The c66 rrtmgp GPU build failed in `rrtmgp_cap.F90`: `rrtmgp_finalize` had
+`!$acc exit data delete(sfac)` and `delete(toa_src_sw)`, two symbols it does
+not have. Those arrays are run-local SuiteOwned variables: sized by `nday`
+(set in a `_timestep_init`), so they are local allocatables of the run
+function, allocated on every call (`LazyAllocOp` with `is_run_local`) and
+deallocated before it returns (`SafeDeallocOp`). The `rrtmgp_sw_solar_var`
+GPU port made them device-resident (`needs_device_residency`). The
+`LazyAllocOp` printer emits its guarded `enter data create` only for
+module-level variables, yet `_inject_suite_owned_gpu_exit` put every
+device-resident `LazyAllocOp`, run-local ones included, on the `_finalize`
+delete list. So a run-local array got no device copy, and a delete where it
+does not exist.
+
+Fix (`transforms/suitecap/gpu.py`, called from `suite_cap.py` and
+`suitecap/package_cap.py`):
+- `_inject_suite_owned_gpu_exit` skips run-local `LazyAllocOp`s.
+- New `_inject_run_local_gpu_residency`: an `AccEnterDataOp(create)` right
+  after each run-local device allocation, and an `AccExitDataOp(delete)`
+  right before its deallocation, in the run function. The device copy
+  lives as long as the allocation.
+
+Checked by regenerating c66's caps (generation only): `rrtmgp_cap.F90`
+changes only by the create/delete pairs for `toa_src_sw` and `sfac`, and
+the two finalize deletes are gone. Test:
+`test_run_local_device_var_created_and_deleted_per_call`.
+`tests/unit` 1548 and `tests/filecheck` 56 passed.
