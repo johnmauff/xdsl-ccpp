@@ -644,6 +644,75 @@ def test_driver_replays_the_init_that_sets_module_state_first(tmp_path):
     assert "-- setup:" not in (drivers / "test_kessler.F90").read_text()
 
 
+def test_setup_phase_gets_the_setups_it_needs_itself(tmp_path):
+    """A setup phase can read module state another init sets
+    (rrtmgp_sw_solar_var_setup_init reads the band boundaries
+    rrtmgp_inputs_setup_init stores): the driver replays that init too,
+    first. examples/ddthost's temp suite: temp_adjust_run reads adj_state,
+    set by temp_calc_adjust_init, which reads base_state, set by
+    temp_set_init."""
+    pytest.importorskip("fparser")
+    import shutil
+
+    repo = tmp_path / "ddthost"
+    shutil.copytree("examples/ddthost", repo)
+    (repo / ".git").mkdir()
+    scheme = repo / "scheme"
+    # temp_set.F90 next to its .meta, where the capture looks for it.
+    shutil.move(str(scheme / "source_dir2" / "temp_set.F90"), str(scheme / "temp_set.F90"))
+    (repo / "chain_state.F90").write_text(
+        "module chain_state\n  use ccpp_kinds, only: kind_phys\n"
+        "  real(kind_phys) :: base_state = 0.\n  real(kind_phys) :: adj_state = 0.\n"
+        "end module chain_state\n")
+
+    def edit(name, use_line, old, new):
+        path = scheme / name
+        text = path.read_text()
+        assert use_line in text and old in text
+        text = text.replace(use_line, f"{use_line}\n  use chain_state", 1)
+        path.write_text(text.replace(old, new, 1))
+
+    edit("temp_set.F90", "  use ccpp_kinds, only: kind_phys, kind_temp",
+         "    temp_inc_set = temp_inc_in\n",
+         "    temp_inc_set = temp_inc_in\n    base_state = 1.0_kind_phys\n")
+    edit("temp_calc_adjust.F90", "   use ccpp_kinds, only: kind_phys",
+         "      ! This routine currently does nothing\n",
+         "      adj_state = 2.0_kind_phys * base_state\n")
+    text = (scheme / "temp_adjust.F90").read_text()
+    head, tail = text.split("subroutine temp_adjust_run", 1)
+    (scheme / "temp_adjust.F90").write_text(
+        head.replace("  use ccpp_kinds, only: kind_phys, kind_temp",
+                     "  use ccpp_kinds, only: kind_phys, kind_temp\n  use chain_state", 1)
+        + "subroutine temp_adjust_run"
+        + tail.replace("    errflg = 0\n",
+                       "    errflg = 0\n    if (adj_state < 0._kind_phys) errflg = 1\n", 1))
+
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    drivers = tmp_path / "drivers"
+    options_db.update({
+        "host_files": [str(scheme / "host_ccpp_ddt.meta")] + [
+            str(repo / "host_ftn" / f"{name}.meta")
+            for name in ("test_host_data", "test_host_mod", "test_host")],
+        "scheme_files": [str(scheme / f"{name}.meta") for name in (
+            "make_ddt", "environ_conditions", "setup_coeffs", "temp_set",
+            "temp_calc_adjust", "temp_adjust")],
+        "suites": [str(scheme / "ddt_suite.xml"), str(scheme / "temp_suite.xml")],
+        "capture_scheme": ["temp_adjust"],
+        "capture_test_driver_dir": str(drivers),
+        "out": str(tmp_path / "out"), "tempdir": str(tmp_path / "tmp"), "verbose": 0,
+    })
+    tool.run(options_db)
+    driver = (drivers / "test_temp_adjust.F90").read_text()
+    # temp_calc_adjust_init is in temp_adjust's group, so it is replayed
+    # (call-only) anyway; temp_set_init, which it needs, comes first.
+    first = driver.index("-- setup: temp_set_init")
+    second = driver.index("call temp_calc_adjust_init(")
+    assert first < second < driver.index("-- temp_adjust_run --")
+    fragment = (drivers / "test_temp_adjust.cmake").read_text()
+    assert "temp_set.F90" in fragment and "temp_calc_adjust.F90" in fragment
+
+
 def test_unlisted_setter_is_captured_for_the_drivers_only(tmp_path):
     # kessler is not on the capture list: its init is captured anyway, for
     # kessler_update's driver, but it gets no driver of its own.
@@ -912,6 +981,29 @@ def test_registry_driver_source_builds_into_the_driver_only(tmp_path):
                  if el.text]
     assert not any(u.endswith("stand_in_reader.F90") for u in utilities)
     assert str(tmp_path / "ddthost" / "scheme" / "vmr_capture.F90") in utilities
+
+
+def test_driver_source_submodule_joins_every_driver_using_its_module(tmp_path):
+    """A registry driver_source holding a submodule of a module a scheme
+    uses (the plain-NetCDF ccpp_io_reader) joins that scheme's driver
+    build even when no handled type is involved -- a gravity-wave init
+    reading a file through the reader did not link without it -- and
+    stays out of the drivers of schemes that do not use the module."""
+    pytest.importorskip("fparser")
+    scheme = _kessler_repo(tmp_path, "file_reader_api", "ccpp_kinds")
+    (scheme.parent / "utils" / "file_reader_api.F90").write_text(
+        "module file_reader_api\n  interface\n    module subroutine open_it()\n"
+        "    end subroutine open_it\n  end interface\nend module file_reader_api\n")
+    stand_in = tmp_path / "capture"
+    stand_in.mkdir()
+    (stand_in / "plain_reader.F90").write_text(
+        "submodule (file_reader_api) plain_reader\ncontains\n"
+        "  module procedure open_it\n  end procedure open_it\nend submodule plain_reader\n")
+    (stand_in / "handlers.txt").write_text("driver_source plain_reader.F90\n")
+    drivers, _ = _run_kessler_capture(
+        tmp_path, scheme, {"capture_ddt_handlers": str(stand_in / "handlers.txt")})
+    assert "plain_reader.F90" in (drivers / "test_kessler.cmake").read_text()
+    assert "plain_reader.F90" not in (drivers / "test_kessler_update.cmake").read_text()
 
 
 def test_capture_accel_variants_sets_the_cmake_default(tmp_path):

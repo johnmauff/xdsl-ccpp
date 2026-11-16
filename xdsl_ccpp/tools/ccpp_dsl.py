@@ -1931,6 +1931,26 @@ class ccppMain:
         registry = parse_ddt_handlers(self.options_db.get("capture_ddt_handlers"))
         return registry.driver_sources if registry else ()
 
+    def _capture_submodule_sources(self, closure) -> list:
+        """The registry's driver_source files holding a submodule of a
+        module that *closure* (a SourceClosure) defines: they implement
+        that module's separate module procedures in the test drivers
+        (e.g. ccpp_io_reader's create_netcdf_reader_t), so every driver
+        using the module needs them, not only the drivers of schemes with a
+        handled type."""
+        from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
+        from xdsl_ccpp.transforms.module_dependency_resolver import scan_fortran_source
+
+        driver_sources = self._capture_driver_sources()
+        if not driver_sources:
+            return []
+        defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
+        defined: set = set()
+        for path in closure.sources:
+            defined |= scan_fortran_source(path, defs).modules
+        return [path for path in driver_sources
+                if scan_fortran_source(path, defs).submodule_of & defined]
+
     def _plan_ddt_layouts(self, mlir_file: str, out_dir: str) -> None:
         """scheme-io-capture-ddt-args: for the derived-type arguments of the
         captured schemes (other than the constituent properties), read each
@@ -2057,49 +2077,22 @@ class ccppMain:
             if scheme in self._setup_only:
                 continue  # captured for other drivers only: no driver
             wanted = phases.split(",") if phases else list(_CAPTURE_PHASES)
-            for (owner, phase, table), args in tables.items():
-                if owner != scheme or phase not in wanted:
-                    continue
-                for arg in args:
-                    arg_type = arg.arg_type.data.lower()
-                    std = attr(arg, "standard_name").lower()
-                    if (recorded(arg_type) or not std or attr(arg, "dimensions")
-                            or attr(arg, "intent") not in ("in", "inout")):
-                        continue
-                    found = producers.get((std, arg_type), [])
-                    name = arg.arg_name.data
-                    if len(found) != 1:
-                        if len(found) > 1:
-                            self._produced_notes.setdefault(scheme, []).append(
-                                f"{table}: argument '{name}' ({arg_type}) is produced by "
-                                f"several init phases ({', '.join(t for _s, _p, t in found)}), "
-                                f"so the replay cannot tell which to run")
-                        continue
-                    producer, producer_phase, producer_table = found[0]
-                    type_module = self._type_module(module, (scheme, producer), arg_type,
-                                                    meta_files, provided)
-                    if type_module is None:
-                        self._produced_notes.setdefault(scheme, []).append(
-                            f"{table}: argument '{name}' ({arg_type}): no definition of "
-                            f"the type in the sources of {scheme} or {producer}")
-                        continue
-                    if std not in self._produced.get(scheme, {}):
-                        self._produced.setdefault(scheme, {})[std] = (type_module,
-                                                                      producer_table)
-                    if producer == scheme:
-                        if phases and producer_phase not in wanted:
-                            wanted.append(producer_phase)
-                            listed[scheme] = f"{scheme}:{','.join(wanted)}"
-                        continue
-                    setups = self._capture_setups.setdefault(scheme, [])
-                    if (producer, producer_phase) not in setups:
-                        setups.append((producer, producer_phase))
-                    if producer in listed:
-                        other_phases = _capture_spec(listed[producer])[1]
-                        if other_phases and producer_phase not in other_phases.split(","):
-                            listed[producer] = f"{producer}:{other_phases},{producer_phase}"
-                    elif producer_phase not in extra.setdefault(producer, []):
-                        extra[producer].append(producer_phase)
+            # The scheme's own phases, then its setup phases: a setup phase
+            # may pass a produced argument too (rrtmgp_inputs_setup_init
+            # takes kdist); producers added on the way are scanned in turn.
+            done: set = set()
+            while True:
+                pending = [c for c in [(scheme, p) for p in wanted]
+                           + list(self._capture_setups.get(scheme, [])) if c not in done]
+                if not pending:
+                    break
+                consumer = pending[0]
+                done.add(consumer)
+                for (owner, phase, table), args in tables.items():
+                    if (owner, phase) == consumer:
+                        self._plan_produced_table(
+                            module, scheme, phases, wanted, listed, extra, table, args,
+                            producers, recorded, attr, meta_files, provided)
         # A producer captured for the drivers only: its handled argument
         # types still bring the handler sources into those drivers.
         for producer in extra:
@@ -2110,6 +2103,53 @@ class ccppMain:
             f"{other}:{','.join(p for p in _CAPTURE_PHASES if p in phases)}"
             for other, phases in extra.items()
         ]
+
+    def _plan_produced_table(self, module, scheme, phases, wanted, listed, extra, table,
+                             args, producers, recorded, attr, meta_files, provided) -> None:
+        """_plan_produced_args for one phase *table* *scheme*'s driver
+        replays (its own or a setup phase): an argument the capture does not
+        record that exactly one init phase produces becomes produced, and
+        that init a phase of the driver."""
+        for arg in args:
+            arg_type = arg.arg_type.data.lower()
+            std = attr(arg, "standard_name").lower()
+            if (recorded(arg_type) or not std or attr(arg, "dimensions")
+                    or attr(arg, "intent") not in ("in", "inout")):
+                continue
+            found = producers.get((std, arg_type), [])
+            name = arg.arg_name.data
+            if len(found) != 1:
+                if len(found) > 1:
+                    self._produced_notes.setdefault(scheme, []).append(
+                        f"{table}: argument '{name}' ({arg_type}) is produced by "
+                        f"several init phases ({', '.join(t for _s, _p, t in found)}), "
+                        f"so the replay cannot tell which to run")
+                continue
+            producer, producer_phase, producer_table = found[0]
+            type_module = self._type_module(module, (scheme, producer), arg_type,
+                                            meta_files, provided)
+            if type_module is None:
+                self._produced_notes.setdefault(scheme, []).append(
+                    f"{table}: argument '{name}' ({arg_type}): no definition of "
+                    f"the type in the sources of {scheme} or {producer}")
+                continue
+            if std not in self._produced.get(scheme, {}):
+                self._produced.setdefault(scheme, {})[std] = (type_module,
+                                                              producer_table)
+            if producer == scheme:
+                if phases and producer_phase not in wanted:
+                    wanted.append(producer_phase)
+                    listed[scheme] = f"{scheme}:{','.join(wanted)}"
+                continue
+            setups = self._capture_setups.setdefault(scheme, [])
+            if (producer, producer_phase) not in setups:
+                setups.append((producer, producer_phase))
+            if producer in listed:
+                other_phases = _capture_spec(listed[producer])[1]
+                if other_phases and producer_phase not in other_phases.split(","):
+                    listed[producer] = f"{producer}:{other_phases},{producer_phase}"
+            elif producer_phase not in extra.setdefault(producer, []):
+                extra[producer].append(producer_phase)
 
     def _type_module(self, module, schemes, type_name: str, meta_files: dict,
                      provided) -> "str | None":
@@ -2143,41 +2183,64 @@ class ccppMain:
         extra: dict = {}  # setter scheme not listed -> [phases]
         for spec in specs:
             scheme = _capture_spec(spec)[0]
-            for reader, entry, other, phase, keys in self._module_state_setters(
-                    module, spec, meta_files, provided):
-                names = ", ".join(f"{var} ({mod})" for mod, var in keys)
-                why = None
-                if phase == "timestep_initial":
-                    why = "it runs every time step, which the replay does not reproduce"
-                else:
-                    closure = self._scheme_closure_facts(module, other, meta_files, provided)[2]
-                    if closure.unresolved:
-                        why = "its sources need modules the capture build cannot supply: " + \
-                            ", ".join(sorted(closure.unresolved))
-                    elif entry in closure.mpi_procedures:
-                        why = closure.mpi_procedures[entry]
-                if why is not None:
-                    self._state_notes.setdefault(scheme, []).append(
-                        f"{reader} reads module variables {names}, set by {entry} "
-                        f"(scheme {other}, {phase} phase), which the replay does not run "
-                        f"({why}): the replay may differ (scheme-io-capture-module-state-setup)")
-                    continue
-                setups = self._capture_setups.setdefault(scheme, [])
-                if (other, phase) not in setups:
-                    setups.append((other, phase))
-                if other in listed:
-                    other_phases = _capture_spec(listed[other])[1]
-                    if other_phases and phase not in other_phases.split(","):
-                        listed[other] = f"{other}:{other_phases},{phase}"
-                else:
-                    extra.setdefault(other, [])
-                    if phase not in extra[other]:
-                        extra[other].append(phase)
+            # The scheme's phases, then each setup phase found: a setup can
+            # read module state another setup sets (rrtmgp_sw_solar_var_setup_init
+            # reads the band boundaries rrtmgp_inputs_setup_init stores).
+            pending = [spec]
+            seen = {spec}
+            while pending:
+                found = self._module_state_setters(module, pending.pop(0), meta_files,
+                                                   provided)
+                for reader, entry, other, phase, keys in found:
+                    if other == scheme:
+                        continue  # the driver replays the scheme's own phases
+                    if self._add_state_setup(module, scheme, reader, entry, other, phase,
+                                             keys, meta_files, provided, listed, extra):
+                        setter = f"{other}:{phase}"
+                        if setter not in seen:
+                            seen.add(setter)
+                            pending.append(setter)
         self.options_db["capture_scheme"] = list(listed.values()) + [
             f"{other}:{','.join(p for p in _CAPTURE_PHASES if p in phases)}"
             for other, phases in extra.items()
         ]
         self._setup_only = set(extra)
+
+    def _add_state_setup(self, module, scheme, reader, entry, other, phase, keys,
+                         meta_files, provided, listed, extra) -> bool:
+        """_plan_state_setup for one setter: *other*'s *phase* (entry point
+        *entry*) sets module variables *keys* that *reader* reads. Adds it
+        to *scheme*'s setup phases and the capture (*listed* / *extra*),
+        or notes why the replay cannot run it. True when added."""
+        names = ", ".join(f"{var} ({mod})" for mod, var in keys)
+        why = None
+        if phase == "timestep_initial":
+            why = "it runs every time step, which the replay does not reproduce"
+        else:
+            closure = self._scheme_closure_facts(module, other, meta_files, provided)[2]
+            if closure.unresolved:
+                why = "its sources need modules the capture build cannot supply: " + \
+                    ", ".join(sorted(closure.unresolved))
+            elif entry in closure.mpi_procedures:
+                why = closure.mpi_procedures[entry]
+        if why is not None:
+            self._state_notes.setdefault(scheme, []).append(
+                f"{reader} reads module variables {names}, set by {entry} "
+                f"(scheme {other}, {phase} phase), which the replay does not run "
+                f"({why}): the replay may differ (scheme-io-capture-module-state-setup)")
+            return False
+        setups = self._capture_setups.setdefault(scheme, [])
+        if (other, phase) not in setups:
+            setups.append((other, phase))
+        if other in listed:
+            other_phases = _capture_spec(listed[other])[1]
+            if other_phases and phase not in other_phases.split(","):
+                listed[other] = f"{other}:{other_phases},{phase}"
+        else:
+            extra.setdefault(other, [])
+            if phase not in extra[other]:
+                extra[other].append(phase)
+        return True
 
     def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
         """Write the CMake build for the capture test drivers
@@ -2256,6 +2319,14 @@ class ccppMain:
                 # Why an argument no init produces for the replay stays unproduced.
                 self._append_skipped(driver_dir, scheme, note)
             closure = self._capture_closure(module, files, provided)
+            extra = [path for path in self._capture_submodule_sources(closure)
+                     if path not in files]
+            if extra:
+                # A driver_source implementing a module the closure uses
+                # (the plain-NetCDF ccpp_io_reader for a scheme init that
+                # reads a file): without it the driver does not link.
+                files.extend(extra)
+                closure = self._capture_closure(module, files, provided)
             if closure.unresolved:
                 self._report_driver_not_built(driver_dir, scheme, closure.unresolved)
                 self.remove_file_if_exists(fragment)
