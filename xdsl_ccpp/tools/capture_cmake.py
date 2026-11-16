@@ -122,7 +122,7 @@ _TOP_TEMPLATE = """\
 # CMake first configures) to its top-level directory.
 cmake_minimum_required(VERSION 3.19)
 project(ccpp_capture_tests LANGUAGES Fortran)
-
+{c_language}
 set(CCPP_CAPTURE_DIR "" CACHE PATH
     "Directory of the captures to test (default: those of the generation that wrote this file)")
 if(NOT CCPP_CAPTURE_DIR)
@@ -148,12 +148,12 @@ separate_arguments(_nf_flibs UNIX_COMMAND "${{_nf_flibs}}")
 
 # Scheme sources may have lines over gfortran's 132-column default (the
 # generated drivers do not: the printer continues long lines).
+# (Fortran-only options are limited to Fortran: a driver may compile C.)
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-  add_compile_options(-ffree-line-length-none)
+  add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-ffree-line-length-none>)
 endif()
-if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-  add_compile_options(-Mnofma)
-endif()
+add_compile_options($<$<COMPILE_LANG_AND_ID:Fortran,NVHPC>:-Mnofma>
+                    $<$<COMPILE_LANG_AND_ID:C,NVHPC>:-Mnofma>)
 # CIME defines USE_CONTIGUOUS on every compile (cime/CIME/Tools/Makefile):
 # "contiguous," where HAS_F2008_CONTIGUOUS, empty for gnu, intel and nvhpc;
 # CAM's to_be_ccppized/coords_1d.F90 and others use it in declarations.
@@ -166,11 +166,11 @@ if(OPENACC)
     # some of which need device tools an installation may lack.
     list(APPEND _acc_flags -gpu=${{CCPP_CAPTURE_GPU_TARGET}},nofma,math_uniform)
   endif()
-  add_compile_options(${{_acc_flags}})
+  add_compile_options("$<$<COMPILE_LANGUAGE:Fortran>:${{_acc_flags}}>")
   add_link_options(${{_acc_flags}})
   add_compile_definitions(USE_GPU)
 elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-  add_compile_options(-noacc)
+  add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-noacc>)
   add_link_options(-noacc)
 endif()
 
@@ -190,7 +190,7 @@ set_target_properties(ccpp_capture_support PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/ccpp_capture_support)
 target_include_directories(ccpp_capture_support PUBLIC
   ${{CMAKE_BINARY_DIR}}/mod/ccpp_capture_support)
-target_compile_options(ccpp_capture_support PUBLIC ${{_nf_fflags}})
+target_compile_options(ccpp_capture_support PUBLIC "$<$<COMPILE_LANGUAGE:Fortran>:${{_nf_fflags}}>")
 target_link_libraries(ccpp_capture_support PUBLIC ${{_nf_flibs}})
 # BLAS, for scheme sources that call it (PUMAS's neural-net emulator, which
 # micro_pumas_v1.F90 uses, calls dgemm), as CIME links -lblas. Optional:
@@ -233,6 +233,9 @@ if(EXISTS "${{CCPP_CAPTURE_COMPILE_FLAGS}}")
   foreach(_target IN LISTS _targets)
     get_target_property(_sources ${{_target}} SOURCES)
     foreach(_source IN LISTS _sources)
+      if(NOT _source MATCHES "[.][fF]90$")
+        continue()  # the flags file is the model's Fortran flags
+      endif()
       get_filename_component(_name "${{_source}}" NAME)
       set(_flags_var "_ccpp_capture_flags_${{_name}}")
       if(DEFINED ${{_flags_var}})
@@ -256,7 +259,7 @@ add_executable(test_{scheme}
 set_target_properties(test_{scheme} PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/test_{scheme})
 target_link_libraries(test_{scheme} PRIVATE ccpp_capture_support)
-{tests}{variants}"""
+{include_dirs}{tests}{variants}"""
 
 _TEST_TEMPLATE = """\
 add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
@@ -325,16 +328,47 @@ def scheme_source_root(path: str) -> "str | None":
         directory = parent
 
 
+# capture-shr-randnum: C sources (the C side of bind(c) interfaces, e.g.
+# CESM share's kissvec.c) are compiled by the C compiler of the Fortran
+# compiler's family -- C and Fortran must agree on calling conventions and
+# runtime libraries -- unless CMAKE_C_COMPILER or CC names one. Inserted
+# into _TOP_TEMPLATE as a value: plain CMake braces, not doubled.
+_C_LANGUAGE_TEMPLATE = """\
+# Some drivers compile C (the C side of bind(c) interfaces): the C compiler
+# of the Fortran compiler's family unless CMAKE_C_COMPILER or CC says
+# otherwise.
+if(NOT CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+  get_filename_component(_fc_dir "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+  set(_cc_name "")
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    set(_cc_name nvc)
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    set(_cc_name gcc)
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
+    set(_cc_name icx)
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+    set(_cc_name icc)
+  endif()
+  if(_cc_name AND EXISTS "${_fc_dir}/${_cc_name}")
+    set(CMAKE_C_COMPILER "${_fc_dir}/${_cc_name}")
+  endif()
+endif()
+enable_language(C)
+"""
+
+
 def render_capture_cmakelists(support_sources, data_dir: str,
                               scheme_root: "str | None" = None,
-                              accel_variants: bool = False) -> str:
+                              accel_variants: bool = False,
+                              with_c: bool = False) -> str:
     """CMakeLists.txt text: support library from *support_sources* (in
     compile order), NetCDF, options, the default capture directory
     *data_dir*, the default CCPP_CAPTURE_SCHEME_ROOT *scheme_root*, the
     default of CCPP_CAPTURE_ACCEL_VARIANTS (*accel_variants*: the captured
     model built the OpenACC version of CPU/OpenACC pairs), include of every
-    test fragment."""
+    test fragment; C enabled when some driver compiles C (*with_c*)."""
     return _TOP_TEMPLATE.format(
+        c_language=_C_LANGUAGE_TEMPLATE if with_c else "",
         accel_default="ON" if accel_variants else "OFF",
         support_sources=_source_lines(support_sources),
         data_dir=os.path.abspath(data_dir),
@@ -345,13 +379,15 @@ def render_capture_cmakelists(support_sources, data_dir: str,
 
 def render_capture_fragment(scheme: str, sources,
                             scheme_root: "str | None" = None,
-                            variants=(), ranks=None) -> str:
+                            variants=(), ranks=None, include_dirs=()) -> str:
     """test_<scheme>.cmake text: the driver plus *sources* (the scheme's
     .F90 and its dependencies), those under *scheme_root* relative to
     CCPP_CAPTURE_SCHEME_ROOT, and the (CPU file, GPU file) *variants*
     (SourceClosure.variants): the GPU files with -DOPENACC=ON or
     -DCCPP_CAPTURE_ACCEL_VARIANTS=ON, else the CPU files. With *ranks* (a
-    capture by rank), one test per rank, run in CCPP_CAPTURE_DIR/rank<r>."""
+    capture by rank), one test per rank, run in CCPP_CAPTURE_DIR/rank<r>.
+    *sources* may include C files; *include_dirs* are their header
+    directories."""
     variant_text = ""
     if variants:
         variant_text = _VARIANTS_TEMPLATE.format(
@@ -363,9 +399,13 @@ def render_capture_fragment(scheme: str, sources,
         tests = _RANK_TESTS_TEMPLATE.format(scheme=scheme, ranks=" ".join(map(str, ranks)))
     else:
         tests = _TEST_TEMPLATE.format(scheme=scheme)
+    includes = ""
+    if include_dirs:
+        includes = (f"target_include_directories(test_{scheme} PRIVATE\n"
+                    + _source_lines(include_dirs) + ")\n")
     return _FRAGMENT_TEMPLATE.format(
         scheme=scheme, sources=_scheme_source_lines(sources, scheme_root),
-        tests=tests, variants=variant_text)
+        include_dirs=includes, tests=tests, variants=variant_text)
 
 
 def scheme_meta_files(meta_paths) -> dict:
@@ -528,13 +568,15 @@ def capture_provided_modules(support) -> frozenset:
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
                         data_dir: str, scheme_variants=None,
-                        accel_variants: bool = False, scheme_ranks=None) -> list:
+                        accel_variants: bool = False, scheme_ranks=None,
+                        scheme_include_dirs=None) -> list:
     """Write test_<scheme>.cmake for every {scheme: [sources]} entry (with
     its (CPU file, GPU file) pairs from *scheme_variants*, {scheme: [pairs]})
     and the CMakeLists.txt, whose tests run against *data_dir* and build
     the GPU file of each pair in a CPU build too when *accel_variants*, one
-    test per rank of a capture by rank (*scheme_ranks*, {scheme: [ranks]});
-    return the paths written. The scheme sources are named relative to the repository
+    test per rank of a capture by rank (*scheme_ranks*, {scheme: [ranks]}),
+    with the header directories of each scheme's C sources
+    (*scheme_include_dirs*, {scheme: [dirs]}); return the paths written. The scheme sources are named relative to the repository
     root of the first scheme's source (scheme_source_root)."""
     scheme_variants = scheme_variants or {}
     os.makedirs(driver_dir, exist_ok=True)
@@ -546,11 +588,13 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
         with open(path, "w") as f:
             f.write(render_capture_fragment(scheme, sources, scheme_root,
                                             scheme_variants.get(scheme, ()),
-                                            (scheme_ranks or {}).get(scheme)))
+                                            (scheme_ranks or {}).get(scheme),
+                                            (scheme_include_dirs or {}).get(scheme, ())))
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:
+        with_c = any(p.endswith(".c") for srcs in scheme_sources.values() for p in srcs)
         f.write(render_capture_cmakelists(support_sources, data_dir, scheme_root,
-                                          accel_variants))
+                                          accel_variants, with_c))
     written.append(path)
     return written

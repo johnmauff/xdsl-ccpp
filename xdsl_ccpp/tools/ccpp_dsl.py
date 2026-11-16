@@ -2363,6 +2363,7 @@ class ccppMain:
         meta_files = scheme_meta_files(self.options_db.get("scheme_files") or [])
         scheme_sources: dict = {}
         scheme_variants: dict = {}  # scheme -> [(CPU file, GPU file)]
+        scheme_include_dirs: dict = {}  # scheme -> [header dirs of its C sources]
         for spec in self.options_db.get("capture_scheme") or []:
             scheme = _capture_spec(spec)[0]
             if scheme in scheme_sources:
@@ -2422,8 +2423,10 @@ class ccppMain:
                 continue
             scheme_sources[scheme] = [
                 p for p in closure.sources if os.path.abspath(p) not in in_support
-            ]
+            ] + closure.c_sources
             scheme_variants[scheme] = list(closure.variants.values())
+            if closure.include_dirs:
+                scheme_include_dirs[scheme] = list(closure.include_dirs)
         if not scheme_sources:
             return
         for name in kind_missing:
@@ -2441,7 +2444,8 @@ class ccppMain:
         for path in write_capture_cmake(
                 driver_dir, scheme_sources, support, data_dir, scheme_variants,
                 bool(self.options_db.get("capture_accel_variants")),
-                self._capture_rank_lists(with_setups=False) if by_rank else None):
+                self._capture_rank_lists(with_setups=False) if by_rank else None,
+                scheme_include_dirs):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):

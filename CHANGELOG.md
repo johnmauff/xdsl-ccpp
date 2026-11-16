@@ -15763,3 +15763,68 @@ tests instead of 624. The drivers themselves are unchanged.
 Result (user, 2026-11-16): all 56 c10a replays pass on the CPU and the GPU
 (`build_capture_tests.sh --tests rrtmgp`). `scheme-io-capture-rank-select`
 is resolved.
+
+## `capture-shr-randnum`: C sources in the capture drivers' build (2026-11-16)
+
+The RRTMGP McICA schemes (`rrtmgp_sw/lw_mcica_subcol_gen`) use CESM
+share's `shr_RandNum_mod` (`ShrKissRandGen`). Its generators call C
+through bind(c) interfaces: `kissvec_mod` uses `kissvec.c`, and
+`dSFMT_interface` uses `dSFMT.c` and `dSFMT_utils.c`, with headers in
+`share/RandNum/include`. The drivers' build was Fortran only, so the two
+McICA drivers were not built.
+
+- **Fortran side** (`transforms/module_dependency_resolver.py`):
+  `FortranSourceFacts.c_bindings` holds the binding labels of the bind(c)
+  procedures a file's interface blocks declare (`_c_binding_label`). The
+  `NAME=` string is kept as written, else the procedure name is
+  lowercased.
+- **C side:** `scan_c_source` lists a `.c` file's file-scope function
+  definitions and its quoted `#include`s. It ignores comments, literals
+  and preprocessor lines; keeps only the first branch of each `#if`
+  chain; and treats an `extern "C"` block as transparent.
+  `source_closure` then resolves each binding label to the one `.c` file
+  under the source roots that defines it (`SourceClosure.c_sources`) and
+  follows the headers to their directories (`include_dirs`). A function
+  no file defines is unresolved, so the driver is not built and the
+  `.skipped` file says why. C-to-C calls between files are not followed.
+- **CMake** (`tools/capture_cmake.py`):
+  - A fragment lists its C files and their include directories.
+  - `CMakeLists.txt` enables C when some driver compiles C. The C
+    compiler is the one from the Fortran compiler's family (nvc, gcc,
+    icx, icc next to the Fortran compiler) unless `CMAKE_C_COMPILER` or
+    `CC` says otherwise.
+  - Fortran-only options are limited to Fortran by generator expressions:
+    `-ffree-line-length-none`, nf-config's flags and the OpenACC compile
+    flags. `-Mnofma` applies to nvhpc Fortran and C, as CAM-SIMA's C
+    flags have it.
+  - The model's per-file flags (`capture_compile_flags.txt`, Fortran
+    flags) apply to Fortran files only.
+- **`#if` fix** (`transforms/fortran_preprocess.py`): `#if !defined(X)`
+  failed with "unexpected indent", because the leading `!` became a
+  leading blank in the Python expression (RandNum's `dSFMT_interface.F90`).
+- **CAM-SIMA** (`cime_config/cam_autogen.py`): `share/RandNum/src` and
+  `share/RandNum/include` are now `--capture-source-root`s, after
+  `share/src`.
+
+Tests (`tests/unit/test_capture_c_sources.py`):
+- the binding labels;
+- interface-only bindings;
+- the C scanner (comments, literals, `#if` branches, `extern "C"`);
+- the closure's C files and header directories;
+- an unresolved C function;
+- the fragment and top file with C;
+- end to end, a kessler driver whose module state comes from a module
+  that calls C;
+- `#if !defined`.
+
+Results: `tests/unit` 1547 and `tests/filecheck` 56 passed; CAM-SIMA's
+`test_cam_autogen.py` and `test_cam_config.py`, 63 passed.
+
+c10a after regenerating its drivers and CMake: both McICA drivers are
+built (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0). That makes 61 tests,
+and the other drivers are unchanged. Pending (user): CPU and GPU
+replays.
+
+Result (user, 2026-11-16): all 61 c10a replays pass on the CPU and the GPU,
+including both McICA drivers (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0).
+`capture-shr-randnum` and `scheme-io-capture-rte-objects` are resolved.

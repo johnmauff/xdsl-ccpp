@@ -107,7 +107,9 @@ def _to_python_expr(cpp_expr: str) -> str:
     # are always bare boolean/numeric exprs, never string literals, so a
     # blanket negative lookahead is sufficient here.
     expr = re.sub(r"!(?!=)", " not ", expr)
-    return expr
+    # A leading "!" leaves a leading blank Python rejects ("unexpected
+    # indent"), e.g. RandNum's dSFMT_interface.F90 "#if !defined(DSFMT_MEXP)".
+    return expr.strip()
 
 
 def _maybe_int(value: str) -> object:
