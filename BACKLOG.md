@@ -125,6 +125,7 @@ measured data, and will drift as items are reassessed.
 | `rte-byband-net-device` | 0.5 day (local fix in the vendored rte-rrtmgp done 2026-11-16; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `gpu-status-scalar-only-schemes` | 0.5 day (`tools/gpu_scheme_status.py`: a mark for schemes whose per-timestep phases touch only scalars, e.g. `rrtmgp_subcycle`, `rrtmgp_variables`; they need no port and should not count as CPU-only) | XS |
 | `rrtmgp-rte-object-residency` | 3-5 days, after `gpu-port-rrtmgp-wrapper-schemes` (create/delete device copies where the RTE objects are allocated and freed, `kdist` entered once at init, `update self` for the host diagnostics; decide RTE upstream vs CCPP wrappers; `/cam-sima-perf acc_time` before/after; rrtmgp GPU FPHYStest and replays) | S-M |
+| `residency-call-args-to-device-callees` | 1-2 weeks (design: tell from the source, not `.meta`, that an array a scheme passes to a callee inside its own `!$acc data` region is used on the device by that callee; then drop the explicit `memory_space = device` from the four RRTMGP `.meta` files; cap_oracle over all cases, rrtmgp replays, GPU regression) | M |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -3022,6 +3023,52 @@ Test:
   replayed call (the capture handlers' `device_enter`/`device_exit`).
 - The rrtmgp GPU FPHYStest bit-for-bit against the CPU baseline.
 - `/cam-sima-perf ... acc_time` to confirm the per-scheme copies are gone.
+
+**ID: `residency-call-args-to-device-callees`. Arrays a scheme hands to a
+device-aware callee are classified "host".** Added 2026-11-16 (user).
+
+The acc-copy-residency rule (`fparser2_to_meta.py`, `ACC_HOST`) counts any
+host-code reference to an array named in a copy clause as a host use --
+including an actual argument of a call inside the scheme's own `!$acc data`
+region that names it. The cap then syncs that array around the call as if
+the scheme read and wrote the host copy. That is right when the callee is
+host code (`compute_cloud_fraction_run` and `zm_conv_evap_run` pass
+`temp`/`t` and `pmid` to the host vector `qsat`/`qsat_water` inside their
+data regions) and wrong when the callee works on the present device copy
+(the RRTMGP wrappers handing `p_lay`, `p_lev`, `t_lay`, `tsfg`,
+`toa_src_sw`, `coszen_day`, the albedos, `sfc_emiss_byband` and `lw_Ds` to
+RTE's `gas_optics`, `rte_sw`/`rte_lw` and `compute_optimal_angles`).
+
+Found 2026-11-16 (c66 rrtmgp GPU vs xdsl91 CPU, `COMPARE_cpu_gpu`
+DIFF: all daylit SW fields wrong, LW identical):
+- `rrtmgp_sw_solar_var` (ported) made `toa_src_sw` device-resident.
+- In `rrtmgp_sw_gas_optics`, RTE then wrote the resident device copy and
+  the wrapper's `copyout` copied nothing back, so the host copy stayed
+  stale.
+- The cap's `update device(toa_src_sw)` after the call overwrote RTE's
+  result with that stale host copy.
+
+Interim fix (2026-11-16, user): `memory_space = device` on those arguments
+in `rrtmgp_sw_gas_optics.meta`, `rrtmgp_lw_gas_optics.meta`,
+`rrtmgp_sw_rte.meta` and `rrtmgp_lw_rte.meta`. An explicit device wins over
+the derivation (`derive_memory_space.py`), so the `qsat` callers keep the
+safe default. Downside, and why this item exists: the `.meta` files are no
+longer backward compatible with capgen-v1, which does not know
+`memory_space`.
+
+Wanted: robust, and compatible with a generator that knows nothing of
+memory spaces. Options:
+- Classify such call arguments by the callee's own residency:
+  `apply_callee_residency` exists for routines it can scan. RTE is under
+  `rrtmgp/ext`, and its calls are partly type-bound
+  (`gas_props%gas_optics(...)`), which need resolving through the objects'
+  types.
+- An annotation in the Fortran source that capgen-v1 ignores (a comment
+  form, cf. the `!$ccpp` source annotations), saying "this callee uses
+  the device copy".
+- Name the device-aware libraries (e.g. RTE's modules) as such.
+Whichever is chosen, run cap_oracle over every case: other schemes may
+change residency.
 
 ## Design problems: re-derived information and special-casing (review 2026-10-28)
 
