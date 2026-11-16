@@ -137,6 +137,9 @@ class FortranSourceFacts:
     scopes: tuple = ()  # ScopeFacts per procedure and module specification part
     types: tuple = ()  # TypeFacts per derived-type definition
     submodule_of: frozenset = frozenset()  # ancestor modules of the file's submodules
+    # Binding labels (case kept) of the bind(c) procedures the file's
+    # interface blocks declare: C functions it calls (capture-shr-randnum).
+    c_bindings: frozenset = frozenset()
 
 
 class _ScopeBuilder:
@@ -331,6 +334,158 @@ def _submodule_ancestor(lower: str) -> "str | None":
     return ancestor or None
 
 
+def _c_binding_label(line: str) -> "str | None":
+    """The binding label of a SUBROUTINE/FUNCTION statement with
+    BIND(C[, NAME='label']), else None: the NAME= string as written (C
+    names are case-sensitive), or the procedure name lowercased, the
+    Fortran default."""
+    match = re.search(r"\bbind\s*\(\s*c\s*(,\s*name\s*=\s*(['\"])(.*?)\2\s*)?\)",
+                      line, re.IGNORECASE)
+    if not match:
+        return None
+    if match.group(3):
+        return match.group(3).strip()
+    name = re.search(r"\b(?:subroutine|function)\s+([a-z_]\w*)", line, re.IGNORECASE)
+    return name.group(1).lower() if name else None
+
+
+@dataclass(frozen=True)
+class CSourceFacts:
+    """What one C file defines and includes (capture-shr-randnum)."""
+
+    functions: frozenset  # functions defined at file scope
+    includes: tuple  # "quoted" #include names, in order
+
+
+_C_NOT_FUNCTIONS = frozenset({"if", "for", "while", "switch", "return", "sizeof"})
+
+
+def _c_strip(text: str) -> "tuple[str, list]":
+    """*text* without comments, preprocessor lines (continuations joined)
+    and string and character literals, and the names of its quoted
+    #include lines."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:  # comments (a quote inside one is not a literal)
+        two = text[i:i + 2]
+        if two == "/*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")
+        elif two == "//":
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif text[i] in "\"'":  # skip a literal whole (it may hold "/*")
+            quote, j = text[i], i + 1
+            while j < n and text[j] not in (quote, "\n"):
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        else:
+            out.append(text[i])
+            i += 1
+    code, includes = [], []
+    # Only the first branch of each #if/#elif/#else chain is kept: branches
+    # that each open a function body ("{" in both) would unbalance braces.
+    skipping = []  # per open conditional: inside a later branch?
+    for line in "".join(out).replace("\\\n", " ").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            directive = stripped[1:].strip()
+            word = re.match(r"[a-z]*", directive).group(0)
+            if word in ("if", "ifdef", "ifndef"):
+                skipping.append(False)
+            elif word in ("elif", "else") and skipping:
+                skipping[-1] = True
+            elif word == "endif" and skipping:
+                skipping.pop()
+            if any(skipping):
+                code.append("")
+                continue
+            if directive.startswith("include"):
+                rest = directive[len("include"):].strip()
+                if rest.startswith('"') and rest.count('"') >= 2:
+                    includes.append(rest[1:rest.index('"', 1)])
+            code.append("")
+        elif any(skipping):
+            code.append("")
+        else:
+            code.append(re.sub(r"\"(\\.|[^\"\\])*\"|'(\\.|[^'\\])*'", " ", line))
+    return "\n".join(code), includes
+
+
+def _c_function_names(code: str) -> set:
+    """Functions defined at file scope in *code* (_c_strip'ped): a "{" at
+    brace depth 0 right after a closing ")" whose group follows a name
+    (_c_strip keeps one branch of each #if chain). A "}" in column 0 also
+    ends a function body, as a safeguard. An extern "C" block (its string blanked: "extern {") is
+    transparent: its functions are at file scope."""
+    names: set = set()
+    depth, start = 0, 0
+    for i, ch in enumerate(code):
+        if ch == "{":
+            if depth == 0:
+                head = code[start:i].rstrip()
+                if re.search(r"\bextern\s*$", head):
+                    start = i + 1
+                    continue
+                if head.endswith(")"):
+                    level, j = 0, len(head) - 1
+                    while j >= 0:
+                        if head[j] == ")":
+                            level += 1
+                        elif head[j] == "(":
+                            level -= 1
+                            if level == 0:
+                                break
+                        j -= 1
+                    name = re.search(r"([A-Za-z_]\w*)\s*$", head[:max(j, 0)])
+                    if name and name.group(1) not in _C_NOT_FUNCTIONS:
+                        names.add(name.group(1))
+            depth += 1
+        elif ch == "}":
+            depth = 0 if (i == 0 or code[i - 1] == "\n") else max(0, depth - 1)
+            if depth == 0:
+                start = i + 1
+        elif ch == ";" and depth == 0:
+            start = i + 1
+    return names
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_c_cached(path: str, _stamp) -> CSourceFacts:
+    with open(path, errors="replace") as f:
+        code, includes = _c_strip(f.read())
+    return CSourceFacts(frozenset(_c_function_names(code)), tuple(includes))
+
+
+def scan_c_source(path: str) -> CSourceFacts:
+    """The functions *path* (a C file) defines and the headers it includes."""
+    path = os.path.abspath(path)
+    return _scan_c_cached(path, os.stat(path).st_mtime_ns)
+
+
+def c_definitions(root_dir: str) -> "tuple[dict, dict]":
+    """({function: [.c files defining it]}, {header name: [.h files]}) over
+    every ``.c`` and ``.h`` file under *root_dir*."""
+    functions: dict = {}
+    headers: dict = {}
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            path = os.path.join(dirpath, fname)
+            if fname.endswith(".h"):
+                headers.setdefault(fname, []).append(path)
+            elif fname.endswith(".c"):
+                try:
+                    facts = scan_c_source(path)
+                except OSError:
+                    continue
+                for name in facts.functions:
+                    functions.setdefault(name, []).append(path)
+    return functions, headers
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     import fparser.two.Fortran2003 as f03
@@ -358,6 +513,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     type_def = None  # the definition being read (see below)
     types: list = []
     submodule_of: set = set()  # ancestor modules of the file's submodules
+    c_bindings: set = set()  # bind(c) labels of interface-block procedures
 
     def current():
         return procedures[-1] if procedures else module_scope
@@ -490,6 +646,10 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
                             module_scope.parameters.append(
                                 (str(entity.children[0]).lower(),
                                  str(init).lstrip("= ").strip().lower()))
+            elif interface_depth and ("subroutine" in words or "function" in words):
+                label = _c_binding_label(line)
+                if label:
+                    c_bindings.add(label)
             elif not interface_depth and ("subroutine" in words or "function" in words):
                 stmt_cls = f03.Subroutine_Stmt if "subroutine" in words else f03.Function_Stmt
                 name = str(stmt_cls(line).children[1]).lower()
@@ -501,7 +661,8 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     if module_scope.module or module_scope.uses or module_scope.includes:
         scopes.append(module_scope.freeze())
     return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes),
-                              tuple(scopes), tuple(types), frozenset(submodule_of))
+                              tuple(scopes), tuple(types), frozenset(submodule_of),
+                              frozenset(c_bindings))
 
 
 def scan_fortran_source(
@@ -578,6 +739,11 @@ class SourceClosure:
     # version (accel_variant_pair), built from one or the other; neither
     # file is in *sources*.
     variants: dict = field(default_factory=dict)
+    # capture-shr-randnum: the C files defining the functions the Fortran
+    # sources' bind(c) interfaces name, and the directories of the headers
+    # those include (absolute paths).
+    c_sources: list = field(default_factory=list)
+    include_dirs: list = field(default_factory=list)
 
 
 def accel_variant_pair(paths) -> "tuple[str, str] | None":
@@ -700,7 +866,67 @@ def source_closure(
             ) + ", all needed by the scheme"
     result.sources = [p for p in queue if p not in variant_files]
     result.mpi_procedures = mpi_reach([facts[p] for p in queue], list(queue))
+    _resolve_c_sources(result, [(p, facts[p]) for p in queue], roots)
     return result
+
+
+def _resolve_c_sources(result: SourceClosure, file_facts, roots) -> None:
+    """Add to *result* the C file under *roots* (the first root that has
+    one) defining each function the Fortran files' bind(c) interfaces
+    name, and the directories of the quoted headers those C files include
+    (followed through the headers): the C side of an interface such as
+    CESM share's kissvec_mod (kissvec.c). A function no root defines, or
+    several files of one root do, is *unresolved*. C-to-C calls between
+    files are not followed: each needed file must be bound from Fortran."""
+    indexes: dict = {}
+
+    def index(root):
+        if root not in indexes:
+            indexes[root] = c_definitions(root)
+        return indexes[root]
+
+    for path, facts in file_facts:
+        for label in sorted(facts.c_bindings):
+            found, where = [], None
+            for root in roots:
+                found = index(root)[0].get(label, [])
+                if found:
+                    where = root
+                    break
+            found = [os.path.abspath(p) for p in found]
+            if len(found) == 1:
+                if found[0] not in result.c_sources:
+                    result.c_sources.append(found[0])
+            elif found:
+                result.unresolved[f"{label} (C)"] = (
+                    f"bound in {os.path.basename(path)}; defined in {len(found)} "
+                    f".c files under {where}")
+            else:
+                result.unresolved[f"{label} (C)"] = (
+                    f"bound in {os.path.basename(path)}; defined in no .c file")
+    queue = [(c, scan_c_source(c).includes) for c in result.c_sources]
+    seen: set = set(result.c_sources)
+    while queue:
+        path, includes = queue.pop(0)
+        for name in includes:
+            local = os.path.join(os.path.dirname(path), name)
+            if os.path.isfile(local):
+                header = os.path.abspath(local)
+            else:
+                header = None
+                for root in roots:
+                    candidates = index(root)[1].get(os.path.basename(name), [])
+                    if len(candidates) == 1:
+                        header = os.path.abspath(candidates[0])
+                        break
+                if header is None:
+                    continue  # a system header, or the compiler finds it
+                directory = os.path.dirname(header)
+                if directory not in result.include_dirs:
+                    result.include_dirs.append(directory)
+            if header not in seen:
+                seen.add(header)
+                queue.append((header, scan_c_source(header).includes))
 
 
 def mpi_reach(file_facts, paths) -> dict:

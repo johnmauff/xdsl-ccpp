@@ -17,12 +17,14 @@
 ! environment, else the one given to ccpp_capture_set_dir (the generator's
 ! --capture-test-driver-dir, so data and test drivers share a directory)
 ! followed by /<label> when ccpp_capture_set_info gave a label, else the
-! working directory.
+! working directory. After ccpp_capture_set_rank(r), the files go to that
+! directory's subdirectory rank<r> (scheme-io-capture-rank-select).
 ! Global attributes: ccpp_table, ccpp_call, ccpp_capture_format_version,
 ! ccpp_capture_date (when written, local time), ccpp_generator and
 ! ccpp_capture_label (from ccpp_capture_set_info: the generator version and
 ! the capture's label, e.g. the CAM-SIMA case name), plus any the caps add
-! with ccpp_capture_attribute (e.g. current_timestep_number).
+! with ccpp_capture_attribute (e.g. current_timestep_number), and
+! ccpp_mpi_rank after ccpp_capture_set_rank.
 ! Group `in` holds the arguments as passed (intent in and inout, written
 ! before the call), group `out` the results (intent out and inout, written
 ! after it). Each variable has attributes ccpp_type (integer, logical,
@@ -47,13 +49,19 @@
 !
 ! MPI: none here. scheme_io_capture_pass.py guards every capture call with
 ! the host's mpi-root flag (CAM-SIMA's masterproc) when the host declares
-! one, so one task writes.
+! one, so one task writes. A capture of other ranks
+! (scheme-io-capture-rank-select) guards each call with
+! ccpp_capture_rank_selected(<host's mpi_rank>, '<ranks>') instead, and
+! each writing rank calls ccpp_capture_set_rank first, so that the ranks
+! write to separate rank<r> subdirectories (which must exist: the
+! generator creates them under its --capture-test-driver-dir).
 !
 ! ccpp_capture_tolerance_override: a generated driver bakes a default
 ! tolerance into its source; CCPP_CAPTURE_TOLERANCE (a real number)
 ! overrides it at run time, so one compiled driver can be rerun against
 ! several tolerances (cross-compiler comparisons). A CPU-vs-GPU check
-! uses tolerance 0, which compares bit patterns (see r8_mismatch).
+! uses tolerance 0, which compares bit patterns after flushing subnormals
+! to signed zero, as the nvhpc CPU builds do (-Mflushz; see r8_mismatch).
 module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
@@ -65,6 +73,8 @@ module ccpp_capture_mod
 
   public :: ccpp_capture_set_dir
   public :: ccpp_capture_set_info
+  public :: ccpp_capture_set_rank
+  public :: ccpp_capture_rank_selected
   public :: ccpp_capture_attribute
   public :: ccpp_capture_begin
   public :: ccpp_capture_end
@@ -163,6 +173,10 @@ module ccpp_capture_mod
   character(len=1024), save :: lc_label = ''
   character(len=256),  save :: lc_generator = ''
 
+  ! This process's MPI rank (ccpp_capture_set_rank): the files go to the
+  ! subdirectory rank<lc_rank>; -1: not set, no subdirectory.
+  integer, save :: lc_rank = -1
+
   integer :: lc_no_shape(0)
 
 contains
@@ -235,6 +249,15 @@ contains
       dir = lc_default_dir
       if (len_trim(dir) > 0 .and. len_trim(lc_label) > 0) then
         dir = trim(dir) // '/' // trim(lc_label)
+      end if
+      dir_len = len_trim(dir)
+    end if
+    if (lc_rank >= 0) then
+      write(num, '(I0)') lc_rank
+      if (dir_len > 0) then
+        dir = trim(dir) // '/rank' // trim(num)
+      else
+        dir = 'rank' // trim(num)
       end if
       dir_len = len_trim(dir)
     end if
@@ -436,6 +459,46 @@ contains
     lc_generator = generator
   end subroutine ccpp_capture_set_info
 
+  ! This process's MPI rank: each file created after this call goes to the
+  ! subdirectory rank<rank> of the capture directory and records the rank
+  ! (global attribute ccpp_mpi_rank). The generated caps call it before
+  ! each capture when the capture records ranks other than the root's, so
+  ! that the ranks' files do not collide; a test driver never calls it.
+  subroutine ccpp_capture_set_rank(rank)
+    integer, intent(in) :: rank
+    lc_rank = rank
+  end subroutine ccpp_capture_set_rank
+
+  ! .true. when `rank` is in `ranks`, a comma-separated list of ranks
+  ! (e.g. '0' or '3,4,7'). The generated caps guard each capture with it
+  ! when the capture records ranks other than the root's
+  ! (scheme-io-capture-rank-select). An entry that is not an integer
+  ! matches no rank.
+  logical function ccpp_capture_rank_selected(rank, ranks)
+    integer, intent(in) :: rank
+    character(len=*), intent(in) :: ranks
+    integer :: start, finish, value, ios
+
+    ccpp_capture_rank_selected = .false.
+    start = 1
+    do while (start <= len(ranks))
+      finish = index(ranks(start:), ',')
+      if (finish == 0) then
+        finish = len(ranks) + 1
+      else
+        finish = start + finish - 1
+      end if
+      if (len_trim(ranks(start:finish - 1)) > 0) then
+        read(ranks(start:finish - 1), *, iostat=ios) value
+        if (ios == 0 .and. value == rank) then
+          ccpp_capture_rank_selected = .true.
+          return
+        end if
+      end if
+      start = finish + 1
+    end do
+  end function ccpp_capture_rank_selected
+
   ! A global attribute of the file being written (between
   ! ccpp_capture_begin and ccpp_capture_end; no-op when none is open).
   subroutine ccpp_capture_attribute_int(name, value)
@@ -483,6 +546,8 @@ contains
         'ccpp_generator', trim(lc_generator)), 'attribute', table)
       if (ok .and. len_trim(lc_label) > 0) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, &
         'ccpp_capture_label', trim(lc_label)), 'attribute', table)
+      if (ok .and. lc_rank >= 0) ok = lc_check(nf90_put_att(lc_ncid, NF90_GLOBAL, &
+        'ccpp_mpi_rank', lc_rank), 'attribute', table)
       if (ok) ok = lc_check(nf90_def_grp(lc_ncid, 'out', grp_out), 'define group out', table)
       if (ok) ok = lc_check(nf90_def_grp(lc_ncid, 'in', lc_grpid), 'define group in', table)
       if (.not. ok) call ccpp_capture_end()
@@ -1273,7 +1338,12 @@ contains
   ! Does one real element differ? At tolerance 0 (or below): compare the
   ! bit patterns, so -0.0 differs from +0.0, a NaN differs from every
   ! number, and two NaNs match only with the same payload -- a bit-for-bit
-  ! check, as CPU-vs-GPU replays require. Otherwise an absolute tolerance,
+  ! check, as CPU-vs-GPU replays require -- after flushing a subnormal to
+  ! zero of its sign (flush_subnormal), as the CPU builds do (nvhpc
+  ! -Mflushz) and a GPU cannot for double precision (CUDA's flush-to-zero
+  ! is single precision only): the GPU keeps a subnormal where the
+  ! captured CPU run wrote 0 (RTE's direct-beam band fluxes, c10a).
+  ! Otherwise an absolute tolerance,
   ! with a NaN on one side only a mismatch (abs(NaN - x) > tolerance is
   ! .false., so a plain tolerance test lets a NaN pass) and NaN vs NaN a
   ! match. The bytes are compared through transfer, so any kind_phys works.
@@ -1283,13 +1353,38 @@ contains
     real(kind=kind_phys), intent(in) :: actual, expected, tolerance
     logical :: differs
     if (tolerance <= 0.0_kind_phys) then
-      differs = any(transfer(actual, [0_int8]) /= transfer(expected, [0_int8]))
+      differs = any(transfer(flush_subnormal(actual), [0_int8]) &
+                    /= transfer(flush_subnormal(expected), [0_int8]))
     else if (ieee_is_nan(actual) .or. ieee_is_nan(expected)) then
       differs = ieee_is_nan(actual) .neqv. ieee_is_nan(expected)
     else
       differs = abs(actual - expected) > tolerance
     end if
   end function r8_mismatch
+
+  ! *x*, or a zero of its sign when *x* is subnormal (x86 flush-to-zero).
+  ! Decided from the bits (zero exponent field, nonzero fraction), not by
+  ! arithmetic: code built with -Mflushz reads a subnormal operand as 0.
+  elemental function flush_subnormal(x) result(flushed)
+    use, intrinsic :: iso_fortran_env, only: int32, int64
+    real(kind=kind_phys), intent(in) :: x
+    real(kind=kind_phys) :: flushed
+    integer(int64), parameter :: exp64 = int(z'7FF0000000000000', int64)
+    integer(int64), parameter :: sign64 = ishft(1_int64, 63)
+    integer(int32), parameter :: exp32 = int(z'7F800000', int32)
+    integer(int32), parameter :: sign32 = ishft(1_int32, 31)
+    integer(int64) :: bits64
+    integer(int32) :: bits32
+
+    flushed = x
+    if (storage_size(x) == 64) then
+      bits64 = transfer(x, bits64)
+      if (iand(bits64, exp64) == 0_int64) flushed = transfer(iand(bits64, sign64), x)
+    else if (storage_size(x) == 32) then
+      bits32 = transfer(x, bits32)
+      if (iand(bits32, exp32) == 0_int32) flushed = transfer(iand(bits32, sign32), x)
+    end if
+  end function flush_subnormal
 
   ! Position of the first .true. in *mask* (0 if none): the compares'
   ! first-mismatch index, column-major for a flattened array. A loop, not

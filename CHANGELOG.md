@@ -15625,3 +15625,206 @@ CPU and the GPU (the two McICA drivers are not built:
 CAM-SIMA `GPU_SCHEME_STATUS.md` (regenerated from xdsl91gpu) gains 🧪 for
 10 schemes: the 4 CAM7 gravity-wave sources, `mcsp`, both RRTMGP cloud
 optics, both `gas_optics_pre` and `sw_solar_var`.
+
+## `scheme-io-capture-rank-select` stage 1: capture chosen MPI ranks (2026-11-16)
+
+The caps guarded every capture with the host's root flag
+(`flag_for_mpi_root`, CAM-SIMA's `masterproc`), so a capture held only
+rank 0's columns. In every capture so far those were all night
+(`nday = 0`), so the shortwave replays never exercised the daylit path.
+A capture can now record chosen ranks, per scheme.
+
+- **Choosing ranks** (`tools/ccpp_dsl.py`):
+  - A capture entry, on the command line or in a list file, may end with
+    `ranks=<ranks>`, e.g. `rrtmgp_sw_rte ranks=7,12`. The list file is
+    where the chosen ranks are kept for later recaptures.
+  - `--capture-ranks <ranks>` (default `0`) covers the entries without
+    their own field.
+  - Ranks are comma-separated numbers and ranges (`3,4`, `0-23`; parsed
+    by `_capture_ranks`).
+  - The phases that set up a driver (module state, produced arguments)
+    are captured on the ranks of every driver that replays them
+    (`_capture_rank_lists`), so each rank directory is complete.
+- **Guard** (`transforms/scheme_io_capture_pass.py`): when any rank of the
+  capture is not 0 and the host declares `mpi_rank`:
+  - each block is guarded by
+    `ccpp_capture_rank_selected(<mpi_rank>, '<ranks>')` (`_CaptureGuard`;
+    a `CallExprOp` condition, no target syntax);
+  - each block starts with `ccpp_capture_set_rank(<mpi_rank>)`;
+  - the constituent table is captured on every rank of the capture;
+  - the generator creates the `rank<r>` subdirectories of the data
+    directory, since the model cannot.
+  - A host without `mpi_rank` gets a warning and the root guard.
+  - A capture of rank 0 only is generated exactly as before (checked on
+    c09a's rrtmgp inputs: caps, drivers and fragments identical apart
+    from the output path).
+- **Runtime** (`framework_src/ccpp_capture_mod.F90`):
+  - `ccpp_capture_rank_selected(rank, ranks)` tests membership in a
+    comma-separated list;
+  - after `ccpp_capture_set_rank(r)`, files go to `<dir>/rank<r>/` and
+    record the global attribute `ccpp_mpi_rank`.
+  - Test drivers never call `ccpp_capture_set_rank`.
+- **Replays** (`tools/capture_cmake.py`): a capture by rank gets one test
+  per scheme and rank, `test_<scheme>_rank<r>`, run in
+  `CCPP_CAPTURE_DIR/rank<r>`. A test is added only for a rank directory
+  that exists, so deleting a directory drops its tests.
+
+Tests (pytest):
+- `test_capture_ranks_accepts_lists_and_ranges`
+- `test_capture_entries_read_a_ranks_field`
+- `test_capture_entries_unknown_field_names_the_file_and_line`
+- `test_root_task_capture_unchanged_on_a_host_with_mpi_rank`
+- `test_ranks_field_guards_on_the_mpi_rank_with_rank_directories`
+- `test_capture_ranks_default_and_per_scheme_ranks_combine`
+- `test_constituent_table_captured_on_every_rank_of_the_capture`
+- `test_ranks_without_host_mpi_rank_fall_back_to_the_root_task`
+
+Results: `tests/unit` 1539 passed, `tests/filecheck` 56 passed.
+`tests/fortran/test_ccpp_capture_mod.F90` gains `test_rank_selection` and
+`test_rank_directory` (pending: the user's run).
+
+Next, stage 2:
+- CAM-SIMA: an `XDSL_CCPP_CAPTURE_RANKS` case variable; `all` becomes
+  `0-<NTASKS_ATM-1>`.
+- `/cam-sima-capture`: `check` prints `nday`/`ncol` per rank and suggests
+  `ranks=` lines.
+
+## `scheme-io-capture-rank-select` stage 2: CAM-SIMA case variable and the capture skill's rank report (2026-11-16)
+
+- **CAM-SIMA:**
+  - `cime_config/config_component.xml`: a new `XDSL_CCPP_CAPTURE_RANKS`
+    case variable (env_build). It holds comma-separated ranks and ranges,
+    or `all`; empty means rank 0 only.
+  - `cime_config/cam_autogen.py`: `_xdsl_capture_ranks` turns `all` into
+    `0-<NTASKS_ATM-1>`. `generate_physics_suites` passes `--capture-ranks`
+    and adds the ranks to the capture fingerprint, so changing them
+    regenerates the caps.
+  - `cime_config/cam_config.py` reads the variable and `NTASKS_ATM`.
+  - Tests: `test_capture_ranks`, `test_fingerprint_follows_ranks`; the
+    fake case in `test_cam_config.py` gains the two variables.
+- **`/cam-sima-capture`** (`~/.claude/agents/cam-sima-capture.md`, and
+  the argument hint of `~/.claude/commands/cam-sima-capture.md`):
+  - a new `ranks=<ranks>|all` argument, which sets the case variable;
+  - list-file lines may carry `ranks=` fields;
+  - `check` lists the files of each `rank<r>/` directory;
+  - a new step C3b: from `rrtmgp_pre_run`'s `nday` and `ncol` (group
+    `in`), a per-rank table of `night` / `all day` / `mixed` columns, and
+    suggested `ranks=` fields for the listed schemes that take `nday`,
+    with a comment line naming the configuration (grid, `NTASKS_ATM`,
+    start date and time). The user edits the list file.
+
+Next, stage 3 (user):
+- capture rrtmgp with `ranks=all`;
+- choose ranks from the report and record them in `unit-tests.txt`;
+- replay the SW schemes on CPU and GPU.
+
+## `scheme-io-capture-rank-select`: first daylit replays (c10a), subnormals in the exact compare, tests on a driver's own ranks (2026-11-16)
+
+c10a captured rrtmgp on all 24 ranks (`ranks=all`). The CPU replays passed.
+On the GPU, `test_rrtmgp_sw_rte` failed on every rank with daylit columns,
+for two reasons:
+
+- **`bnd_flux_net`** (max diff 225 W/m2): RTE's `net_byband_precalc` ran
+  on the host while its inputs were on the device. Fixed in the vendored
+  rte-rrtmgp (`rte-byband-net-device`).
+- **`bnd_flux_dn_dir`** (diff printed as 0): direct-beam values below
+  about 1e-300.
+  - The nvhpc CPU builds use `-Mflushz`, which flushes subnormal results
+    to zero. The GPU keeps double-precision subnormals: the GPU replay
+    gave e.g. `000FCB5172E9443D` (about 4.4e-309) where the capture holds
+    0.
+  - `-gpu=flushz` does not help. CUDA's flush-to-zero is single precision
+    only (PTX `.ftz` exists for `.f32` alone), and a build with it still
+    failed on ranks 6 and 17. So it was not added to any build.
+  - Fix: at tolerance 0, `r8_mismatch` (`framework_src/ccpp_capture_mod.F90`)
+    flushes a subnormal to a zero of its sign (`flush_subnormal`, decided
+    from the bits, since replay code built with `-Mflushz` reads a
+    subnormal operand as 0) before comparing bit patterns. That is
+    bit-for-bit as the CPU sees it.
+  - `-0.0` vs `+0.0`, NaN payloads and normal numbers one ulp apart still
+    fail.
+  - Fortran test cases are in `test_exact_real_compare`: subnormal vs
+    `+0.0` and negative subnormal vs `-0.0` pass; negative subnormal vs
+    `+0.0` and `tiny` vs 0 fail.
+- **Diagnostics:** CAM-SIMA's RTE handler (`ccpp_capture_rte_objects.F90`,
+  `report_mismatch`) now prints the first mismatching element of a real
+  array, with both values in `ES24.16` and their bit patterns.
+
+**Tests per rank** (`tools/ccpp_dsl.py`): each driver is now tested on its
+own scheme's ranks (`_capture_rank_lists(with_setups=False)`), not on the
+ranks the scheme is captured on as another driver's setup.
+`rrtmgp_lw_gas_optics`'s init is captured on the SW ranks for the SW
+drivers, but its own driver is tested on rank 0 only.
+
+**c10a after regenerating its drivers and CMake from the edited
+`unit-tests.txt`** (SW schemes `ranks=0,6,7,17`, the rest rank 0): 56
+tests instead of 624. The drivers themselves are unchanged.
+
+Result (user, 2026-11-16): all 56 c10a replays pass on the CPU and the GPU
+(`build_capture_tests.sh --tests rrtmgp`). `scheme-io-capture-rank-select`
+is resolved.
+
+## `capture-shr-randnum`: C sources in the capture drivers' build (2026-11-16)
+
+The RRTMGP McICA schemes (`rrtmgp_sw/lw_mcica_subcol_gen`) use CESM
+share's `shr_RandNum_mod` (`ShrKissRandGen`). Its generators call C
+through bind(c) interfaces: `kissvec_mod` uses `kissvec.c`, and
+`dSFMT_interface` uses `dSFMT.c` and `dSFMT_utils.c`, with headers in
+`share/RandNum/include`. The drivers' build was Fortran only, so the two
+McICA drivers were not built.
+
+- **Fortran side** (`transforms/module_dependency_resolver.py`):
+  `FortranSourceFacts.c_bindings` holds the binding labels of the bind(c)
+  procedures a file's interface blocks declare (`_c_binding_label`). The
+  `NAME=` string is kept as written, else the procedure name is
+  lowercased.
+- **C side:** `scan_c_source` lists a `.c` file's file-scope function
+  definitions and its quoted `#include`s. It ignores comments, literals
+  and preprocessor lines; keeps only the first branch of each `#if`
+  chain; and treats an `extern "C"` block as transparent.
+  `source_closure` then resolves each binding label to the one `.c` file
+  under the source roots that defines it (`SourceClosure.c_sources`) and
+  follows the headers to their directories (`include_dirs`). A function
+  no file defines is unresolved, so the driver is not built and the
+  `.skipped` file says why. C-to-C calls between files are not followed.
+- **CMake** (`tools/capture_cmake.py`):
+  - A fragment lists its C files and their include directories.
+  - `CMakeLists.txt` enables C when some driver compiles C. The C
+    compiler is the one from the Fortran compiler's family (nvc, gcc,
+    icx, icc next to the Fortran compiler) unless `CMAKE_C_COMPILER` or
+    `CC` says otherwise.
+  - Fortran-only options are limited to Fortran by generator expressions:
+    `-ffree-line-length-none`, nf-config's flags and the OpenACC compile
+    flags. `-Mnofma` applies to nvhpc Fortran and C, as CAM-SIMA's C
+    flags have it.
+  - The model's per-file flags (`capture_compile_flags.txt`, Fortran
+    flags) apply to Fortran files only.
+- **`#if` fix** (`transforms/fortran_preprocess.py`): `#if !defined(X)`
+  failed with "unexpected indent", because the leading `!` became a
+  leading blank in the Python expression (RandNum's `dSFMT_interface.F90`).
+- **CAM-SIMA** (`cime_config/cam_autogen.py`): `share/RandNum/src` and
+  `share/RandNum/include` are now `--capture-source-root`s, after
+  `share/src`.
+
+Tests (`tests/unit/test_capture_c_sources.py`):
+- the binding labels;
+- interface-only bindings;
+- the C scanner (comments, literals, `#if` branches, `extern "C"`);
+- the closure's C files and header directories;
+- an unresolved C function;
+- the fragment and top file with C;
+- end to end, a kessler driver whose module state comes from a module
+  that calls C;
+- `#if !defined`.
+
+Results: `tests/unit` 1547 and `tests/filecheck` 56 passed; CAM-SIMA's
+`test_cam_autogen.py` and `test_cam_config.py`, 63 passed.
+
+c10a after regenerating its drivers and CMake: both McICA drivers are
+built (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0). That makes 61 tests,
+and the other drivers are unchanged. Pending (user): CPU and GPU
+replays.
+
+Result (user, 2026-11-16): all 61 c10a replays pass on the CPU and the GPU,
+including both McICA drivers (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0).
+`capture-shr-randnum` and `scheme-io-capture-rte-objects` are resolved.

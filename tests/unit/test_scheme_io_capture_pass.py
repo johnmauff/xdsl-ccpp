@@ -1145,3 +1145,50 @@ def test_phase_with_an_unrecorded_argument_is_left_out_of_the_driver():
     assert _uncaptured_param_reason(params, {"t", "flx"}) == ""
     reason = _uncaptured_param_reason(params, {"t"})
     assert "argument 'flx' is not recorded at the call" in reason
+
+
+# scheme-io-capture-rank-select
+_HOST_META_WITH_MPI_RANK = _HOST_META_WITH_MPI_ROOT + """\
+[ iam ]
+  standard_name = mpi_rank
+  units = index
+  type = integer
+  dimensions = ()
+"""
+
+
+def _rank_capture(run_host_match, ccpp_context, host_meta, **options) -> str:
+    module = run_host_match(scheme_metas=[_SCHEME_META], host_metas=[host_meta],
+                            suite_xml=_SUITE_XML)
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme", **options).apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+def test_constituent_table_captured_on_every_rank_of_the_capture(run_host_match, ccpp_context):
+    """The scheme's own calls on its ranks; the constituent table, which
+    every driver reads, on every rank of the capture."""
+    fortran = _rank_capture(run_host_match, ccpp_context, _HOST_META_WITH_MPI_RANK,
+                            ranks="0", all_ranks="0,7")
+    begin = fortran.index(_BEGIN_BEFORE)
+    assert fortran.startswith("if (ccpp_capture_rank_selected(iam, '0')) then",
+                              fortran.rindex("if (", 0, begin))
+    table = fortran.index(_TABLE_BEGIN)
+    guard = fortran.rindex("if (", 0, table)
+    assert fortran.startswith("if (ccpp_capture_rank_selected(iam, '0,7')) then", guard)
+    assert "call ccpp_capture_set_rank(iam)" in fortran[guard:table]
+    assert "masterproc" not in fortran
+
+
+def test_ranks_without_host_mpi_rank_fall_back_to_the_root_task(run_host_match, ccpp_context,
+                                                                capsys):
+    fortran = _rank_capture(run_host_match, ccpp_context, _HOST_META_WITH_MPI_ROOT,
+                            ranks="3", all_ranks="3")
+    assert "if (masterproc) then" in fortran
+    assert "ccpp_capture_rank_selected" not in fortran
+    assert "ccpp_capture_set_rank" not in fortran
+    assert "declares no mpi_rank" in capsys.readouterr().err

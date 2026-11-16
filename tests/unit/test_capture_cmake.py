@@ -20,6 +20,7 @@ from xdsl_ccpp.tools.capture_cmake import (
 )
 from xdsl_ccpp.tools.ccpp_dsl import (
     _capture_entries,
+    _capture_ranks,
     _capture_label,
     _capture_spec,
     ccppMain,
@@ -62,10 +63,12 @@ def test_top_file_builds_support_library_and_includes_every_fragment():
     assert "option(OPENACC" in text
     # nvfortran: no FMA (as CAM-SIMA builds), and a CPU build must not
     # compile the schemes' !$acc directives (nvfortran does by default).
-    assert "add_compile_options(-Mnofma)" in text
+    assert "$<$<COMPILE_LANG_AND_ID:Fortran,NVHPC>:-Mnofma>" in text
     assert "list(APPEND _acc_flags -gpu=${CCPP_CAPTURE_GPU_TARGET},nofma,math_uniform)" in text
     assert 'set(CCPP_CAPTURE_GPU_TARGET "cc80" CACHE STRING' in text
-    assert "add_compile_options(-noacc)" in text
+    assert "add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-noacc>)" in text
+    # No C unless a driver compiles C.
+    assert "enable_language(C)" not in text
     # As CIME compiles CAM-SIMA (coords_1d.F90's declarations use it).
     assert "add_compile_definitions(USE_CONTIGUOUS=)" in text
     # BLAS (PUMAS's neural net calls dgemm), optional: never a configure error.
@@ -1051,3 +1054,123 @@ def test_registry_sources_only_where_a_handled_type_is_used(tmp_path):
     files = [el.text for el in ET.parse(out / "datatable.xml").getroot().iter("file") if el.text]
     assert not any(f.endswith("vmr_capture.F90") for f in files)
     assert "vmr_capture.F90" not in (out / "drivers" / "test_make_ddt.cmake").read_text()
+
+
+# scheme-io-capture-rank-select
+
+def test_capture_ranks_accepts_lists_and_ranges():
+    assert _capture_ranks("0") == [0]
+    assert _capture_ranks("4, 3,4") == [3, 4]
+    assert _capture_ranks("0-3,7") == [0, 1, 2, 3, 7]
+    for bad in ("x", "3-1", "-2", "1,,2"):
+        with pytest.raises(CcppInputError):
+            _capture_ranks(bad)
+
+
+def test_capture_entries_read_a_ranks_field(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler\nkessler_update:run   ranks=7,3   # mixed day/night\n")
+    ranks: dict = {}
+    assert _capture_entries([str(listing)], _KESSLER_METAS, ranks) == [
+        "kessler", "kessler_update:run"]
+    assert ranks == {"kessler_update": [3, 7]}
+
+
+def test_capture_entries_unknown_field_names_the_file_and_line(tmp_path):
+    listing = tmp_path / "schemes.txt"
+    listing.write_text("kessler\nkessler_update rank=3\n")
+    with pytest.raises(CcppInputError, match=r"schemes.txt:2: 'rank=3': unknown field"):
+        _capture_entries([str(listing)], _KESSLER_METAS, {})
+
+
+_SPMD_META = """\
+[ccpp-table-properties]
+  name = spmd_mod
+  type = module
+[ccpp-arg-table]
+  name = spmd_mod
+  type = module
+[ masterproc ]
+  standard_name = flag_for_mpi_root
+  units = flag
+  type = logical
+  dimensions = ()
+[ iam ]
+  standard_name = mpi_rank
+  units = index
+  type = integer
+  dimensions = ()
+"""
+
+
+def _run_kessler_rank_capture(tmp_path, capture_scheme, extra=None):
+    """The kessler_state capture (kessler_init sets up kessler_update's
+    driver) on a host that declares its MPI rank and root flag."""
+    spmd = tmp_path / "spmd_mod.meta"
+    spmd.write_text(_SPMD_META)
+    options = {
+        "host_files": [f"{K}/host_ftn/kessler_host_mod.meta",
+                       f"{K}/host_ftn/kessler_host_sub.meta", str(spmd)],
+        "capture_scheme": capture_scheme,
+    }
+    options.update(extra or {})
+    return _run_kessler_capture(tmp_path, _kessler_state_repo(tmp_path), options)
+
+
+def _guard_before(cap: str, table: str) -> str:
+    begin = cap.index(f"call ccpp_capture_begin('{table}', 'before')")
+    return cap[cap.rindex("if (", 0, begin):begin]
+
+
+def test_root_task_capture_unchanged_on_a_host_with_mpi_rank(tmp_path):
+    pytest.importorskip("fparser")
+    drivers, cap = _run_kessler_rank_capture(tmp_path, ["kessler_update"])
+    assert _guard_before(cap, "kessler_update_run").startswith("if (masterproc) then")
+    assert "ccpp_capture_rank_selected" not in cap
+    assert "ccpp_capture_set_rank" not in cap
+    assert not (drivers / "rank0").exists()
+    fragment = (drivers / "test_kessler_update.cmake").read_text()
+    assert "add_test(NAME test_kessler_update COMMAND" in fragment
+    assert "_rank" not in fragment
+
+
+def test_ranks_field_guards_on_the_mpi_rank_with_rank_directories(tmp_path):
+    pytest.importorskip("fparser")
+    drivers, cap = _run_kessler_rank_capture(tmp_path, ["kessler_update ranks=3,4"])
+    guard = _guard_before(cap, "kessler_update_run")
+    assert guard.startswith("if (ccpp_capture_rank_selected(iam, '3,4')) then")
+    assert "call ccpp_capture_set_rank(iam)" in guard
+    # The setup kessler_update's driver replays is captured on its ranks.
+    assert _guard_before(cap, "kessler_init").startswith(
+        "if (ccpp_capture_rank_selected(iam, '3,4')) then")
+    assert "if (masterproc)" not in cap
+    assert "use spmd_mod, only: iam" in cap
+    assert "use ccpp_capture_mod, only: ccpp_capture_rank_selected" in cap
+    assert (drivers / "rank3").is_dir() and (drivers / "rank4").is_dir()
+    assert not (drivers / "rank0").exists()
+    fragment = (drivers / "test_kessler_update.cmake").read_text()
+    assert "foreach(_rank IN ITEMS 3 4)" in fragment
+    assert 'if(EXISTS "${CCPP_CAPTURE_DIR}/rank${_rank}")' in fragment
+    assert "add_test(NAME test_kessler_update_rank${_rank} COMMAND test_kessler_update" in fragment
+    assert 'WORKING_DIRECTORY "${CCPP_CAPTURE_DIR}/rank${_rank}"' in fragment
+
+
+def test_capture_ranks_default_and_per_scheme_ranks_combine(tmp_path):
+    # --capture-ranks for the entries without ranks=: kessler on 0 and 7,
+    # kessler_update on 3 -- kessler_init, which kessler_update's driver
+    # replays first, is captured on all three.
+    pytest.importorskip("fparser")
+    drivers, cap = _run_kessler_rank_capture(
+        tmp_path, ["kessler", "kessler_update ranks=3"], {"capture_ranks": "0,7"})
+    assert _guard_before(cap, "kessler_run").startswith(
+        "if (ccpp_capture_rank_selected(iam, '0,3,7')) then")
+    assert _guard_before(cap, "kessler_init").startswith(
+        "if (ccpp_capture_rank_selected(iam, '0,3,7')) then")
+    assert _guard_before(cap, "kessler_update_run").startswith(
+        "if (ccpp_capture_rank_selected(iam, '3')) then")
+    for rank in (0, 3, 7):
+        assert (drivers / f"rank{rank}").is_dir()
+    assert "foreach(_rank IN ITEMS 3)" in (drivers / "test_kessler_update.cmake").read_text()
+    # kessler is captured on 3 too (kessler_update's setup), but its own
+    # driver is tested only on its own ranks.
+    assert "foreach(_rank IN ITEMS 0 7)" in (drivers / "test_kessler.cmake").read_text()
