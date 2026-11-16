@@ -105,9 +105,12 @@ measured data, and will drift as items are reassessed.
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
 | `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
-| `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3a `ty_gas_concs` done 2026-11-13 (ESCOMP wrapper; c08g CPU replays pass, GPU replays pending); 3b-1 plain-NetCDF `ccpp_io_reader` and 3b-2 `kdist` from the gas optics init code done 2026-11-14, all 20 c08g CPU replays pass; 3c RTE objects kept on the device by the GPU drivers done 2026-11-14, all 20 c08g GPU replays pass; left: a daylit capture for the SW schemes (`scheme-io-capture-rank-select`), then McICA (`capture-shr-randnum`) and cloud optics (`capture-interpolate-data`)) | S |
-| `capture-interpolate-data` | 1-3 days (move or copy the few `interpolate_data` routines the physics uses into atmospheric_physics, or a capture-side stand-in like the share stubs; recapture mcsp, gw_cam7, rrtmgp) | XS-S |
+| `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3a `ty_gas_concs` done 2026-11-13 (ESCOMP wrapper; c08g CPU replays pass, GPU replays pending); 3b-1 plain-NetCDF `ccpp_io_reader` and 3b-2 `kdist` from the gas optics init code done 2026-11-14, all 20 c08g CPU replays pass; 3c RTE objects kept on the device by the GPU drivers done 2026-11-14, all 20 c08g GPU replays pass; left: a daylit capture for the SW schemes (`scheme-io-capture-rank-select`), then McICA (`capture-shr-randnum`); cloud optics done 2026-11-15) | S |
+| `capture-cam-time-coord` | 3-6 days (move the time-coordinate logic `solar_irradiance_data` uses into atmospheric_physics behind `ccpp_io_reader`, current date as an argument; bit-for-bit FPHYStests; capture and replay CPU+GPU) | M |
+| `capture-tracer-data` | 2-4 weeks (`tracer_data` into atmospheric_physics with the date as an argument; history output out of the readers or skipped in replays; `gmean` for `prescribe_lower_boundary_conditions`; `string_utils` -> `atmos_phys_string_utils`; bit-for-bit FPHYStests; capture trcdata_bam and cam4, replay CPU+GPU) | M-L |
+| `capture-generation-speed` | 1-2 days (profile a capture generation; cache `module_definitions` per root across schemes and/or scan in parallel; check rrtmgp/cam4 capture times) | XS-S |
 | `capture-cam-thermo-formula` | 1-2 days (check what `check_energy_chng` needs from `cam_thermo`/`cam_thermo_formula`; move the formula constants into atmospheric_physics or supply the host modules to the capture build; recapture FKESSLER and gw_cam4, replay CPU+GPU) | XS-S |
+| `cam-sima-hist-uninit-buffer` | 0.5-1 day (take history_output `history01_05` and CAM-SIMA PR #572 when merged, or both with the next upstream merge; rerun the nvhpc CPU and GPU regressions; check that `COMPARE_cpu_gpu` passes for the 5 se_cam4 tests, then regenerate the CPU baseline, since the fields change) | XS |
 | `capture-shr-randnum` | 1-2 days (C sources in the driver build: `LANGUAGES C Fortran`, `.c` files in the closure; the share `RandNum` source root from CAM-SIMA; regenerate rrtmgp and replay both McICA schemes CPU+GPU) | XS-S |
 | `unit-test-scheme-changes` | 1-2 days (review the listed scheme edits once every scheme has a replay; keep, rework or upstream each; perf check with `/cam-sima-perf`) | XS-S |
 | `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code; not in the Kessler GPU plan) | M |
@@ -1667,8 +1670,8 @@ properties, LW source functions and fluxes, and CAM-SIMA's
 by setup replay (a setup output feeding a replayed argument), the
 `ty_gas_concs` handler and a plain-NetCDF
 `ccpp_io_reader` submodule: `inputs`, both `mcica`, both `gas_optics`,
-`lw_rte`. Phases using `radiation_utils` stay blocked by
-`capture-interpolate-data`.
+`lw_rte`. Phases using `radiation_utils` were blocked by
+`capture-interpolate-data` (resolved 2026-11-15).
 `ty_gas_concs` shape (2026-11-13; full discussion in
 CAM-SIMA `src/physics/capture/capture_rte_objects_plan.md`): RTE keeps `ncol`/`nlay` private with no
 getter (unpatched v1.9.2; none in v1.9.3 or upstream main), and per-type
@@ -1679,21 +1682,73 @@ wrapper that tracks the shape through its own `init`/`set_vmr`/`reset`
 name. Decided: ESCOMP wrapper now (stage 3a, done 2026-11-13, CHANGELOG),
 upstream getter later; `dims=` now has no user.
 
-**ID: `capture-interpolate-data`. CAM-SIMA's `interpolate_data` blocks
-capture replays.** Added 2026-11-13. `src/utils/interpolate_data.F90` is a
-CAM-SIMA host module (`interp_type`, `lininterp_init`, `lininterp`,
-`lininterp_finish`, `vertinterp`), so a capture driver that needs it is
-not built. Users: `mcsp` (`vertinterp`; c08d), `gw_common` -- and so the
-CAM7 gravity-wave schemes `moving_mountain`, `convection_deep`,
-`frontogenesis`, `ridge_beta` (c08e) -- and RRTMGP's `radiation_utils`
-(`get_mu_lambda_weights_ccpp`) and both `cloud_optics`, which also blocks
-both `gas_optics_pre`, `inputs_setup`, `sw_solar_var(_setup)` and
-`rrtmgp_constituents` (they use `radiation_utils`). Options: move the
-routines the physics uses into atmospheric_physics (upstream PR), or a
-capture-side stand-in as for `shr_log_mod`/`shr_sys_mod`
-(`framework_src/capture_stubs`) -- but a stand-in must reproduce the real
-interpolation bit for bit, so a copy is a stand-in in name only. Check
-which routines each user needs first.
+**ID: `capture-interpolate-data`. Resolved (2026-11-15)** -- `phys_utils/atmos_phys_interp_utils.F90` in atmospheric_physics replaces CAM-SIMA's `interpolate_data`; rrtmgp, mcsp and gw_cam7 replays pass on CPU and GPU. CHANGELOG.md L15560.
+
+**ID: `capture-cam-time-coord`. CAM-SIMA's `cam_time_coord` blocks the
+`solar_irradiance_data` replay.** Added 2026-11-15. The scheme is left out
+of the rrtmgp and cam4 capture lists ("file I/O"); a generation with it
+listed (c08g inputs) reports the driver as not built: `cam_time_coord`
+(`src/utils/cam_time_coord.F90`) is a CAM-SIMA host module, which itself
+uses PIO, `time_manager` (`get_curr_date`, calendar), `cam_abortutils`,
+`cam_logfile` and `spmd_utils`. Even with the module, the replay has no
+model clock: `solar_irradiance_data_timestep_init` advances `time_coord`
+from the current date and, on a new time slice, reads `ssi`/`tsi` from the
+irradiance file, so the slice and interpolation weights come from the
+date. Fix, as for `capture-interpolate-data`: move the time-coordinate
+logic the scheme uses into atmospheric_physics, reading through
+`ccpp_io_reader` (the plain-NetCDF submodule serves the replay) and taking
+the current date as a scheme argument, so the capture records it. Low
+priority for the GPU work: the scheme stays on the host (1-D spectral data,
+no column loop; `gpu-port-scheme-checklist` table).
+
+**ID: `capture-tracer-data`. CAM-SIMA host modules block the
+`prescribed_*`/`prescribe_*` data-reader replays.** Added 2026-11-15.
+Generation-only checks (the trcdata_bam captures; c08g and an F2000_C4
+case for the `prescribe_*` schemes) report these drivers as not built:
+- `prescribed_ozone`: `tracer_data`, `cam_history`, `string_utils` (via
+  `ccpp_chem_utils`);
+- `prescribed_aerosols`: `tracer_data`, `cam_history`, `time_manager`,
+  `string_utils`;
+- `prescribed_volcanic_aerosol`: `tracer_data`, `cam_history`,
+  `cam_history_support`, `string_utils`;
+- `prescribed_aerosol_deposition_flux`: `tracer_data`, `cam_history`,
+  `cam_history_support`;
+- `prescribe_lower_boundary_conditions`: `tracer_data`, `time_manager`,
+  `gmean_mod`;
+- `prescribe_radiative_gas_concentrations`: the same three, through
+  `prescribe_lower_boundary_conditions`, whose module state it reads
+  (set by its init and every `timestep_init`).
+`tracer_data` (`src/utils/tracer_data.F90`) is the main blocker: a
+time-interpolated file reader, so even with the module a replay has no
+model clock to choose the time slices and weights (as in
+`capture-cam-time-coord`). `cam_history` is history output only;
+`gmean_mod` is a global MPI reduction a one-process replay cannot
+reproduce; `string_utils` has an atmospheric_physics counterpart,
+`atmos_phys_string_utils`. Fix, as for `capture-interpolate-data`: move
+the `tracer_data` routines the schemes use into atmospheric_physics,
+reading through `ccpp_io_reader` and taking the date as an argument;
+move history output out of the readers (diagnostics schemes) or leave it
+out of the replays; decide `gmean`. Low priority for the GPU work: the
+port plan keeps these readers on the host. Not in this item:
+`prescribe_radiative_gas_vertical_profiles` uses physics modules only and
+builds; it was missing only from the cam4 capture lists (added
+2026-11-15 to `capture_cam4`/`capture_F2000_C4` `unit-tests.txt`).
+
+**ID: `capture-generation-speed`. Capture generation is slow.** Added
+2026-11-15. A generation with capture on (c09a rrtmgp inputs, 28-scheme
+list) takes about 30 s, the same on HEAD 4c995a8, against about 6.6 s
+for a cam4 generation without capture (`generator-speed`). The time goes
+to the capture planning (`_drop_mpi_capture_phases`,
+`_plan_state_setup`, `_plan_ddt_layouts`, `_plan_produced_args`,
+`_write_capture_cmake`): `source_closure` builds
+`module_definitions(root)` -- an fparser scan of every `.F90` under the
+scheme's repository and each `--capture-source-root` -- afresh for every
+scheme's closure (only the per-file scan is cached), all in the main
+process. Options: one module index per root per generation, scanning in
+the `--jobs` worker pool, or both. Profile first. Not urgent: capture
+generation runs only in capture cases.
+
+**ID: `capture-setup-produced-args`. Resolved (2026-11-15)** -- setup phases get their own setups and produced arguments (`kdist` for `rrtmgp_inputs_setup_init`). CHANGELOG.md L15560.
 
 **ID: `capture-cam-thermo-formula`. CAM-SIMA's `cam_thermo_formula`
 blocks the `check_energy_chng` replays.** Added 2026-11-14. The drivers
@@ -1747,6 +1802,29 @@ change, why):
   intent(out) but set only on the optimal-angles path, so
   `test_rrtmgp_lw_rte` compared undefined memory. Answer-neutral (unused
   on that path); one small kernel per LW call.
+- atmospheric_physics `schemes/rrtmgp/rrtmgp_lw_cloud_optics.F90`
+  (2026-11-15): zero `snow_lw_abs` when `do_snow` is off and
+  `grau_lw_abs` when `do_graupel` is off (as the SW scheme already does
+  for `snow_tau`/`grau_tau`), and `cloud_lw%optical_props%tau` after
+  `alloc_1scl` (filled later by `rrtmgp_lw_mcica_subcol_gen`). All were
+  intent(out) but left undefined, so `test_rrtmgp_lw_cloud_optics`
+  compared undefined memory. Answer-neutral; one extra pass over each
+  array per LW call.
+- atmospheric_physics `schemes/gravity_wave_drag/gravity_wave_drag_frontogenesis.F90`
+  (2026-11-15): zero `ubm`/`ubi` at the top of `gw_front_src`, which sets
+  them only down to the source level. Below it the host arrays kept
+  another gravity-wave scheme's values, so
+  `test_gravity_wave_drag_frontogenesis` compared them. Physics
+  answer-neutral (those levels are not read); host values below the
+  source level are now 0. One extra pass over two (ncol, pver) arrays
+  per call.
+- atmospheric_physics `schemes/gravity_wave_drag/gravity_wave_drag_convection.F90`
+  (2026-11-15): zero `ubi` in `gw_beres_src` before it is set; the bottom
+  interface was never written, so the host array kept another
+  gravity-wave scheme's values there and
+  `test_gravity_wave_drag_convection_deep` compared them. Physics
+  answer-neutral (not read); the host's bottom-interface value is now 0.
+  One extra pass over one (ncol, pverp) array per call.
 
 **ID: `scheme-io-capture-group-replay`. Replay a whole generated group
 subroutine.** Added 2026-10-28. Per-scheme replay checks one scheme's
@@ -2917,6 +2995,42 @@ Supporting items (not tracked elsewhere):
 | `rrtmgp_sw_diagnostics` | `schemes/sima_diagnostics/rrtmgp_sw_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
 | `sima_state_diagnostics` | `schemes/sima_diagnostics/sima_state_diagnostics.F90` | kessler, pumas | none: stays on host (history output) |
 | `solar_irradiance_data` | `schemes/radiation_utils/solar_irradiance_data.F90` | rrtmgp | none: likely stays on host (1-D spectral data from file, no column loop; confirm), small `update device` of its output |
+
+**ID: `cam-sima-hist-uninit-buffer`. History writes an uninitialized
+buffer for radiation fields on non-radiation steps; the se_cam4 CPU/GPU
+comparison fails because of it.** Added 2026-11-15. The `COMPARE_cpu_gpu`
+check (`./cs.status.<gpu id> -t <cpu id>`) fails for all 5 se_cam4 tests
+(QPC4 regular and debug builds; F1850_C4, F2000_C4, FHIST_C4 debug).
+These failures predate this work: xdsl80, xdsl81, xdsl90 and xdsl91 all
+show them. They are easy to miss because the comparison writes no line to
+TestStatus. In QPC4 the model state is bit-for-bit. Only QRL and QRS
+differ, in the 7200, 10800 and 14400 s `h1i` files; xdsl80 and xdsl90
+also differed in about 18 flux fields (FSNT, FLNT, SWCF, ...) at 7200 s.
+The CPU values are garbage as well: QRS up to 306 K/s and QRL up to
+4.9e306, both with NaNs, and in one file the CPU's QRL maximum equals its
+QRS maximum. So a buffer that was never written is going to the file; it
+is not a GPU numerical difference. The CPU BASELINE still passes because
+the CPU build leaves the same garbage on every run. The comparison started failing with the
+sima0_25_000 merge (2026-11-09). xdsl70 (2026-11-07) is identical
+everywhere. The bug was there before: `buff_2d_value` is the same in
+`history01_02` and `history01_04`, and `field_data` was never set
+before. But until then the memory reused at that allocation held the
+previous step's values (xdsl70's CPU QRS maximum is 2.271e-4 at both
+5400 and 7200 s), the same on CPU and GPU. #578 (3-D history fields,
+rank-3 `field_data` in `config_write_field`, history_output
+`history01_02` -> `history01_04`) changed the order of allocations, so
+the leftover memory became real garbage. This is upstream
+ESCOMP/CAM-SIMA issue #571 ("Uninitialized buffer is written for any
+field with zero accumulated samples during an output window", closed
+2026-11-12). It is fixed by ESMCI/history_output PR #16 (merged, tag
+`history01_05`), with a companion CAM-SIMA PR #572 (one line in
+`src/history/cam_hist_file.F90`, still open on 2026-11-15). Our
+CAM-SIMA pins `history01_04`. Related: CAM-SIMA issue #482 (open) wants
+these radiation diagnostics to carry the last radiation step's values
+instead (an answer change). Only the 5 se_cam4 tests are affected.
+Expected once fixed: those 5 comparisons pass. If any of the 4 untested
+tests still differs, look at it then; only QPC4 was checked field by
+field.
 
 ## Design problems: re-derived information and special-casing (review 2026-10-28)
 

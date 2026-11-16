@@ -15556,3 +15556,72 @@ phase. CAM-SIMA's `tools/gpu_scheme_status.py` therefore did not count
 `rrtmgp_inputs`, `rrtmgp_lw_rte`, `rrtmgp_lw_gas_optics` or
 `rrtmgp_sw_gas_optics` as unit-tested. Notes now start with `note: `
 (`_report_skipped`). Test: `test_produced_argument_is_passed_from_its_init`.
+
+## `capture-interpolate-data` and `capture-setup-produced-args`: replays of the RRTMGP cloud optics, mcsp and the CAM7 gravity-wave sources (2026-11-15)
+
+Resolves `capture-interpolate-data`. CAM-SIMA's host module
+`interpolate_data` kept the capture drivers of every scheme using it from
+building. The fix is in atmospheric_physics (user's fork; an ESCOMP PR
+later), commit `c8a4b85`:
+
+- New `phys_utils/atmos_phys_interp_utils.F90` (`lininterp*`,
+  `vertinterp`). Errors return through `errmsg`/`errflg` instead of
+  `endrun`, and the arithmetic is the same. It replaces `interpolate_data`
+  in `radiation_utils`, both RRTMGP cloud optics, `mcsp`, `gw_common`,
+  `prescribe_lower_boundary_conditions` and the RRTMGP diagnostics. 15
+  `.meta` files list the new dependency.
+- `radiation_utils`: `get_sw/lw_spectral_boundaries_ccpp` return
+  `errflg = 1` when the boundaries are not set. Before, they read
+  unallocated arrays: the `rrtmgp_sw_solar_var` replay segfaulted there.
+- Outputs left undefined, found by the new replays (BACKLOG
+  `unit-test-scheme-changes`): `rrtmgp_lw_cloud_optics` zeroes the snow
+  and graupel absorption when they are off, and `cloud_lw` `tau` after
+  allocation; `gravity_wave_drag_frontogenesis` zeroes `ubm`/`ubi` below
+  the source level. Uncommitted, for the next atmospheric_physics commit:
+  `gravity_wave_drag_convection` (`gw_beres_src`) zeroes `ubi`, whose
+  bottom interface was never set.
+
+Answer impact: none. The nvhpc CPU (xdsl91) and GPU (xdsl91gpu)
+regressions match the `20261109-efc0937-nvhpc` baselines except the known
+mcsp and zm diffs; gnu (xdsl91g) passes every snapshot check; intel
+(xdsl91i) runs, except the known zm abort; F2000_C7 fails RUN everywhere,
+as upstream. The CPU/GPU comparison fails only for the 5 se_cam4 tests
+(`cam-sima-hist-uninit-buffer`, upstream CAM-SIMA #571).
+
+xdsl-ccpp (`tools/ccpp_dsl.py`, `transforms/module_dependency_resolver.py`):
+
+- Registry `driver_source` files that hold a submodule join every driver
+  whose closure defines the submodule's ancestor module
+  (`_capture_submodule_sources`; `FortranSourceFacts.submodule_of`,
+  `_submodule_ancestor`). Before, the plain-NetCDF `ccpp_io_reader`
+  submodule (`ccpp_netcdf_reader.F90`) only joined the drivers of schemes
+  with a handled type, so the gravity-wave drivers, whose init reads a
+  file, failed to link.
+- Resolves `capture-setup-produced-args`. `_plan_state_setup` runs a
+  worklist over the setup phases, so a setup phase gets the setups it
+  needs itself (`_add_state_setup`), and `_plan_produced_args` also scans
+  each driver's setup phases (`_plan_produced_table`). That gives
+  `rrtmgp_inputs_setup_init` (which sets the wavenumber boundaries in
+  `radiation_utils`) its `kdist` from the gas optics init, so the
+  `rrtmgp_sw_solar_var` and cloud optics replays run with the boundaries
+  set. The backlog item said it was not needed; the `sw_solar_var`
+  segfault showed it is.
+
+CAM-SIMA `src/physics/capture/ccpp_capture_rte_objects.F90`:
+`ccpp_capture_rte_gas_concs_read` initializes a gas concentration object
+with no gases (an SW capture with no daylit columns). Before, the GPU
+`rrtmgp_sw_gas_optics_pre` driver crashed at exit: RTE's final procedure
+deleted from the device an object that `init` never put there.
+
+Tests: `test_driver_source_submodule_joins_every_driver_using_its_module`,
+`test_setup_phase_gets_the_setups_it_needs_itself` (1528 passed, 3
+skipped). Capture generation takes about 30 s with capture on, as on HEAD
+`4c995a8` (`capture-generation-speed`).
+
+Replays (user, `build_capture_tests.sh`, captures c09a rrtmgp, c09b mcsp,
+c09c gw_cam7): rrtmgp 26/26, mcsp 4/4 and gw_cam7 6/6 pass on both the
+CPU and the GPU (the two McICA drivers are not built:
+`capture-shr-randnum`).
+CAM-SIMA `GPU_SCHEME_STATUS.md` (regenerated from xdsl91gpu) gains 🧪 for
+10 schemes: the 4 CAM7 gravity-wave sources, `mcsp`, both RRTMGP cloud
+optics, both `gas_optics_pre` and `sw_solar_var`.

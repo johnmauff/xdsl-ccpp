@@ -136,6 +136,7 @@ class FortranSourceFacts:
     includes: frozenset  # files named by Fortran INCLUDE lines
     scopes: tuple = ()  # ScopeFacts per procedure and module specification part
     types: tuple = ()  # TypeFacts per derived-type definition
+    submodule_of: frozenset = frozenset()  # ancestor modules of the file's submodules
 
 
 class _ScopeBuilder:
@@ -317,6 +318,19 @@ def _called_name(call) -> str:
     return str(walk(designator, f03.Name)[-1]).lower()
 
 
+def _submodule_ancestor(lower: str) -> "str | None":
+    """The ancestor module named by a lower-cased SUBMODULE statement
+    ("submodule (ancestor[:parent]) name"), or None."""
+    text = lower.strip()[len("submodule"):].lstrip()
+    if not text.startswith("("):
+        return None
+    close = text.find(")")
+    if close < 0:
+        return None
+    ancestor = text[1:close].split(":")[0].strip()
+    return ancestor or None
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     import fparser.two.Fortran2003 as f03
@@ -343,6 +357,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     type_depth = 0  # inside a derived-type definition: components, not variables
     type_def = None  # the definition being read (see below)
     types: list = []
+    submodule_of: set = set()  # ancestor modules of the file's submodules
 
     def current():
         return procedures[-1] if procedures else module_scope
@@ -448,6 +463,12 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
                         close_procedure()
                     scopes.append(module_scope.freeze())
                     module, module_scope = None, _ScopeBuilder(None, None)
+            elif first == "submodule":
+                # "submodule (ancestor[:parent]) name": the ancestor module
+                # whose separate module procedures it implements.
+                ancestor = _submodule_ancestor(lower)
+                if ancestor:
+                    submodule_of.add(ancestor)
             elif first == "module" and len(words) == 2:
                 # "module procedure ..." is not a Module_Stmt.
                 module = str(f03.Module_Stmt(line).children[1]).lower()
@@ -480,7 +501,7 @@ def _scan_cached(path: str, _stamp, defines_key) -> FortranSourceFacts:
     if module_scope.module or module_scope.uses or module_scope.includes:
         scopes.append(module_scope.freeze())
     return FortranSourceFacts(frozenset(uses), frozenset(modules), frozenset(includes),
-                              tuple(scopes), tuple(types))
+                              tuple(scopes), tuple(types), frozenset(submodule_of))
 
 
 def scan_fortran_source(
