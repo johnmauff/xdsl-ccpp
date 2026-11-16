@@ -2304,13 +2304,15 @@ class ccppMain:
                 extra[other].append(phase)
         return True
 
-    def _capture_rank_lists(self) -> dict:
+    def _capture_rank_lists(self, with_setups: bool = True) -> dict:
         """{scheme: [rank, ...]} for every captured scheme
         (scheme-io-capture-rank-select): a listed scheme's own ranks= field,
-        else --capture-ranks; plus, for a scheme whose phases set up other
-        schemes' drivers (_capture_setups), the ranks of those drivers, so
-        each rank<r> directory holds what its drivers replay. A scheme
-        captured only for other drivers has only theirs."""
+        else --capture-ranks; with *with_setups* (the ranks it is captured
+        on), plus, for a scheme whose phases set up other schemes' drivers
+        (_capture_setups), the ranks of those drivers, so each rank<r>
+        directory holds what its drivers replay. A scheme captured only for
+        other drivers has only theirs. Without *with_setups*: the ranks its
+        own driver is tested on."""
         default = self.options_db.get("capture_ranks") or [0]
         own = self.options_db.get("capture_scheme_ranks") or {}
         setup_only = getattr(self, "_setup_only", set())
@@ -2318,6 +2320,8 @@ class ccppMain:
         for spec in self.options_db.get("capture_scheme") or []:
             scheme = _capture_spec(spec)[0]
             lists[scheme] = set() if scheme in setup_only else set(own.get(scheme, default))
+        if not with_setups:
+            return {scheme: sorted(ranks or default) for scheme, ranks in lists.items()}
         # A driver's setup list is already transitive (_plan_state_setup),
         # so the drivers' own ranks are enough.
         drivers = {scheme: set(ranks) for scheme, ranks in lists.items()}
@@ -2430,12 +2434,14 @@ class ccppMain:
             )
         label = self.options_db.get("capture_label")
         data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
-        rank_lists = self._capture_rank_lists()
-        by_rank = any(r != 0 for ranks in rank_lists.values() for r in ranks)
+        # Rank directories when any capture is by rank; each driver is
+        # tested on its own scheme's ranks only (a scheme captured on more
+        # ranks as another driver's setup is not tested there).
+        by_rank = any(r != 0 for ranks in self._capture_rank_lists().values() for r in ranks)
         for path in write_capture_cmake(
                 driver_dir, scheme_sources, support, data_dir, scheme_variants,
                 bool(self.options_db.get("capture_accel_variants")),
-                rank_lists if by_rank else None):
+                self._capture_rank_lists(with_setups=False) if by_rank else None):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):

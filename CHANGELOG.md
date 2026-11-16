@@ -15688,3 +15688,78 @@ Next, stage 2:
   `0-<NTASKS_ATM-1>`.
 - `/cam-sima-capture`: `check` prints `nday`/`ncol` per rank and suggests
   `ranks=` lines.
+
+## `scheme-io-capture-rank-select` stage 2: CAM-SIMA case variable and the capture skill's rank report (2026-11-16)
+
+- **CAM-SIMA:**
+  - `cime_config/config_component.xml`: a new `XDSL_CCPP_CAPTURE_RANKS`
+    case variable (env_build). It holds comma-separated ranks and ranges,
+    or `all`; empty means rank 0 only.
+  - `cime_config/cam_autogen.py`: `_xdsl_capture_ranks` turns `all` into
+    `0-<NTASKS_ATM-1>`. `generate_physics_suites` passes `--capture-ranks`
+    and adds the ranks to the capture fingerprint, so changing them
+    regenerates the caps.
+  - `cime_config/cam_config.py` reads the variable and `NTASKS_ATM`.
+  - Tests: `test_capture_ranks`, `test_fingerprint_follows_ranks`; the
+    fake case in `test_cam_config.py` gains the two variables.
+- **`/cam-sima-capture`** (`~/.claude/agents/cam-sima-capture.md`, and
+  the argument hint of `~/.claude/commands/cam-sima-capture.md`):
+  - a new `ranks=<ranks>|all` argument, which sets the case variable;
+  - list-file lines may carry `ranks=` fields;
+  - `check` lists the files of each `rank<r>/` directory;
+  - a new step C3b: from `rrtmgp_pre_run`'s `nday` and `ncol` (group
+    `in`), a per-rank table of `night` / `all day` / `mixed` columns, and
+    suggested `ranks=` fields for the listed schemes that take `nday`,
+    with a comment line naming the configuration (grid, `NTASKS_ATM`,
+    start date and time). The user edits the list file.
+
+Next, stage 3 (user):
+- capture rrtmgp with `ranks=all`;
+- choose ranks from the report and record them in `unit-tests.txt`;
+- replay the SW schemes on CPU and GPU.
+
+## `scheme-io-capture-rank-select`: first daylit replays (c10a), subnormals in the exact compare, tests on a driver's own ranks (2026-11-16)
+
+c10a captured rrtmgp on all 24 ranks (`ranks=all`). The CPU replays passed.
+On the GPU, `test_rrtmgp_sw_rte` failed on every rank with daylit columns,
+for two reasons:
+
+- **`bnd_flux_net`** (max diff 225 W/m2): RTE's `net_byband_precalc` ran
+  on the host while its inputs were on the device. Fixed in the vendored
+  rte-rrtmgp (`rte-byband-net-device`).
+- **`bnd_flux_dn_dir`** (diff printed as 0): direct-beam values below
+  about 1e-300.
+  - The nvhpc CPU builds use `-Mflushz`, which flushes subnormal results
+    to zero. The GPU keeps double-precision subnormals: the GPU replay
+    gave e.g. `000FCB5172E9443D` (about 4.4e-309) where the capture holds
+    0.
+  - `-gpu=flushz` does not help. CUDA's flush-to-zero is single precision
+    only (PTX `.ftz` exists for `.f32` alone), and a build with it still
+    failed on ranks 6 and 17. So it was not added to any build.
+  - Fix: at tolerance 0, `r8_mismatch` (`framework_src/ccpp_capture_mod.F90`)
+    flushes a subnormal to a zero of its sign (`flush_subnormal`, decided
+    from the bits, since replay code built with `-Mflushz` reads a
+    subnormal operand as 0) before comparing bit patterns. That is
+    bit-for-bit as the CPU sees it.
+  - `-0.0` vs `+0.0`, NaN payloads and normal numbers one ulp apart still
+    fail.
+  - Fortran test cases are in `test_exact_real_compare`: subnormal vs
+    `+0.0` and negative subnormal vs `-0.0` pass; negative subnormal vs
+    `+0.0` and `tiny` vs 0 fail.
+- **Diagnostics:** CAM-SIMA's RTE handler (`ccpp_capture_rte_objects.F90`,
+  `report_mismatch`) now prints the first mismatching element of a real
+  array, with both values in `ES24.16` and their bit patterns.
+
+**Tests per rank** (`tools/ccpp_dsl.py`): each driver is now tested on its
+own scheme's ranks (`_capture_rank_lists(with_setups=False)`), not on the
+ranks the scheme is captured on as another driver's setup.
+`rrtmgp_lw_gas_optics`'s init is captured on the SW ranks for the SW
+drivers, but its own driver is tested on rank 0 only.
+
+**c10a after regenerating its drivers and CMake from the edited
+`unit-tests.txt`** (SW schemes `ranks=0,6,7,17`, the rest rank 0): 56
+tests instead of 624. The drivers themselves are unchanged.
+
+Result (user, 2026-11-16): all 56 c10a replays pass on the CPU and the GPU
+(`build_capture_tests.sh --tests rrtmgp`). `scheme-io-capture-rank-select`
+is resolved.

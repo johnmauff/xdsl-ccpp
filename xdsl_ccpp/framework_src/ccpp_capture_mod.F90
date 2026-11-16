@@ -60,7 +60,8 @@
 ! tolerance into its source; CCPP_CAPTURE_TOLERANCE (a real number)
 ! overrides it at run time, so one compiled driver can be rerun against
 ! several tolerances (cross-compiler comparisons). A CPU-vs-GPU check
-! uses tolerance 0, which compares bit patterns (see r8_mismatch).
+! uses tolerance 0, which compares bit patterns after flushing subnormals
+! to signed zero, as the nvhpc CPU builds do (-Mflushz; see r8_mismatch).
 module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
@@ -1337,7 +1338,12 @@ contains
   ! Does one real element differ? At tolerance 0 (or below): compare the
   ! bit patterns, so -0.0 differs from +0.0, a NaN differs from every
   ! number, and two NaNs match only with the same payload -- a bit-for-bit
-  ! check, as CPU-vs-GPU replays require. Otherwise an absolute tolerance,
+  ! check, as CPU-vs-GPU replays require -- after flushing a subnormal to
+  ! zero of its sign (flush_subnormal), as the CPU builds do (nvhpc
+  ! -Mflushz) and a GPU cannot for double precision (CUDA's flush-to-zero
+  ! is single precision only): the GPU keeps a subnormal where the
+  ! captured CPU run wrote 0 (RTE's direct-beam band fluxes, c10a).
+  ! Otherwise an absolute tolerance,
   ! with a NaN on one side only a mismatch (abs(NaN - x) > tolerance is
   ! .false., so a plain tolerance test lets a NaN pass) and NaN vs NaN a
   ! match. The bytes are compared through transfer, so any kind_phys works.
@@ -1347,13 +1353,38 @@ contains
     real(kind=kind_phys), intent(in) :: actual, expected, tolerance
     logical :: differs
     if (tolerance <= 0.0_kind_phys) then
-      differs = any(transfer(actual, [0_int8]) /= transfer(expected, [0_int8]))
+      differs = any(transfer(flush_subnormal(actual), [0_int8]) &
+                    /= transfer(flush_subnormal(expected), [0_int8]))
     else if (ieee_is_nan(actual) .or. ieee_is_nan(expected)) then
       differs = ieee_is_nan(actual) .neqv. ieee_is_nan(expected)
     else
       differs = abs(actual - expected) > tolerance
     end if
   end function r8_mismatch
+
+  ! *x*, or a zero of its sign when *x* is subnormal (x86 flush-to-zero).
+  ! Decided from the bits (zero exponent field, nonzero fraction), not by
+  ! arithmetic: code built with -Mflushz reads a subnormal operand as 0.
+  elemental function flush_subnormal(x) result(flushed)
+    use, intrinsic :: iso_fortran_env, only: int32, int64
+    real(kind=kind_phys), intent(in) :: x
+    real(kind=kind_phys) :: flushed
+    integer(int64), parameter :: exp64 = int(z'7FF0000000000000', int64)
+    integer(int64), parameter :: sign64 = ishft(1_int64, 63)
+    integer(int32), parameter :: exp32 = int(z'7F800000', int32)
+    integer(int32), parameter :: sign32 = ishft(1_int32, 31)
+    integer(int64) :: bits64
+    integer(int32) :: bits32
+
+    flushed = x
+    if (storage_size(x) == 64) then
+      bits64 = transfer(x, bits64)
+      if (iand(bits64, exp64) == 0_int64) flushed = transfer(iand(bits64, sign64), x)
+    else if (storage_size(x) == 32) then
+      bits32 = transfer(x, bits32)
+      if (iand(bits32, exp32) == 0_int32) flushed = transfer(iand(bits32, sign32), x)
+    end if
+  end function flush_subnormal
 
   ! Position of the first .true. in *mask* (0 if none): the compares'
   ! first-mismatch index, column-major for a flattened array. A loop, not

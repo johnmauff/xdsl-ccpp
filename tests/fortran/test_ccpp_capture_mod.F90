@@ -317,9 +317,11 @@ contains
   end subroutine test_compare_diagnostics
 
   subroutine test_exact_real_compare(n_failed)
-    ! Tolerance 0 compares bit patterns; a nonzero tolerance never lets a
+    ! Tolerance 0 compares bit patterns (subnormals flushed to a zero of
+    ! their sign); a nonzero tolerance never lets a
     ! NaN on one side pass (scheme-io-capture-exact-compare).
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+    use, intrinsic :: iso_fortran_env, only: int64
     integer, intent(inout) :: n_failed
     real(kind=kind_phys) :: nan, pzero, mzero, one, one_ulp
     real(kind=kind_phys) :: a1(3), e1(3), a2(2,2), e2(2,2), a3(2,1,2), e3(2,1,2)
@@ -373,6 +375,20 @@ contains
         .not. ccpp_capture_compare(mzero, pzero, 0.0_kind_phys), n_failed)
     call report('exact: -0.0 vs +0.0 passes at tolerance 1e-12', &
         ccpp_capture_compare(mzero, pzero, 1.0e-12_kind_phys), n_failed)
+
+    ! Subnormals compare as the CPU (-Mflushz) sees them: a zero of their
+    ! sign. The smallest normal number still differs from 0.
+    call report('exact: subnormal vs +0.0 passes at tolerance 0', &
+        ccpp_capture_compare(transfer(int(z'0000000000000800', int64), one), pzero, &
+                             0.0_kind_phys), n_failed)
+    call report('exact: negative subnormal vs -0.0 passes at tolerance 0', &
+        ccpp_capture_compare(transfer(ior(int(z'000FCB5172E9443D', int64), ishft(1_int64, 63)), one), mzero, &
+                             0.0_kind_phys), n_failed)
+    call report('exact: negative subnormal vs +0.0 fails at tolerance 0', &
+        .not. ccpp_capture_compare(transfer(ior(int(z'000FCB5172E9443D', int64), ishft(1_int64, 63)), one), pzero, &
+                                   0.0_kind_phys), n_failed)
+    call report('exact: smallest normal vs +0.0 fails at tolerance 0', &
+        .not. ccpp_capture_compare(tiny(one), pzero, 0.0_kind_phys), n_failed)
 
     ! One ulp apart: fails at 0, passes at a tolerance that covers it.
     e1 = one

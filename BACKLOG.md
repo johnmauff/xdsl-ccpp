@@ -105,7 +105,7 @@ measured data, and will drift as items are reassessed.
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
 | `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
-| `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3a `ty_gas_concs` done 2026-11-13 (ESCOMP wrapper; c08g CPU replays pass, GPU replays pending); 3b-1 plain-NetCDF `ccpp_io_reader` and 3b-2 `kdist` from the gas optics init code done 2026-11-14, all 20 c08g CPU replays pass; 3c RTE objects kept on the device by the GPU drivers done 2026-11-14, all 20 c08g GPU replays pass; left: a daylit capture for the SW schemes (`scheme-io-capture-rank-select`), then McICA (`capture-shr-randnum`); cloud optics done 2026-11-15) | S |
+| `scheme-io-capture-rte-objects` | 3-5 days left (stages 1-2 code done 2026-11-13; recapture rrtmgp and replay; stage 3a `ty_gas_concs` done 2026-11-13 (ESCOMP wrapper; c08g CPU replays pass, GPU replays pending); 3b-1 plain-NetCDF `ccpp_io_reader` and 3b-2 `kdist` from the gas optics init code done 2026-11-14, all 20 c08g CPU replays pass; 3c RTE objects kept on the device by the GPU drivers done 2026-11-14, all 20 c08g GPU replays pass; daylit SW replays done 2026-11-16 (`scheme-io-capture-rank-select`); left: McICA (`capture-shr-randnum`); cloud optics done 2026-11-15) | S |
 | `capture-cam-time-coord` | 3-6 days (move the time-coordinate logic `solar_irradiance_data` uses into atmospheric_physics behind `ccpp_io_reader`, current date as an argument; bit-for-bit FPHYStests; capture and replay CPU+GPU) | M |
 | `capture-tracer-data` | 2-4 weeks (`tracer_data` into atmospheric_physics with the date as an argument; history output out of the readers or skipped in replays; `gmean` for `prescribe_lower_boundary_conditions`; `string_utils` -> `atmos_phys_string_utils`; bit-for-bit FPHYStests; capture trcdata_bam and cam4, replay CPU+GPU) | M-L |
 | `capture-generation-speed` | 1-2 days (profile a capture generation; cache `module_definitions` per root across schemes and/or scan in parallel; check rrtmgp/cam4 capture times) | XS-S |
@@ -125,7 +125,7 @@ measured data, and will drift as items are reassessed.
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
-| `scheme-io-capture-rank-select` | 1-1.5 days left (stage 1, xdsl-ccpp, done 2026-11-16, CHANGELOG L15629; stage 2: CAM-SIMA `XDSL_CCPP_CAPTURE_RANKS` (`all` = `0-<NTASKS_ATM-1>`) and the `/cam-sima-capture` `nday`/`ncol` report; stage 3: daylit rrtmgp recapture, `ranks=` in `unit-tests.txt`, SW replays CPU+GPU) | S |
+| `rte-byband-net-device` | 0.5 day (local fix in the vendored rte-rrtmgp done 2026-11-16; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -1557,36 +1557,7 @@ radiates hourly, and all 25 RRTMGP run-phase schemes are now in
 cam4 recapture, after `rrtmgp-dry-static-energy-intent-out`, and a check
 that its drivers replay both kinds of step.
 
-**ID: `scheme-io-capture-rank-select`. Capture records only the root
-rank.** Added 2026-11-13. The cap guards every capture call with
-`flag_for_mpi_root` (`masterproc`, `_MPI_ROOT_STD_NAME` in
-`scheme_io_capture_pass.py`), so a capture holds only rank 0's chunk. With
-a 00Z start that chunk is night in every capture so far: rrtmgp c08f/c08g
-(`Ln2`) and cam4 F2000_C4 c03e / QPC4 c03f (`Ln9`, 11 radiation calls)
-all have `nday = 0` (c03e: `coszrs` -0.38 to -0.86 at step 1), so the SW
-replays (`sw_rte`, `sw_aerosols`, `sw_calculate_fluxes`,
-`sw_calculate_heating_rate`, and `sw_gas_optics` once stage 3 lands) only
-exercise the no-daylight path. Wanted (user, 2026-11-13): choose the
-recorded rank(s) at run time. Sketch: guard on the host's `mpi_rank`
-(CAM-SIMA `spmd_utils.meta`) through a `ccpp_capture_mod` function that
-checks it against a rank list read once from `CCPP_CAPTURE_RANKS` (default
-`0`; falls back to the `flag_for_mpi_root` guard when the host has no
-`mpi_rank`); with more than one rank, each writes to its own `rank<r>/`
-subdirectory and the drivers replay one directory at a time through
-`CCPP_CAPTURE_DIR`. CAM-SIMA: an env_run case variable
-(`XDSL_CCPP_CAPTURE_RANKS`) exported to the run, and the
-`/cam-sima-capture` skill accepting it. A rank with mixed day and night
-columns is the most useful for the SW indexing (`idxday`); finding one
-needs `coszrs` by rank at the start time (or capture a few ranks and keep
-the ones with `0 < nday < ncol`). Alternatives considered: a later
-`START_TOD` (fully daylit chunks, no mixed case; initial-condition and
-snapshot checks need confirming) or a longer run (~`Ln24`; many more
-capture files).
-Decided 2026-11-16 (user): ranks chosen per scheme and kept in the
-capture list file (`<scheme> ranks=7,12`); the `/cam-sima-capture`
-`check` reports `nday`/`ncol` per rank and suggests the `ranks=` lines.
-The ranks are set at generation (the guard's literal), not at run time.
-Stage 1 (xdsl-ccpp) done 2026-11-16, CHANGELOG.md L15629.
+**ID: `scheme-io-capture-rank-select`. Resolved (2026-11-16)** -- capture entries take `ranks=` (CAM-SIMA `XDSL_CCPP_CAPTURE_RANKS`, `/cam-sima-capture` rank report); c10a daylit rrtmgp replays pass 56/56 on CPU and GPU. CHANGELOG.md L15629, L15692, L15721.
 
 **ID: `scheme-io-capture-optional-args`. v2 follow-on: `optional`-argument
 support.** Deliberately out of v1 scope from the original design proposal
@@ -3036,6 +3007,25 @@ instead (an answer change). Only the 5 se_cam4 tests are affected.
 Expected once fixed: those 5 comparisons pass. If any of the 4 untested
 tests still differs, look at it then; only QPC4 was checked field by
 field.
+
+**ID: `rte-byband-net-device`. RTE computes the net band fluxes on the
+host.** Added 2026-11-16. `net_byband_precalc`
+(`rrtmgp/ext/extensions/mo_fluxes_byband.F90`; the same in upstream
+`main`, `rte/extensions/`) had no OpenACC/OpenMP directive.
+`ty_fluxes_byband%reduce` uses it whenever `bnd_flux_dn` and `bnd_flux_up`
+are associated, after `sum_byband` computes those on the device. With the
+fluxes object resident on the device, as in the GPU replay drivers and
+in a future all-GPU run, `sum_byband`'s `copyout` leaves its results
+there. The host subtraction then reads stale host copies, and the
+device's `bnd_flux_net` is never set. Found by the first daylit capture
+(c10a, `scheme-io-capture-rank-select`): `test_rrtmgp_sw_rte` failed on
+GPU on every rank with daylit columns, `flux_allsky%bnd_flux_net` only
+(max diff 225 W/m2). The CPU replays and the GPU model runs (fluxes on
+the host) were unaffected. Fix: a collapsed device loop with the same
+data clauses as `net_byband_full`, applied in the vendored copy
+(`schemes/rrtmgp/ext`, detached at v1.9.2; not a test-only edit). The
+file is in Depends.nvhpc's OpenACC list, so GPU model builds run it too.
+Left: the upstream PR and the submodule update.
 
 ## Design problems: re-derived information and special-casing (review 2026-10-28)
 

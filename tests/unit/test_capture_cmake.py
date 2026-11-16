@@ -1169,4 +1169,6 @@ def test_capture_ranks_default_and_per_scheme_ranks_combine(tmp_path):
     for rank in (0, 3, 7):
         assert (drivers / f"rank{rank}").is_dir()
     assert "foreach(_rank IN ITEMS 3)" in (drivers / "test_kessler_update.cmake").read_text()
-    assert "foreach(_rank IN ITEMS 0 3 7)" in (drivers / "test_kessler.cmake").read_text()
+    # kessler is captured on 3 too (kessler_update's setup), but its own
+    # driver is tested only on its own ranks.
+    assert "foreach(_rank IN ITEMS 0 7)" in (drivers / "test_kessler.cmake").read_text()
