@@ -9,7 +9,8 @@
 ! tolerance override default, the global attributes (ccpp_capture_set_info,
 ! ccpp_capture_attribute, ccpp_capture_date), ccpp_capture_set_dir, and the
 ! test-driver helpers (ccpp_capture_call_count, ccpp_capture_report,
-! ccpp_capture_output_unit).
+! ccpp_capture_output_unit), and the MPI rank selection and rank<r>
+! subdirectories (ccpp_capture_rank_selected, ccpp_capture_set_rank).
 !
 ! Run from this directory, with netcdf-fortran built by the same compiler
 ! (on Derecho load the compiler first: `module load gcc netcdf`, or
@@ -22,7 +23,8 @@
 !
 ! Exits 0 and prints "ALL TESTS PASSED" on success; exits 1 and prints
 ! each failing case otherwise. Writes test_table_1.nc and test_table_2.nc
-! into the current directory (CCPP_CAPTURE_DIR unset) and leaves them.
+! into the current directory (CCPP_CAPTURE_DIR unset), and
+! rank5/rank_table_1.nc (creating rank5), and leaves them.
 program test_ccpp_capture_mod
   use ccpp_kinds, only: kind_phys
   use netcdf
@@ -33,7 +35,8 @@ program test_ccpp_capture_mod
                               ccpp_capture_read, ccpp_capture_compare, &
                               ccpp_capture_tolerance_override, &
                               ccpp_capture_call_count, ccpp_capture_report, &
-                              ccpp_capture_output_unit
+                              ccpp_capture_output_unit, &
+                              ccpp_capture_rank_selected, ccpp_capture_set_rank
   use, intrinsic :: iso_fortran_env, only: output_unit
 
   implicit none
@@ -63,6 +66,9 @@ program test_ccpp_capture_mod
   call test_tolerance_override_default_when_unset(n_failed)
   call test_global_attributes(n_failed)
   call test_driver_helpers(n_failed)
+  call test_rank_selection(n_failed)
+  ! Last: the rank stays set for every later file.
+  call test_rank_directory(n_failed)
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
@@ -416,5 +422,40 @@ contains
     call report('character attribute', status == NF90_NOERR .and. text == 'hello', n_failed)
     status = nf90_close(ncid)
   end subroutine test_global_attributes
+
+  subroutine test_rank_selection(n_failed)
+    integer, intent(inout) :: n_failed
+
+    call report('rank in a one-rank list', ccpp_capture_rank_selected(0, '0'), n_failed)
+    call report('rank not in a one-rank list', .not. ccpp_capture_rank_selected(1, '0'), &
+                n_failed)
+    call report('rank in a list', ccpp_capture_rank_selected(12, '3,7,12'), n_failed)
+    call report('rank not in a list', .not. ccpp_capture_rank_selected(1, '3,7,12'), n_failed)
+    call report('rank in a list with spaces', ccpp_capture_rank_selected(7, '3, 7'), n_failed)
+    call report('empty list selects no rank', .not. ccpp_capture_rank_selected(0, ''), n_failed)
+    call report('non-integer entry matches no rank', &
+                .not. ccpp_capture_rank_selected(0, 'x') .and. &
+                ccpp_capture_rank_selected(4, 'x,4'), n_failed)
+  end subroutine test_rank_selection
+
+  subroutine test_rank_directory(n_failed)
+    ! After ccpp_capture_set_rank(5) a file goes to rank5/ under the
+    ! capture directory ('.', from write_call_2) and records the rank.
+    integer, intent(inout) :: n_failed
+    integer :: ncid, status, rank
+
+    call execute_command_line('mkdir -p rank5')
+    call ccpp_capture_set_rank(5)
+    call ccpp_capture_begin('rank_table', 'before')
+    call ccpp_capture('i0', 1)
+    call ccpp_capture_end()
+    status = nf90_open('rank5/rank_table_1.nc', NF90_NOWRITE, ncid)
+    call report('file in the rank directory', status == NF90_NOERR, n_failed)
+    if (status /= NF90_NOERR) return
+    rank = -1
+    status = nf90_get_att(ncid, NF90_GLOBAL, 'ccpp_mpi_rank', rank)
+    call report('ccpp_mpi_rank', status == NF90_NOERR .and. rank == 5, n_failed)
+    status = nf90_close(ncid)
+  end subroutine test_rank_directory
 
 end program test_ccpp_capture_mod

@@ -60,21 +60,54 @@ def _capture_spec(spec: str) -> "tuple[str, str]":
     return scheme, ",".join(phases)
 
 
-def _capture_entries(values, scheme_files) -> "list[str]":
+def _capture_ranks(text: str) -> "list[int]":
+    """The MPI ranks of a --capture-ranks value or a capture entry's
+    ranks= field (scheme-io-capture-rank-select): comma-separated ranks
+    and ranges, e.g. "0", "3,4" or "0-23"; sorted, without duplicates."""
+    ranks: set = set()
+    for item in (part.strip() for part in text.split(",")):
+        first, dash, last = item.partition("-")
+        try:
+            low = int(first)
+            high = int(last) if dash else low
+        except ValueError:
+            raise CcppInputError(
+                f"ranks '{text}': '{item}' is not a rank or a range of ranks "
+                f"(e.g. 3 or 0-23)"
+            ) from None
+        if low < 0 or high < low:
+            raise CcppInputError(f"ranks '{text}': '{item}' is not a valid range of ranks")
+        ranks.update(range(low, high + 1))
+    return sorted(ranks)
+
+
+def _capture_entries(values, scheme_files, ranks: "dict | None" = None) -> "list[str]":
     """The SCHEME[:PHASE] entries of the --capture-scheme values: each value
     is either such an entry or the path of a file listing one per line
     (blank lines and '#' comments ignored). Every scheme must be one of
     the schemes in scheme_files (when there are any), and may appear only
-    once; errors name the file and line."""
+    once; errors name the file and line. An entry may end with
+    ranks=<ranks> (scheme-io-capture-rank-select: the MPI ranks whose
+    calls are captured, _capture_ranks), recorded in *ranks* ({scheme:
+    [rank, ...]}), not in the returned entry."""
     from xdsl_ccpp.tools.capture_cmake import scheme_meta_files
 
     known = set(scheme_meta_files(scheme_files)) if scheme_files else None
     entries: list = []
     seen: dict = {}
 
-    def add(entry: str, where: str) -> None:
+    def add(text: str, where: str) -> None:
+        entry, *fields = text.split()
         try:
             scheme, _ = _capture_spec(entry)
+            for field in fields:
+                key, eq, value = field.partition("=")
+                if key != "ranks" or not eq:
+                    raise CcppInputError(
+                        f"'{field}': unknown field (only ranks=<ranks>, e.g. ranks=3,4)"
+                    )
+                if ranks is not None:
+                    ranks[scheme] = _capture_ranks(value)
         except CcppInputError as err:
             raise CcppInputError(f"{where}: {err}") from None
         if known is not None and scheme not in known:
@@ -416,7 +449,9 @@ class ccppMain:
                  "be repeated for multiple scheme/phase targets, or name a FILE "
                  "listing one SCHEME[:PHASE] per line (blank lines and '#' "
                  "comments ignored). Each scheme must be in --scheme-files and "
-                 "listed once. Skips errmsg/errflg, optional arguments and "
+                 "listed once. An entry may end with ' ranks=RANKS' (e.g. "
+                 "'rrtmgp_sw_rte ranks=7,12'): the MPI ranks whose calls are "
+                 "captured, instead of --capture-ranks. Skips errmsg/errflg, optional arguments and "
                  "derived types other than the constituent properties (see "
                  "scheme_io_capture_pass.py).",
         )
@@ -469,6 +504,19 @@ class ccppMain:
                  "drivers' CPU build uses it too "
                  "(CCPP_CAPTURE_ACCEL_VARIANTS defaults to ON) and the "
                  "replay runs the captured model's code.",
+        )
+        parser.add_argument(
+            "--capture-ranks",
+            default=None,
+            metavar="RANKS",
+            help="Only meaningful together with --capture-scheme: the MPI "
+                 "ranks whose calls are captured, for the entries without "
+                 "their own ranks= field: comma-separated ranks and ranges "
+                 "(e.g. 7, 3,4 or 0-23; default 0, the root task). Needs a "
+                 "host that declares mpi_rank. When any captured rank is not "
+                 "0, each rank writes to its own subdirectory rank<r> of the "
+                 "data directory (created at generation), and ctest runs "
+                 "one test per scheme and rank (test_<scheme>_rank<r>).",
         )
         parser.add_argument(
             "--capture-label",
@@ -695,9 +743,16 @@ class ccppMain:
         options_db["preproc_defs"] = [
             p for p in coerce_list_option(options_db.get("preproc_defs")) if p
         ]
+        options_db["capture_scheme_ranks"] = {}
         options_db["capture_scheme"] = _capture_entries(
             options_db.get("capture_scheme") or [], options_db["scheme_files"],
+            options_db["capture_scheme_ranks"],
         )
+        try:
+            options_db["capture_ranks"] = _capture_ranks(
+                str(options_db.get("capture_ranks") or "0"))
+        except CcppInputError as err:
+            raise ValueError(f"--capture-ranks: {err}") from None
         options_db["capture_source_root"] = [
             os.path.abspath(p) for p in coerce_list_option(
                 options_db.get("capture_source_root") or []) if p
@@ -1270,6 +1325,7 @@ class ccppMain:
             # fully-resolved set of data-movement ops and module-var
             # declarations, not an intermediate state.
             passes.append("generate-gpu-debug-prints")
+        rank_lists = self._capture_rank_lists()
         for spec in self.options_db.get("capture_scheme") or []:
             # One pass instance per --capture-scheme entry (not one pass
             # with a packed multi-scheme value): each instance scopes its
@@ -1339,6 +1395,12 @@ class ccppMain:
             label = self.options_db.get("capture_label")
             if label:
                 capture_opts.append(f'label="{_capture_label(label)}"')
+            all_ranks = sorted(set().union(*rank_lists.values())) if rank_lists else [0]
+            if all_ranks != [0]:
+                # Quoted: a list has commas.
+                capture_opts.append(
+                    'ranks="' + ",".join(map(str, rank_lists.get(scheme_name, [0]))) + '"')
+                capture_opts.append('all_ranks="' + ",".join(map(str, all_ranks)) + '"')
             tolerance = self.options_db.get("capture_tolerance")
             if tolerance is not None:
                 # Quoted, not a bare numeric token: the pass-pipeline
@@ -2242,6 +2304,29 @@ class ccppMain:
                 extra[other].append(phase)
         return True
 
+    def _capture_rank_lists(self) -> dict:
+        """{scheme: [rank, ...]} for every captured scheme
+        (scheme-io-capture-rank-select): a listed scheme's own ranks= field,
+        else --capture-ranks; plus, for a scheme whose phases set up other
+        schemes' drivers (_capture_setups), the ranks of those drivers, so
+        each rank<r> directory holds what its drivers replay. A scheme
+        captured only for other drivers has only theirs."""
+        default = self.options_db.get("capture_ranks") or [0]
+        own = self.options_db.get("capture_scheme_ranks") or {}
+        setup_only = getattr(self, "_setup_only", set())
+        lists: dict = {}
+        for spec in self.options_db.get("capture_scheme") or []:
+            scheme = _capture_spec(spec)[0]
+            lists[scheme] = set() if scheme in setup_only else set(own.get(scheme, default))
+        # A driver's setup list is already transitive (_plan_state_setup),
+        # so the drivers' own ranks are enough.
+        drivers = {scheme: set(ranks) for scheme, ranks in lists.items()}
+        for scheme, setups in getattr(self, "_capture_setups", {}).items():
+            for other, _phase in setups:
+                if other in lists and scheme in drivers:
+                    lists[other] |= drivers[scheme]
+        return {scheme: sorted(ranks or default) for scheme, ranks in lists.items()}
+
     def _write_capture_cmake(self, mlir_file: str, out_dir: str) -> None:
         """Write the CMake build for the capture test drivers
         (tools/capture_cmake.py): a test_<scheme>.cmake for every captured
@@ -2345,9 +2430,12 @@ class ccppMain:
             )
         label = self.options_db.get("capture_label")
         data_dir = os.path.join(driver_dir, _capture_label(label)) if label else driver_dir
+        rank_lists = self._capture_rank_lists()
+        by_rank = any(r != 0 for ranks in rank_lists.values() for r in ranks)
         for path in write_capture_cmake(
                 driver_dir, scheme_sources, support, data_dir, scheme_variants,
-                bool(self.options_db.get("capture_accel_variants"))):
+                bool(self.options_db.get("capture_accel_variants")),
+                rank_lists if by_rank else None):
             self.print_verbose_message(f"  -> Wrote capture build: {path}")
 
     def run(self, options_db=None):

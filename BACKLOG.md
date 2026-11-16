@@ -125,7 +125,7 @@ measured data, and will drift as items are reassessed.
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
-| `scheme-io-capture-rank-select` | 2-3 days (rank guard from `mpi_rank` plus a run-time rank list in `ccpp_capture_mod`, per-rank capture subdirectories when more than one, CAM-SIMA case variable, tests; daylit rrtmgp recapture and SW replays CPU+GPU) | S |
+| `scheme-io-capture-rank-select` | 1-1.5 days left (stage 1, xdsl-ccpp, done 2026-11-16, CHANGELOG L15629; stage 2: CAM-SIMA `XDSL_CCPP_CAPTURE_RANKS` (`all` = `0-<NTASKS_ATM-1>`) and the `/cam-sima-capture` `nday`/`ncol` report; stage 3: daylit rrtmgp recapture, `ranks=` in `unit-tests.txt`, SW replays CPU+GPU) | S |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -1582,6 +1582,11 @@ the ones with `0 < nday < ncol`). Alternatives considered: a later
 `START_TOD` (fully daylit chunks, no mixed case; initial-condition and
 snapshot checks need confirming) or a longer run (~`Ln24`; many more
 capture files).
+Decided 2026-11-16 (user): ranks chosen per scheme and kept in the
+capture list file (`<scheme> ranks=7,12`); the `/cam-sima-capture`
+`check` reports `nday`/`ncol` per rank and suggests the `ranks=` lines.
+The ranks are set at generation (the guard's literal), not at run time.
+Stage 1 (xdsl-ccpp) done 2026-11-16, CHANGELOG.md L15629.
 
 **ID: `scheme-io-capture-optional-args`. v2 follow-on: `optional`-argument
 support.** Deliberately out of v1 scope from the original design proposal

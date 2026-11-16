@@ -24,6 +24,14 @@ with ccpp_capture_set_dir(<that dir>) (the runtime appends /<label>), so the run
 under the generated drivers, one subdirectory per label
 (CCPP_CAPTURE_DIR in the run's environment overrides it).
 
+MPI (scheme-io-capture-rank-select): by default only the root task
+writes (the host's flag_for_mpi_root guards each block). `ranks` (this
+scheme's) and `all_ranks` (every rank of the whole capture) select other
+ranks: when any selected rank is not 0, each block is guarded by
+ccpp_capture_rank_selected(<host's mpi_rank>, '<ranks>') instead, starts
+with ccpp_capture_set_rank(<mpi_rank>), and each rank writes to its own
+rank<r> subdirectory (created here under the data directory).
+
 Call-site discovery reuses cap_shared.iter_scheme_call_sites -- the same
 machinery gpu_debug_print_pass.py's own Part C uses (extracted there
 2026-10-17 specifically because this pass needed the identical logic).
@@ -196,6 +204,13 @@ _TEST_DRIVER_TOLERANCE = 0.0
 # single-task), the guard is simply omitted and every capture call runs
 # unconditionally, which is already correct there.
 _MPI_ROOT_STD_NAME = "flag_for_mpi_root"
+
+# scheme-io-capture-rank-select: the host's MPI rank (CAM-SIMA's iam), and
+# the ccpp_capture_mod procedures a capture of ranks other than the
+# root's uses (see _CaptureGuard).
+_MPI_RANK_STD_NAME = "mpi_rank"
+_RANK_SELECTED_FUNCTION = "ccpp_capture_rank_selected"
+_SET_RANK_PROCEDURE = "ccpp_capture_set_rank"
 
 # The host's log unit (scheme-io-capture-log-unit). Captured like any other
 # integer, but the captured value is the host's own open unit (CAM's is a
@@ -806,6 +821,41 @@ def _unresolved_dims_reason(pname: str, arg, std_name_to_param: dict) -> str:
 
 
 @dataclass(frozen=True)
+class _CaptureGuard:
+    """How the capture blocks are guarded on an MPI host.
+
+    root_ref: (var, module) of the host's flag_for_mpi_root -- only the
+    root task writes (the default); rank_ref: (var, module) of the host's
+    mpi_rank, for a capture by rank (scheme-io-capture-rank-select): a
+    block runs where ccpp_capture_rank_selected(<mpi_rank>, '<ranks>') is
+    true, `ranks` being this scheme's ranks; all_ranks: every rank of
+    the whole capture (the constituent table, the rank<r> directories).
+    Neither: no guard (a host with no MPI notion, e.g. examples/kessler)."""
+
+    root_ref: "tuple[str, str] | None"
+    rank_ref: "tuple[str, str] | None"
+    ranks: str
+    all_ranks: "list[int]"
+
+    @property
+    def by_rank(self) -> bool:
+        return self.rank_ref is not None
+
+    def wrap(self, writes: list, ranks: str) -> list:
+        """*writes* inside the guard: an scf.if on the root flag, or on
+        ccpp_capture_rank_selected(<mpi_rank>, '<ranks>')."""
+        if self.rank_ref is not None:
+            condition = CallExprOp(_RANK_SELECTED_FUNCTION, [
+                VarRefExprOp(self.rank_ref[0], result_type=i32),
+                StringLiteralExprOp(ranks),
+            ], result_type=i1)
+            return _scf_if(condition, writes)
+        if self.root_ref is not None:
+            return _scf_if(VarRefExprOp(self.root_ref[0], result_type=i1), writes)
+        return writes
+
+
+@dataclass(frozen=True)
 class SchemeIOCapturePass(ModulePass):
     """See module docstring. Registered as "generate-scheme-io-capture";
     run at the same point generate-gpu-debug-prints does (after
@@ -865,6 +915,34 @@ class SchemeIOCapturePass(ModulePass):
     # capture does not record that an init phase the driver replays first
     # produces (ccpp_dsl, parse_produced).
     produced: "str | None" = None
+    # scheme-io-capture-rank-select: the MPI ranks whose calls this
+    # instance captures ("3,4"; default: the root task only), and every
+    # rank the whole capture records (default: `ranks`). When any of them
+    # is not 0, the ranks write to rank<r> subdirectories (_CaptureGuard).
+    ranks: "str | None" = None
+    all_ranks: "str | None" = None
+
+    def _rank_list(self, text: "str | None") -> "list[int]":
+        return [int(r) for r in (text or "0").split(",") if r.strip()]
+
+    def _capture_guard(self, host_var_index) -> "_CaptureGuard":
+        """Which host variables guard the capture blocks (see
+        _CaptureGuard): the root flag unless a rank other than 0 is
+        selected and the host declares its MPI rank."""
+        root = host_var_index.get(_MPI_ROOT_STD_NAME) if host_var_index else None
+        root_ref = (root[0], root[1]) if root is not None else None
+        all_ranks = self._rank_list(self.all_ranks or self.ranks)
+        if any(r != 0 for r in all_ranks):
+            rank = host_var_index.get(_MPI_RANK_STD_NAME) if host_var_index else None
+            if rank is not None:
+                return _CaptureGuard(None, (rank[0], rank[1]),
+                                     ",".join(str(r) for r in self._rank_list(self.ranks)),
+                                     all_ranks)
+            warn_once(
+                f"scheme I/O capture: ranks {','.join(map(str, all_ranks))} selected, "
+                f"but the host declares no {_MPI_RANK_STD_NAME}; capturing the root task only"
+            )
+        return _CaptureGuard(root_ref, None, "", [])
 
     def _handlers(self) -> dict:
         return _registry_captures(self.ddt_handlers)
@@ -895,7 +973,7 @@ class SchemeIOCapturePass(ModulePass):
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         meta_data = {}
         real_kinds = _PHYS_REAL_KINDS
-        mpi_root_ref = None
+        guard = _CaptureGuard(None, None, "", [])
         step_ref = None
         if ccpp_mod is not None:
             real_kinds = _phys_real_kinds(ccpp_mod)
@@ -903,9 +981,7 @@ class SchemeIOCapturePass(ModulePass):
             bmdd.traverse(ccpp_mod)
             meta_data = bmdd.meta_data
             host_var_index = build_host_var_index(ccpp_mod)
-            entry = host_var_index.get(_MPI_ROOT_STD_NAME)
-            if entry is not None:
-                mpi_root_ref = (entry[0], entry[1])  # (var_name, module_name)
+            guard = self._capture_guard(host_var_index)
             entry = host_var_index.get(_STEP_STD_NAME)
             if entry is not None:
                 step_ref = (entry[0], entry[1])
@@ -1016,18 +1092,15 @@ class SchemeIOCapturePass(ModulePass):
 
             if before or after:
                 captured_any = True
-                self._ensure_capture_decl(call_op, declared_decls, step_ref is not None)
-                for ref in (mpi_root_ref, step_ref):
+                self._ensure_capture_decl(call_op, declared_decls, step_ref is not None,
+                                          guard.by_rank)
+                for ref in (guard.root_ref, guard.rank_ref, step_ref):
                     if ref is not None:
                         self._ensure_host_var_decl(call_op, ref[0], ref[1], declared_decls)
-                mpi_root_var = mpi_root_ref[0] if mpi_root_ref is not None else None
                 step_var = step_ref[0] if step_ref is not None else None
-                self._insert_captures(table_name, "before", before, call_op, mpi_root_var, step_var)
-                self._insert_captures(table_name, "after", after, call_op, mpi_root_var)
-                data_dir = self._data_dir()
-                if data_dir:
-                    # The model cannot create it; it must exist before the run.
-                    os.makedirs(data_dir, exist_ok=True)
+                self._insert_captures(table_name, "before", before, call_op, guard, step_var)
+                self._insert_captures(table_name, "after", after, call_op, guard)
+                self._make_data_dirs(guard)
 
             if self.test_driver_dir and table_name not in captured_tables:
                 driver_device = device_names | {
@@ -1050,7 +1123,7 @@ class SchemeIOCapturePass(ModulePass):
                     captured_tables[table_name] = (phase, params, module)
 
         if captured_any:
-            self._capture_constituent_table(op, mpi_root_ref, declared_decls)
+            self._capture_constituent_table(op, guard, declared_decls)
         if self.test_driver_dir:
             self._drop_unproduced(captured_tables, setup_tables, skipped)
 
@@ -1166,7 +1239,7 @@ class SchemeIOCapturePass(ModulePass):
             )
             f.write("\n".join(lines) + "\n")
 
-    def _capture_constituent_table(self, op, mpi_root_ref, declared_decls: set) -> None:
+    def _capture_constituent_table(self, op, guard: "_CaptureGuard", declared_decls: set) -> None:
         """Capture the host cap's constituent-properties array once, right
         after the cap fills it at constituent registration
         (scheme-io-capture-constituent-index-table): schemes look
@@ -1179,14 +1252,17 @@ class SchemeIOCapturePass(ModulePass):
             return
         for procedure in ("ccpp_capture_begin", "ccpp_capture_end") + (
             (_SET_DIR_PROCEDURE,) if self.test_driver_dir else ()
-        ) + ("ccpp_capture_set_info",):
+        ) + ("ccpp_capture_set_info",) + (
+            (_SET_RANK_PROCEDURE, _RANK_SELECTED_FUNCTION) if guard.by_rank else ()
+        ):
             self._ensure_decl(assign, procedure, "ccpp_capture_mod", declared_decls)
         handler = _DDT_CAPTURES["ccpp_constituent_prop_ptr_t"]
         self._ensure_decl(assign, handler.write, handler.module, declared_decls)
-        if mpi_root_ref is not None:
-            self._ensure_host_var_decl(assign, mpi_root_ref[0], mpi_root_ref[1], declared_decls)
+        for ref in (guard.root_ref, guard.rank_ref):
+            if ref is not None:
+                self._ensure_host_var_decl(assign, ref[0], ref[1], declared_decls)
 
-        writes = self._preamble_ops() + [
+        writes = self._preamble_ops(guard) + [
             CallStatementOp("ccpp_capture_begin", arg_ops=[
                 StringLiteralExprOp(_CONSTITUENT_TABLE), StringLiteralExprOp("before"),
             ]),
@@ -1196,21 +1272,20 @@ class SchemeIOCapturePass(ModulePass):
             ]),
             CallStatementOp("ccpp_capture_end", arg_ops=[]),
         ]
-        if mpi_root_ref is not None:
-            writes = _scf_if(VarRefExprOp(mpi_root_ref[0], result_type=i1), writes)
+        # Every rank of the capture: each rank directory is complete.
+        writes = guard.wrap(writes, ",".join(map(str, guard.all_ranks)))
         anchor = InsertPoint.after(assign)
         for new_op in writes:
             Rewriter.insert_op(new_op, anchor)
             anchor = InsertPoint.after(new_op)
-        data_dir = self._data_dir()
-        if data_dir:
-            os.makedirs(data_dir, exist_ok=True)
+        self._make_data_dirs(guard)
 
-    def _preamble_ops(self) -> list:
+    def _preamble_ops(self, guard: "_CaptureGuard") -> list:
         """The calls that start a capture file: ccpp_capture_set_dir (with
         a driver directory: the runtime appends the label, from
-        ccpp_capture_set_info, which keeps each literal short) and
-        ccpp_capture_set_info(label, generator)."""
+        ccpp_capture_set_info, which keeps each literal short),
+        ccpp_capture_set_info(label, generator), and
+        ccpp_capture_set_rank(<mpi_rank>) for a capture by rank."""
         ops = []
         if self.test_driver_dir:
             ops.append(CallStatementOp(
@@ -1221,7 +1296,23 @@ class SchemeIOCapturePass(ModulePass):
             StringLiteralExprOp(self.label or ""),
             StringLiteralExprOp(_generator_version()),
         ]))
+        if guard.by_rank:
+            ops.append(CallStatementOp(_SET_RANK_PROCEDURE, arg_ops=[
+                VarRefExprOp(guard.rank_ref[0], result_type=i32),
+            ]))
         return ops
+
+    def _make_data_dirs(self, guard: "_CaptureGuard") -> None:
+        """Create the data directory, and its rank<r> subdirectories for a
+        capture by rank: the model cannot create them; they must exist
+        before the run."""
+        data_dir = self._data_dir()
+        if not data_dir:
+            return
+        os.makedirs(data_dir, exist_ok=True)
+        if guard.by_rank:
+            for rank in guard.all_ranks:
+                os.makedirs(os.path.join(data_dir, f"rank{rank}"), exist_ok=True)
 
     def _data_dir(self) -> "str | None":
         """Where the run writes its files unless CCPP_CAPTURE_DIR is set:
@@ -1232,7 +1323,8 @@ class SchemeIOCapturePass(ModulePass):
         driver_dir = os.path.abspath(self.test_driver_dir)
         return os.path.join(driver_dir, self.label) if self.label else driver_dir
 
-    def _ensure_capture_decl(self, call_op, declared_decls: set, with_attribute: bool = False) -> None:
+    def _ensure_capture_decl(self, call_op, declared_decls: set, with_attribute: bool = False,
+                             by_rank: bool = False) -> None:
         """Insert declaration FuncOps for the ccpp_capture_mod procedures a
         capture call site uses (_CAPTURE_PROCEDURES), at the top level of call_op's enclosing
         suite-cap module -- exactly the same construction
@@ -1256,6 +1348,8 @@ class SchemeIOCapturePass(ModulePass):
             procedures = (_SET_DIR_PROCEDURE,) + procedures
         if with_attribute:
             procedures = procedures + (_ATTRIBUTE_PROCEDURE,)
+        if by_rank:
+            procedures = procedures + (_SET_RANK_PROCEDURE, _RANK_SELECTED_FUNCTION)
         for procedure in procedures:
             self._ensure_decl(call_op, procedure, "ccpp_capture_mod", declared_decls)
 
@@ -1400,14 +1494,18 @@ class SchemeIOCapturePass(ModulePass):
         ops.append(CallStatementOp("ccpp_capture_end_ddt", arg_ops=[]))
         return ops
 
-    def _insert_captures(self, table_name, timing, entries, call_op, mpi_root_var, step_var=None) -> None:
+    def _insert_captures(self, table_name, timing, entries, call_op, guard: "_CaptureGuard",
+                         step_var=None) -> None:
         """Insert one file's worth of capture calls immediately before
         (timing="before") or after (timing="after") call_op:
 
             [sync, ...]                          -- device-resident values
-            if (<mpi_root_var>) then             -- when the host has one
+            if (<mpi_root_var>) then             -- when the host has one; or
+                                                 -- ccpp_capture_rank_selected(
+                                                 --   <mpi_rank>, '<ranks>') by rank
               call ccpp_capture_set_dir(driver dir)  -- "before", with a driver dir
               call ccpp_capture_set_info(label, generator)  -- "before"
+              call ccpp_capture_set_rank(<mpi_rank>)  -- "before", by rank
               call ccpp_capture_begin(table, timing)
               call ccpp_capture_attribute('current_timestep_number', <step>)
                                                    -- "before", when the host has one
@@ -1432,7 +1530,7 @@ class SchemeIOCapturePass(ModulePass):
                     AccUpdateSelfOp, {"array_refs": device_values},
                     OmpTargetUpdateFromOp, {"array_refs": device_values},
                 ))
-        writes = self._preamble_ops() if timing == "before" else []
+        writes = self._preamble_ops(guard) if timing == "before" else []
         writes.append(CallStatementOp(
             "ccpp_capture_begin",
             arg_ops=[StringLiteralExprOp(table_name), StringLiteralExprOp(timing)],
@@ -1462,8 +1560,7 @@ class SchemeIOCapturePass(ModulePass):
                 StringLiteralExprOp(",".join(_capture_dim_names(arg))),
             ]))
         writes.append(CallStatementOp("ccpp_capture_end", arg_ops=[]))
-        if mpi_root_var is not None:
-            writes = _scf_if(VarRefExprOp(mpi_root_var, result_type=i1), writes)
+        writes = guard.wrap(writes, guard.ranks)
 
         anchor = InsertPoint.before(call_op) if timing == "before" else InsertPoint.after(call_op)
         for op in syncs + writes:

@@ -87,6 +87,9 @@ _TOP_TEMPLATE = """\
 # Each driver is one test, run against the captures of the generation that
 # wrote this file:
 #   {data_dir}
+# A capture of MPI ranks other than the root's (--capture-ranks, ranks=)
+# has a subdirectory rank<r> per rank there, and one test per scheme and
+# rank, test_<scheme>_rank<r>, for each rank directory that exists.
 # -DCCPP_CAPTURE_DIR=<dir> runs them against another capture instead.
 #
 # Needs a Fortran compiler and netcdf-fortran built with it (nf-config on
@@ -253,8 +256,23 @@ add_executable(test_{scheme}
 set_target_properties(test_{scheme} PROPERTIES
   Fortran_MODULE_DIRECTORY ${{CMAKE_BINARY_DIR}}/mod/test_{scheme})
 target_link_libraries(test_{scheme} PRIVATE ccpp_capture_support)
+{tests}{variants}"""
+
+_TEST_TEMPLATE = """\
 add_test(NAME test_{scheme} COMMAND test_{scheme} WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}")
-{variants}"""
+"""
+
+# scheme-io-capture-rank-select: a capture by rank has one data
+# subdirectory per rank; one test per rank whose directory exists (delete
+# a rank's directory to drop its tests).
+_RANK_TESTS_TEMPLATE = """\
+foreach(_rank IN ITEMS {ranks})
+  if(EXISTS "${{CCPP_CAPTURE_DIR}}/rank${{_rank}}")
+    add_test(NAME test_{scheme}_rank${{_rank}} COMMAND test_{scheme}
+             WORKING_DIRECTORY "${{CCPP_CAPTURE_DIR}}/rank${{_rank}}")
+  endif()
+endforeach()
+"""
 
 _VARIANTS_TEMPLATE = """# Modules with a CPU and an OpenACC version (the latter in accel/), of which
 # a build compiles one, as the host model does (e.g. CAM-SIMA's
@@ -327,12 +345,13 @@ def render_capture_cmakelists(support_sources, data_dir: str,
 
 def render_capture_fragment(scheme: str, sources,
                             scheme_root: "str | None" = None,
-                            variants=()) -> str:
+                            variants=(), ranks=None) -> str:
     """test_<scheme>.cmake text: the driver plus *sources* (the scheme's
     .F90 and its dependencies), those under *scheme_root* relative to
     CCPP_CAPTURE_SCHEME_ROOT, and the (CPU file, GPU file) *variants*
     (SourceClosure.variants): the GPU files with -DOPENACC=ON or
-    -DCCPP_CAPTURE_ACCEL_VARIANTS=ON, else the CPU files."""
+    -DCCPP_CAPTURE_ACCEL_VARIANTS=ON, else the CPU files. With *ranks* (a
+    capture by rank), one test per rank, run in CCPP_CAPTURE_DIR/rank<r>."""
     variant_text = ""
     if variants:
         variant_text = _VARIANTS_TEMPLATE.format(
@@ -340,9 +359,13 @@ def render_capture_fragment(scheme: str, sources,
             cpu=_scheme_source_lines([cpu for cpu, _gpu in variants], scheme_root),
             gpu=_scheme_source_lines([gpu for _cpu, gpu in variants], scheme_root),
         )
+    if ranks:
+        tests = _RANK_TESTS_TEMPLATE.format(scheme=scheme, ranks=" ".join(map(str, ranks)))
+    else:
+        tests = _TEST_TEMPLATE.format(scheme=scheme)
     return _FRAGMENT_TEMPLATE.format(
         scheme=scheme, sources=_scheme_source_lines(sources, scheme_root),
-        variants=variant_text)
+        tests=tests, variants=variant_text)
 
 
 def scheme_meta_files(meta_paths) -> dict:
@@ -505,12 +528,13 @@ def capture_provided_modules(support) -> frozenset:
 
 def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
                         data_dir: str, scheme_variants=None,
-                        accel_variants: bool = False) -> list:
+                        accel_variants: bool = False, scheme_ranks=None) -> list:
     """Write test_<scheme>.cmake for every {scheme: [sources]} entry (with
     its (CPU file, GPU file) pairs from *scheme_variants*, {scheme: [pairs]})
     and the CMakeLists.txt, whose tests run against *data_dir* and build
-    the GPU file of each pair in a CPU build too when *accel_variants*; return the
-    paths written. The scheme sources are named relative to the repository
+    the GPU file of each pair in a CPU build too when *accel_variants*, one
+    test per rank of a capture by rank (*scheme_ranks*, {scheme: [ranks]});
+    return the paths written. The scheme sources are named relative to the repository
     root of the first scheme's source (scheme_source_root)."""
     scheme_variants = scheme_variants or {}
     os.makedirs(driver_dir, exist_ok=True)
@@ -521,7 +545,8 @@ def write_capture_cmake(driver_dir: str, scheme_sources: dict, support_sources,
         path = os.path.join(driver_dir, f"test_{scheme}.cmake")
         with open(path, "w") as f:
             f.write(render_capture_fragment(scheme, sources, scheme_root,
-                                            scheme_variants.get(scheme, ())))
+                                            scheme_variants.get(scheme, ()),
+                                            (scheme_ranks or {}).get(scheme)))
         written.append(path)
     path = os.path.join(driver_dir, _TOP_FILE)
     with open(path, "w") as f:

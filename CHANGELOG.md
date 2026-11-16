@@ -15625,3 +15625,66 @@ CPU and the GPU (the two McICA drivers are not built:
 CAM-SIMA `GPU_SCHEME_STATUS.md` (regenerated from xdsl91gpu) gains 🧪 for
 10 schemes: the 4 CAM7 gravity-wave sources, `mcsp`, both RRTMGP cloud
 optics, both `gas_optics_pre` and `sw_solar_var`.
+
+## `scheme-io-capture-rank-select` stage 1: capture chosen MPI ranks (2026-11-16)
+
+The caps guarded every capture with the host's root flag
+(`flag_for_mpi_root`, CAM-SIMA's `masterproc`), so a capture held only
+rank 0's columns. In every capture so far those were all night
+(`nday = 0`), so the shortwave replays never exercised the daylit path.
+A capture can now record chosen ranks, per scheme.
+
+- **Choosing ranks** (`tools/ccpp_dsl.py`):
+  - A capture entry, on the command line or in a list file, may end with
+    `ranks=<ranks>`, e.g. `rrtmgp_sw_rte ranks=7,12`. The list file is
+    where the chosen ranks are kept for later recaptures.
+  - `--capture-ranks <ranks>` (default `0`) covers the entries without
+    their own field.
+  - Ranks are comma-separated numbers and ranges (`3,4`, `0-23`; parsed
+    by `_capture_ranks`).
+  - The phases that set up a driver (module state, produced arguments)
+    are captured on the ranks of every driver that replays them
+    (`_capture_rank_lists`), so each rank directory is complete.
+- **Guard** (`transforms/scheme_io_capture_pass.py`): when any rank of the
+  capture is not 0 and the host declares `mpi_rank`:
+  - each block is guarded by
+    `ccpp_capture_rank_selected(<mpi_rank>, '<ranks>')` (`_CaptureGuard`;
+    a `CallExprOp` condition, no target syntax);
+  - each block starts with `ccpp_capture_set_rank(<mpi_rank>)`;
+  - the constituent table is captured on every rank of the capture;
+  - the generator creates the `rank<r>` subdirectories of the data
+    directory, since the model cannot.
+  - A host without `mpi_rank` gets a warning and the root guard.
+  - A capture of rank 0 only is generated exactly as before (checked on
+    c09a's rrtmgp inputs: caps, drivers and fragments identical apart
+    from the output path).
+- **Runtime** (`framework_src/ccpp_capture_mod.F90`):
+  - `ccpp_capture_rank_selected(rank, ranks)` tests membership in a
+    comma-separated list;
+  - after `ccpp_capture_set_rank(r)`, files go to `<dir>/rank<r>/` and
+    record the global attribute `ccpp_mpi_rank`.
+  - Test drivers never call `ccpp_capture_set_rank`.
+- **Replays** (`tools/capture_cmake.py`): a capture by rank gets one test
+  per scheme and rank, `test_<scheme>_rank<r>`, run in
+  `CCPP_CAPTURE_DIR/rank<r>`. A test is added only for a rank directory
+  that exists, so deleting a directory drops its tests.
+
+Tests (pytest):
+- `test_capture_ranks_accepts_lists_and_ranges`
+- `test_capture_entries_read_a_ranks_field`
+- `test_capture_entries_unknown_field_names_the_file_and_line`
+- `test_root_task_capture_unchanged_on_a_host_with_mpi_rank`
+- `test_ranks_field_guards_on_the_mpi_rank_with_rank_directories`
+- `test_capture_ranks_default_and_per_scheme_ranks_combine`
+- `test_constituent_table_captured_on_every_rank_of_the_capture`
+- `test_ranks_without_host_mpi_rank_fall_back_to_the_root_task`
+
+Results: `tests/unit` 1539 passed, `tests/filecheck` 56 passed.
+`tests/fortran/test_ccpp_capture_mod.F90` gains `test_rank_selection` and
+`test_rank_directory` (pending: the user's run).
+
+Next, stage 2:
+- CAM-SIMA: an `XDSL_CCPP_CAPTURE_RANKS` case variable; `all` becomes
+  `0-<NTASKS_ATM-1>`.
+- `/cam-sima-capture`: `check` prints `nday`/`ncol` per rank and suggests
+  `ranks=` lines.
