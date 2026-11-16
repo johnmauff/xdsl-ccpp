@@ -17,6 +17,7 @@ Usage::
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,16 @@ REPO_ROOT = Path(__file__).parent.parent
 # pass that leaves invalid IR is caught at that pass; the RUN lines' and the
 # generator's ccpp_opt subprocesses inherit this.
 os.environ.setdefault(VERIFY_EACH_PASS_ENV, "1")
+
+# Subprocesses (the RUN lines' python3, the ccpp_xdsl entry point in
+# test_build_integration.py) come from the environment running pytest, even
+# when its bin directory is not on PATH (venv/bin/python -m pytest without
+# activating the venv). Not resolved: a venv's python is a symlink.
+_BIN_DIR = os.path.dirname(sys.executable)
+if _BIN_DIR not in os.environ.get("PATH", "").split(os.pathsep):
+    os.environ["PATH"] = os.pathsep.join(
+        p for p in (_BIN_DIR, os.environ.get("PATH")) if p
+    )
 
 
 def pytest_collect_file(parent, file_path):
