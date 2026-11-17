@@ -122,10 +122,12 @@ measured data, and will drift as items are reassessed.
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
-| `rte-byband-net-device` | 0.5 day (local fix in the vendored rte-rrtmgp done 2026-11-16; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
+| `rte-byband-net-device` | 0.5 day (local fixes in the vendored rte-rrtmgp done 2026-11-16: `net_byband_precalc` on the device, `top_at_1` from the device copy of `play` in gas optics; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `gpu-status-scalar-only-schemes` | 0.5 day (`tools/gpu_scheme_status.py`: a mark for schemes whose per-timestep phases touch only scalars, e.g. `rrtmgp_subcycle`, `rrtmgp_variables`; they need no port and should not count as CPU-only) | XS |
 | `rrtmgp-rte-object-residency` | 3-5 days, after `gpu-port-rrtmgp-wrapper-schemes` (create/delete device copies where the RTE objects are allocated and freed, `kdist` entered once at init, `update self` for the host diagnostics; decide RTE upstream vs CCPP wrappers; `/cam-sima-perf acc_time` before/after; rrtmgp GPU FPHYStest and replays) | S-M |
 | `residency-call-args-to-device-callees` | 1-2 weeks (design: tell from the source, not `.meta`, that an array a scheme passes to a callee inside its own `!$acc data` region is used on the device by that callee; then drop the explicit `memory_space = device` from the four RRTMGP `.meta` files; cap_oracle over all cases, rrtmgp replays, GPU regression) | M |
+| `rte-caller-supplied-orientation` | 1-2 days (RTE: optional `top_at_1` or keep a preset orientation; CCPP wrappers: compute once at init from `pref`; drop the interim kernel; replays + rrtmgp/cam4 GPU tests; upstream with `net_byband_precalc` later) | XS |
+| `capture-gpu-poison-host-inputs` | 1-2 days if adopted (driver IR: a host fill after the device copyin of each device-resident input, CMake option, pytest; rrtmgp/cam4/pumas GPU replays to see what it flags) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
 | `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
@@ -3069,6 +3071,72 @@ memory spaces. Options:
 - Name the device-aware libraries (e.g. RTE's modules) as such.
 Whichever is chosen, run cap_oracle over every case: other schemes may
 change residency.
+
+Note (2026-11-16, s67): a blanket "this library is device-aware" claim
+would have been wrong for RTE. RRTMGP's gas-optics front end set
+`top_at_1` from the host `play(1,1)`/`play(1,nlay)`; with `memory_space =
+device` on `p_lay` and `pmid_rad` device-only after the `rrtmgp_inputs`
+port, the host copy was stale and rank 1 solved LW upside down. Fixed in
+the vendored RTE (`rte-byband-net-device`), but it argues for classifying
+from the callee's own code (a scan that sees host element reads such as
+`play(1,1)` outside any `!$acc` region) over an annotation or a library
+list, which would hide such reads.
+
+**ID: `rte-caller-supplied-orientation`. RTE gas optics infers the vertical
+orientation from `play` on every call.** Added 2026-11-16 (user).
+
+`gas_optics_int`/`gas_optics_ext` (`rrtmgp/frontend/mo_gas_optics_rrtmgp.F90`,
+still so on upstream `main` d8f1e8c) call
+`optical_props%set_top_at_1(play(1,1) < play(1,nlay))` each call. The
+orientation is a property of the model grid, fixed for the run, yet it is
+recomputed per call -- and was computed on the host, which broke s67 once
+`pmid_rad` became device-only (rank 1 solved LW upside down). Interim fix
+(2026-11-16, in the vendored ext, branch `byband-net-device`): the
+comparison runs in a small `!$acc kernels` region (one launch + 1-byte copy
+per call; see `rte-byband-net-device`).
+
+Wanted: state the orientation once.
+- RTE: an optional `top_at_1` argument to `gas_optics`, or keep an
+  orientation already set on the optical-props object (`set_top_at_1`) and
+  infer it from `play` only when the caller set none.
+- CCPP side: work it out once at init from the reference pressures
+  (`pref`), keep it with the RTE objects (or a module variable of the
+  gas-optics wrappers), and pass it on every call; nothing read from
+  `play` on host or device.
+- Then drop the interim kernel. Goes upstream (earth-system-radiation/
+  rte-rrtmgp) together with `net_byband_precalc` when RTE work resumes
+  (on hold since 2026-11-16).
+
+Test: rrtmgp replays CPU/GPU; rrtmgp GPU FPHYStest and cam4 GPU tests
+identical to the nvhpc CPU runs.
+
+**ID: `capture-gpu-poison-host-inputs`. Idea (not committed to): GPU replay
+drivers overwrite host copies of device-resident inputs.** Added 2026-11-16
+(user: "add it as an idea; I want to think a bit more about it").
+
+The GPU replay drivers `enter data copyin` each device-resident input from
+the host, so the host copy stays valid and a host read of that input in the
+scheme -- or in a library it calls -- goes unnoticed. In the model the host
+copy is stale. Twice on 2026-11-16 the replays passed while the full model
+failed:
+- c66: the stale `toa_src_sw` sync (`residency-call-args-to-device-callees`);
+- s67: RRTMGP's gas-optics front end set `top_at_1` from the host
+  `play(1,1)`/`play(1,nlay)` after `rrtmgp_inputs` made `pmid_rad`
+  device-only; rank 1 solved LW upside down (local ext fix
+  `rte-byband-net-device`).
+
+Idea: in the generated driver (`#ifdef USE_GPU` only; never in caps or
+schemes), after the `enter data copyin` of a device-resident input, fill
+its host copy with NaN (integers: a sentinel); outputs are still copied out
+and compared on the host. CPU replays unchanged. A CMake option on the
+driver build (e.g. `CCPP_CAPTURE_POISON_HOST`, default ON) to turn it off
+when bisecting. A replay that then fails means the scheme reads that input
+on the host: its classification (device vs host/synced) is wrong, or the
+scheme/library has a host read like `top_at_1`.
+
+Open questions before committing: intent(inout) arguments (copied in and
+out; poison only the in side); module-state inputs restored by setup
+phases; whether a sentinel for integers/logicals is meaningful.
 
 ## Design problems: re-derived information and special-casing (review 2026-10-28)
 
