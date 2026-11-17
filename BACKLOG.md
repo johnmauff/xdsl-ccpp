@@ -93,6 +93,8 @@ measured data, and will drift as items are reassessed.
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
+| `gpu-port-prescribe-radiative-gases` | 0.5-1 day (`prescribe_radiative_gas_concentrations_timestep_init`: the global-mean VMR stays a host call, the fill of the constituent slice becomes one `!$acc parallel loop` on the present `const_array`; the cap's per-step `update self`/`update device` of the whole `const_array` disappears; rrtmgp and cam4 GPU tests) | XS |
+| `gpu-port-rrtmgp-pre` | 1 day (drop `rrtmgp_pre_run`'s unused `coszrs`/`idxday`/`idxnite` arguments; `rrtmgp_pre_timestep_init`'s day/night compaction in one device thread, `nday`/`nnite` copied out; rrtmgp replays, rrtmgp and cam4 GPU tests) | XS |
 | `gpu-port-aerosol-optics` | 5-10 days plus ESCOMP review (host gather of per-bin properties from the polymorphic `aerosol_properties`/`aerosol_state` objects into plain arrays, device kernels for the column/level/wavelength loops, species-type flags precomputed; cam4 and rrtmgp replays) | S-M |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
@@ -124,6 +126,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
 | `rte-byband-net-device` | 0.5 day (local fixes in the vendored rte-rrtmgp done 2026-11-16: `net_byband_precalc` on the device, `top_at_1` from the device copy of `play` in gas optics; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `gpu-status-scalar-only-schemes` | 0.5 day (`tools/gpu_scheme_status.py`: a mark for schemes whose per-timestep phases touch only scalars, e.g. `rrtmgp_subcycle`, `rrtmgp_variables`; they need no port and should not count as CPU-only) | XS |
+| `rrtmgp-gpu-data-movement` | umbrella, ~7-11 days for phases 0-2 (2-3 weeks with phase 3): `/cam-sima-perf acc_time` baseline; `gpu-port-rrtmgp-pre` + `gpu-port-prescribe-radiative-gases`; `rte-caller-supplied-orientation`, `rte-byband-net-device`, `rrtmgp-rte-object-residency`; optionally `residency-call-args-to-device-callees` (items counted once) | M |
 | `rrtmgp-rte-object-residency` | 3-5 days, after `gpu-port-rrtmgp-wrapper-schemes` (create/delete device copies where the RTE objects are allocated and freed, `kdist` entered once at init, `update self` for the host diagnostics; decide RTE upstream vs CCPP wrappers; `/cam-sima-perf acc_time` before/after; rrtmgp GPU FPHYStest and replays) | S-M |
 | `residency-call-args-to-device-callees` | 1-2 weeks (design: tell from the source, not `.meta`, that an array a scheme passes to a callee inside its own `!$acc data` region is used on the device by that callee; then drop the explicit `memory_space = device` from the four RRTMGP `.meta` files; cap_oracle over all cases, rrtmgp replays, GPU regression) | M |
 | `rte-caller-supplied-orientation` | 1-2 days (RTE: optional `top_at_1` or keep a preset orientation; CCPP wrappers: compute once at init from `pref`; drop the interim kernel; replays + rrtmgp/cam4 GPU tests; upstream with `net_byband_precalc` later) | XS |
@@ -2824,6 +2827,35 @@ Supporting items (not tracked elsewhere):
   `gpu-port-rrtmgp-wrapper-schemes`: ported alone it saves little, since
   its consumers stay on the CPU until then. Test: capture replays (cam4,
   rrtmgp) CPU and GPU, then the rrtmgp and cam4 GPU regressions.
+- `gpu-port-prescribe-radiative-gases` — **Fill the prescribed
+  radiative gases on the device.** Added 2026-11-17 (user, from the s72
+  cap review). `prescribe_radiative_gas_concentrations_timestep_init`
+  (`schemes/radiation_utils/prescribe_radiative_gas_concentrations.F90`,
+  rrtmgp suite) runs every timestep on the host: for each bound gas it
+  gets a global-mean VMR from `lbc_global_mean_vmr` (host, a scalar) and
+  sets `const_array(:, :, const_idx)`. The rrtmgp cap therefore copies the
+  whole constituent array to the host and back every step (s72
+  `rrtmgp_cap.F90`: `update self(const_array)` / `update device(const_array)`
+  around the call) -- the largest per-step transfer left in the radiation
+  chain. Port: keep the scalar lookup on the host, fill the slice with one
+  `!$acc parallel loop collapse(2) default(present)` per gas (the init
+  phase's copy, once per run, can stay). Test: rrtmgp GPU FPHYStest vs
+  the nvhpc CPU run and the cam4 GPU regression; check the cap's syncs.
+- `gpu-port-rrtmgp-pre` — **`rrtmgp_pre` on the device.** Added 2026-11-17
+  (user, from the s72 cap review). Two per-step host syncs in the rrtmgp
+  cap come from `schemes/rrtmgp/rrtmgp_pre.F90`:
+  - `rrtmgp_pre_run` declares `coszrs`, `idxday` and `idxnite` but never
+    uses them, yet the cap copies all three to the host before it. Drop
+    the three arguments (scheme and `.meta`); no port needed.
+  - `rrtmgp_pre_timestep_init` builds the day/night column lists from
+    `coszrs` (computed on the device) and the cap copies them back. The
+    compaction is order-dependent: run it in one device thread
+    (`!$acc serial`, or a `parallel loop` over a single gang with the
+    column loop `seq`), so the lists stay in column order, and copy out
+    the two counts `nday`/`nnite`, which host code sizes arrays with. The
+    `radiation_do_ccpp` loop stays on the host (scalars only).
+  Part of `gpu-port-rrtmgp-wrapper-schemes`. Test: rrtmgp replays CPU/GPU,
+  rrtmgp GPU FPHYStest, cam4 GPU regression; check the cap's syncs.
 - `suite-cap-loop-gpu-sync` — **Host/device syncs for host schemes
   inside a suite-cap loop.** The suite-cap half of
   `package-cap-loop-gpu-sync`'s gap: `generate-gpu-data` only sees
@@ -2871,6 +2903,7 @@ Supporting items (not tracked elsewhere):
 | `pumas_post_main` | `schemes/pumas/pumas_post_main.F90` | pumas | `gpu-port-pumas-interface-schemes` |
 | `micro_pumas_ccpp` | `schemes/pumas/pumas/micro_pumas_ccpp.F90` | pumas | `gpu-port-pumas-interface-schemes` (entry-point directives; ESCOMP/PUMAS) |
 | `aerosol_optics_zero_stub` | `schemes/chemistry/aerosol_optics_zero_stub.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `prescribe_radiative_gas_concentrations` | `schemes/radiation_utils/prescribe_radiative_gas_concentrations.F90` | rrtmgp | `gpu-port-prescribe-radiative-gases` |
 | `rrtmgp_constituents` | `schemes/rrtmgp/rrtmgp_constituents.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_dry_static_energy_tendency` | `schemes/rrtmgp/utils/rrtmgp_dry_static_energy_tendency.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_inputs` | `schemes/rrtmgp/rrtmgp_inputs.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
@@ -2881,7 +2914,7 @@ Supporting items (not tracked elsewhere):
 | `rrtmgp_lw_gas_optics_pre` | `schemes/rrtmgp/rrtmgp_lw_gas_optics_pre.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_lw_mcica_subcol_gen` | `schemes/rrtmgp/rrtmgp_lw_mcica_subcol_gen.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_post` | `schemes/rrtmgp/rrtmgp_post.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
-| `rrtmgp_pre` | `schemes/rrtmgp/rrtmgp_pre.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_pre` | `schemes/rrtmgp/rrtmgp_pre.F90` | rrtmgp | `gpu-port-rrtmgp-pre` |
 | `rrtmgp_subcycle` | `schemes/rrtmgp/rrtmgp_subcycle.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_sw_aerosols` | `schemes/rrtmgp/rrtmgp_sw_aerosols.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
 | `rrtmgp_sw_calculate_fluxes` | `schemes/rrtmgp/rrtmgp_sw_calculate_fluxes.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
@@ -2944,6 +2977,16 @@ instead (an answer change). Only the 5 se_cam4 tests are affected.
 Expected once fixed: those 5 comparisons pass. If any of the 4 untested
 tests still differs, look at it then; only QPC4 was checked field by
 field.
+Update 2026-11-17 (xdsl95g/xdsl95i): still unfixed -- the checkout pins
+`history01_04` and `cam_hist_file.F90` lacks the #572 line. It also
+breaks run-to-run comparisons on gnu: every finished gnu se_cam4 case of
+xdsl95g differs from xdsl91g in the same three `h1i` files (7200, 10800,
+14400 s), `QRS`/`QRL` only (~100 NaNs and ~2,000 denormals per file in
+both runs, values different), and the next file is identical again. On
+intel and nvhpc the leftover memory happens to be the same every run, so
+their BASELINE/cross-run comparisons hide it. Until the fix is in, judge
+gnu cam4 by the other files or by the model state, not by `cprnc` of the
+whole case.
 
 **ID: `rte-byband-net-device`. RTE computes the net band fluxes on the
 host.** Added 2026-11-16. `net_byband_precalc`
@@ -2974,6 +3017,58 @@ a scheme ✅ only when its routines carry `!$acc`, so they show ❌. Fix:
 recognise schemes whose per-timestep arguments are all scalars (from the
 `.meta` dimensions) and mark them as needing no port, counted apart from
 CPU-only. Do not add empty directives to the schemes.
+
+**ID: `rrtmgp-gpu-data-movement`. Umbrella: the RRTMGP data movement and
+CPU work left after the wrapper ports.** Added 2026-11-17 (user).
+
+State (s72, 2026-11-17): every compute scheme of the RRTMGP chain runs on
+the GPU, bit-for-bit (`rrtmgp_inputs` through gas/cloud optics, McICA,
+RTE, fluxes, heating rates, `rrtmgp_post`). Left:
+- Per-step CPU schemes with cap syncs: `rrtmgp_pre` (`idxday`, `idxnite`,
+  `coszrs` to the host for both phases, the lists back) and
+  `prescribe_radiative_gas_concentrations` (the whole `const_array` to the
+  host and back every step).
+- `flwds` around `rrtmgp_post` (one host line after its data region).
+- The four history-diagnostics schemes (`update self` of what they read;
+  stay on the host by decision, `gpu-history-accumulate`).
+- No work: `rrtmgp_subcycle`, `rrtmgp_variables` (scalars only),
+  `solar_irradiance_data` (1-D spectral data), the constituent stubs (no
+  cap syncs).
+- Hidden in the schemes, likely the largest cost: each GPU wrapper copies
+  its RTE object in or out itself, so the `ncol x nlay x ngpt` optics,
+  source and flux arrays cross the bus several times per radiation call,
+  and gas optics copies the `kdist` tables in every call.
+
+Phases:
+0. Measure (0.5 day): `/cam-sima-perf <id> gpu mpas acc_time`, transfer and
+   kernel time per scheme, to confirm priorities and as the before.
+1. Remove the per-step cap syncs (2-3 days, XS items):
+   `gpu-port-rrtmgp-pre` (drop `rrtmgp_pre_run`'s unused arguments; the
+   day/night compaction in one device thread) and
+   `gpu-port-prescribe-radiative-gases`. Afterwards the only per-step
+   `update self` left in `rrtmgp_cap.F90` should be the diagnostics and
+   `flwds`.
+2. RTE objects resident (4-7 days): first `rte-caller-supplied-orientation`
+   and a confirmation of `rte-byband-net-device`, then
+   `rrtmgp-rte-object-residency` (device copies created where the objects
+   are allocated, deleted in `rrtmgp_post`; `rrtmgp_inputs`' zero fills on
+   the device; `kdist` entered once at init; `flwds` inside `rrtmgp_post`'s
+   region; explicit `update self` for the host diagnostics). Decide where
+   the enter/exit lives: RTE `alloc_*`/`finalize` (upstream, on hold) or
+   the CCPP wrappers (local, suggested for now). `perf acc_time` after.
+3. Framework (optional, 1-2 weeks): `residency-call-args-to-device-callees`
+   (residency from the source, then drop `memory_space = device` from the
+   four RRTMGP `.meta` files); check `suite-cap-loop-gpu-sync` against the
+   s72 cap (the sw diagnostic subcycle already gets its `update self`
+   inside the loop) and close it if it no longer applies.
+
+Out of scope here: the history diagnostics (`gpu-history-accumulate`),
+`gpu-port-aerosol-optics` (cam4/5/7 production; the rrtmgp FPHYStest uses
+the zero stub), `gpu-status-scalar-only-schemes` (status-table cosmetics).
+
+Test per phase: rrtmgp replays CPU and GPU, the rrtmgp GPU FPHYStest
+against an nvhpc CPU run (zero tolerance), the cam4 GPU regression against
+the CPU baseline, and the cap's `update self`/`update device` list.
 
 **ID: `rrtmgp-rte-object-residency`. Keep the RTE-RRTMGP objects on the
 GPU for a whole radiation call.** Added 2026-11-16 (user request).
@@ -3015,6 +3110,14 @@ Design, for when a radiation call is fully on the GPU:
    rule).
 6. `ty_gas_concs` has private components: only RTE's own routines can
    manage its device copy.
+7. `rrtmgp_inputs`' host half (2026-11-17): it allocates the RTE objects
+   (`gas_concs%init`, `alloc_2str`/`alloc_1scl`, `sources%alloc`) and zeroes
+   their arrays on the host every radiation call. With the objects created
+   on the device, those zero fills become device loops; until then they
+   cost no cap sync (each GPU wrapper copies the object in itself).
+8. `rrtmgp_post`'s `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)` runs on the
+   host after its data region, so the cap copies `flwds` to the host and
+   back around the call; with `flw` resident it moves into the region.
 
 Open: whether RTE's `alloc_*`/`finalize` (upstream rte-rrtmgp PR, cf.
 the `ty_gas_concs` getter) or the CCPP wrappers (atmospheric_physics) do
