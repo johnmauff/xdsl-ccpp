@@ -447,8 +447,14 @@ class _DriverBuilder:
                         self.use(p.ddt_compare, p.ddt_read_module),
                         _str("out"), _str(p.name), _var(name), _var("tolerance"),
                         _var("call_count"), _var("n_failed"), *dims()))
-                if p.ddt_device_enter and p.ddt_device_exit:
-                    copy_back = p.category in ("out", "inout")
+                # Only an object that exists before the call is put on the
+                # device: an intent(out) one is (re)built by the scheme
+                # itself, which moves its own data; entering the previous
+                # call's arrays would leave a stale mapping once the scheme
+                # reallocates them (rrtmgp_sw_mcica_subcol_gen's cloud_sw).
+                if (p.ddt_device_enter and p.ddt_device_exit
+                        and p.category in ("in", "inout")):
+                    copy_back = p.category == "inout"
                     ddt_enter.append(_call(self.use(p.ddt_device_enter, p.ddt_read_module),
                                            _var(name)))
                     ddt_exit.append(_call(self.use(p.ddt_device_exit, p.ddt_read_module),
