@@ -15828,3 +15828,267 @@ replays.
 Result (user, 2026-11-16): all 61 c10a replays pass on the CPU and the GPU,
 including both McICA drivers (`sw` on ranks 0, 6, 7, 17; `lw` on rank 0).
 `capture-shr-randnum` and `scheme-io-capture-rte-objects` are resolved.
+
+## `gpu-port-dme-adjust`: `dme_adjust` on the GPU (recorded 2026-11-16; ported 2026-11-06)
+
+atmospheric_physics `9fd5ebd` ("dme_adjust: OpenACC port"):
+- The constituent properties are queried once on the host, into a
+  water/thermo-active mask.
+- One parallel loop over columns does the mass adjustment, with the
+  levels in order within a column (`ps` and `pint` accumulate).
+- The per-element arithmetic is unchanged, so CPU answers are
+  bit-for-bit.
+- `dme_adjust.o` is in Depends.nvhpc's GPU object list.
+
+Verified:
+- the `capture_dme_adjust` replay (c02h) on the CPU (2026-11-06) and
+  the GPU (2026-11-11);
+- the GPU FPHYStest `cam-outfrq_dme_adjust_derecho_gpu`, which passes
+  BASELINE against the nvhpc CPU baseline (xdsl91gpu).
+
+`dme_adjust` is commented out in the cam4/5/7 suites (atmospheric_physics
+issue #222: `qini`/`liqini`/`iceini` need initialization), so
+`GPU_SCHEME_STATUS.md` has no row for it until those suites enable it.
+The port was done after the backlog item was put on hold, and the item
+was not updated at the time.
+
+## Run-local SuiteOwned arrays on the device: per-call create/delete (2026-11-16)
+
+The c66 rrtmgp GPU build failed in `rrtmgp_cap.F90`: `rrtmgp_finalize` had
+`!$acc exit data delete(sfac)` and `delete(toa_src_sw)`, two symbols it does
+not have. Those arrays are run-local SuiteOwned variables: sized by `nday`
+(set in a `_timestep_init`), so they are local allocatables of the run
+function, allocated on every call (`LazyAllocOp` with `is_run_local`) and
+deallocated before it returns (`SafeDeallocOp`). The `rrtmgp_sw_solar_var`
+GPU port made them device-resident (`needs_device_residency`). The
+`LazyAllocOp` printer emits its guarded `enter data create` only for
+module-level variables, yet `_inject_suite_owned_gpu_exit` put every
+device-resident `LazyAllocOp`, run-local ones included, on the `_finalize`
+delete list. So a run-local array got no device copy, and a delete where it
+does not exist.
+
+Fix (`transforms/suitecap/gpu.py`, called from `suite_cap.py` and
+`suitecap/package_cap.py`):
+- `_inject_suite_owned_gpu_exit` skips run-local `LazyAllocOp`s.
+- New `_inject_run_local_gpu_residency`: an `AccEnterDataOp(create)` right
+  after each run-local device allocation, and an `AccExitDataOp(delete)`
+  right before its deallocation, in the run function. The device copy
+  lives as long as the allocation.
+
+Checked by regenerating c66's caps (generation only): `rrtmgp_cap.F90`
+changes only by the create/delete pairs for `toa_src_sw` and `sfac`, and
+the two finalize deletes are gone. Test:
+`test_run_local_device_var_created_and_deleted_per_call`.
+`tests/unit` 1548 and `tests/filecheck` 56 passed.
+
+## `rrtmgp-rte-object-residency`: RTE g-point objects stay on the GPU for a whole radiation call (2026-11-17)
+
+Phase 1 of `rrtmgp-gpu-data-movement`. Design:
+`CAM-SIMA.xdsl-ccpp/rrtmgp_rte_residency_design.md`.
+
+atmospheric_physics (`schemes/rrtmgp/`, directives inline in the schemes,
+no helper module, no `.meta` or `Depends.nvhpc` change):
+- `rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`, `rrtmgp_sw_mcica_subcol_gen`:
+  right after each `alloc_2str`/`alloc_1scl`/`sources%alloc`,
+  `!$acc enter data copyin(obj%optical_props)` then `create(...)` of its
+  arrays (`tau`/`ssa`/`g`; the LW sources' four arrays). The host zero
+  fills (added for the replays, `unit-test-scheme-changes`) became calls
+  to RTE's `zero_array` (`mo_rte_util_array`: explicit-shape dummy,
+  `!$acc parallel loop copyout(array)`, so a present array is zeroed on
+  the device and nothing moves; a plain loop on the CPU).
+- `rrtmgp_post`: `free_optics_sw`/`free_optics_lw` delete the members,
+  then the struct, inside their existing `allocated` guards, before the
+  host deallocation; new `free_sources_lw` does the same for the sources.
+- Every existing `copyin`/`copyout`/`copy` clause in the wrappers and in
+  RTE finds the data present and moves nothing (OpenACC reference
+  counting), so the schemes stay correct with host-resident objects.
+- Generated caps unchanged (s72 `rrtmgp_cap.F90` regenerated: identical).
+
+nvfortran bug found on the way (25.9): a `!$acc parallel loop
+default(present)` that indexes an allocatable component of an extended RTE
+type directly (`aer_lw%optical_props%tau(i,k,g)`) aborted with "partially
+present" in the `test_rrtmgp_inputs` GPU replay. `NV_ACC_DEBUG=0x800`
+showed the `enter data create` mapped the right address and size
+(158,592 B), but the kernel's implicit present lookup computed 53 MB from
+the component's descriptor (first two extents right, third garbage) for
+`aer_lw` only, not for `atm_optics_lw` with the same code. Passing the
+array as an actual argument to a routine with a plain dummy (here RTE's
+`zero_array`) avoids it. Expect the same for the flux objects
+(`rrtmgp-flux-object-residency`).
+
+xdsl-ccpp (`transforms/capture_driver_ir.py`): an `out` handled object
+(no `device_enter` before the call, unchanged) now gets the handler's
+`device_exit(obj, copy_out=.true.)` after the call, inside `#ifdef
+USE_GPU`, so a replay compares the device result of an object the scheme
+created on the device (`cloud_sw`, `cloud_lw`, the `rrtmgp_inputs`
+objects). Test: `test_handled_intent_out_type_is_not_put_on_the_device`.
+`tests/unit`: 1549 passed.
+
+Verified:
+- capture c12a (ranks 0/6/7/17 from `unit-tests.txt`): rrtmgp replays CPU
+  and GPU, all 61 passed; `rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`,
+  `rrtmgp_sw_mcica_subcol_gen`, `rrtmgp_post` ON-GPU. (A GPU replay run on
+  a CPU-only node also "passes" with every test CPU-ONLY: the OpenACC
+  binaries fall back to the host.)
+- s74 rrtmgp GPU FPHYStest vs s73 nvhpc CPU: `COMPARE_cpu_gpu` IDENTICAL;
+  s73 physics check "No differences found".
+- xdsl97gpu (aux_sima_gpu vs `20261117-02ac990-nvhpc`): all 31 GPU tests
+  with a CPU baseline bit-for-bit (incl. the MPAS/SE cam4 and DEBUG
+  cases); no new failures (F2000_C7 RUN upstream; `mcsp`/`zm` have no
+  baseline).
+- perf15 (MPAS 120 km cam4 GPU, `acc_time`) vs perf13: `phys_run1`
+  32.6 -> 22.3 s/day; RRTMGP transfers in scheme/RTE code 6.1 -> ~0.48
+  s/day. Leftovers: `rrtmgp-flux-object-residency`,
+  `rrtmgp-rte-validation-transfers`, `rrtmgp-gas-concs-device-vmr`.
+
+## `gpu-port-zm-convr`: `zm_convr` and `zm_conv_cloud_top` on the GPU (2026-11-18)
+
+ZM's deep-convection core now runs entirely on the GPU (the rest of the
+ZM chain -- `zm_conv_evap`, `momtran`, `convtran` -- was already there).
+Ported in four replay-tested stages; no `.meta` change.
+
+atmospheric_physics (`schemes/zhang_mcfarlane/`):
+- `zm_conv_cloud_top`: two kernels in one data region (fill `jctop` with
+  `pver`, then the scatter `jctop(ideep(i)) = jt(i)`; `ideep` entries are
+  distinct, so no conflicts).
+- `zm_convr`:
+  - Module settings read on the device (`rl`, `cpres`, `capelmt`,
+    `tfreez`, `eps1`, `limcnv`, `lparcel_pbl`, ...): `!$acc declare
+    create` + `update device` at the end of `zm_convr_init` (the
+    `wv_saturation` pattern).
+  - `entropy`, `ientropy`, `qsat_hPa`: `!$acc routine seq`.
+  - `ientropy` returns a `converged` flag instead of writing `errmsg`;
+    `parcel_dilute` records the first failed call per column, counts
+    failures with a reduction, and writes the old-format message on the
+    host only when there is one (first failing column). Accepted by the
+    user: the message may name a different point than before (it used to
+    be the last failure in loop order); `errflg` unchanged.
+  - `zm_convr_run`: one data region for the whole routine
+    (present-or-copy arguments, `jt` `copy` since it is written only when
+    some column convects). Gather in one `!$acc serial` loop (keeps the
+    column order of `ideep`); `copy(lengath)` is the only per-call scalar
+    back to the host. The no-convection early return became an
+    `if (lengath > 0)` block -- a `goto` out of the data region does not
+    compile with `-acc` (NVFORTRAN-S-0155).
+  - `buoyan_dilute`, `parcel_dilute`, `cldprp`, `closure`, `q1q2_pjr`:
+    every nest a kernel. Nests with a level recurrence or a per-column
+    temporary run one column per thread with `!$acc loop seq` levels in
+    the original order (loop interchange; bit-for-bit since each
+    column's operations keep their order); pointwise nests
+    `collapse(2)`; per-iteration scalars `private`.
+  - Cross-column quantities kept exact: `khighest`/`klowest` (cldprp),
+    `kmin`/`kmax` (closure) and `ktm`/`kbm` (q1q2_pjr) are min/max
+    reductions. `q1q2_pjr`'s `ktm` loop has no per-column mask, so a
+    column's tendencies above its own top depend on the shallowest top
+    of all gathered columns -- the bound must stay global. `cldprp`'s
+    `kount`/`goto 690` early exit (taken when all columns are done) was
+    dropped: it only skipped iterations masked by `done(i)`.
+- ccs_config `machines/Depends.nvhpc`: `zm_conv_cloud_top.o`,
+  `zm_convr.o` in `GPU_SCHEME_OBJS`.
+
+Verification:
+- Replays, zero tolerance, CPU and GPU: capture_mcsp
+  `test_zm_conv_cloud_top`, capture_zm `test_zm_convr` (ON-GPU, 196
+  kernels in six routines). Trap: the first stage-4 GPU replay "passed"
+  on the stage-3 binary because the driver failed to compile and
+  `build_capture_tests.sh` keeps going (`-k`); check the build log and
+  binary time.
+- xdsl98 (nvhpc CPU, compare=20261117-02ac990-nvhpc): 34/35 RUN and
+  BASELINE PASS (F2000_C7 RUN FAIL, upstream). zm and mcsp are false RUN
+  PASSes (their known nvhpc ncdata_check abort,
+  `zm-number-concentration-compiler-diffs`), with step-1 history
+  bit-for-bit. NLCOMP FAIL on `se_cslam_multitape` is a CIME parser
+  problem, not a difference (`nlcomp-multitape-duplicate-namelist`).
+- xdsl98gpu (nvhpc gpu, same baseline): 31/31 GPU tests with a baseline
+  bit-for-bit, including all seven cam4 cases (MPAS and SE, DEBUG); no
+  false passes; F2000_C7 RUN FAIL (upstream). zm_gpu/mcsp_gpu have no
+  baseline: cprnc of their step-1 `h1i` files against xdsl98 is
+  IDENTICAL (57 and 37 fields, 0 differences).
+- perf17 (MPAS 120 km cam4, one GPU node, `acc_time`, vs perf15 also
+  `acc_time`): `phys_run1` 22.28 -> 15.72 s/day (-29%), run time 101.2 ->
+  93.8 s/day (-7.3%). ZM's kernels take 0.12 s/day for ~6.5 s/day of CPU
+  time. Its cap syncs (0.33 s/day) moved partly to the neighbouring CPU
+  diagnostics schemes; all cap syncs 5.29 -> 5.20. The MPAS dycore (63
+  s/day, CPU cores) is now 71% of the GPU node's run time. Report:
+  `/glade/work/dennis/cam_sima_perf/perf17.md`.
+
+## `gpu-port-tropopause-find`: `tropopause_find` on the GPU (recorded 2026-11-18; ported 2026-11-10)
+
+Recorded late: the port landed 2026-11-10 (atmospheric_physics `0c6ba59`,
+"tropopause_find: OpenACC port of the run-phase algorithms") but the
+BACKLOG item was never resolved and no entry written; found 2026-11-18
+when it was proposed again as a next target.
+
+atmospheric_physics `schemes/tropopause_find/tropopause_find.F90`:
+- Module constants (`cnst_kap`, `cnst_faktor`, `cnst_rga`, `cnst_ka1`,
+  `cnst_rad2deg`): `!$acc declare create` + `update device` in `_init`.
+- Run phase: one `!$acc data present(...)` region over the inputs and every
+  `tropLev`/`tropP`/`tropT`/`tropZ` variant and the `hstobie_*` outputs;
+  the algorithms (`twmo`, `climate`, `cpp`, `hybridstobie`, chemical
+  tropopause, `interpolateP/T/Z`) run as `gang vector` column loops with
+  `loop seq` levels and private per-column scalars.
+- Optional arguments: `present()` evaluated on the host into logicals
+  (`do_p`, `do_t`, `do_z`, `do_trop`, ...) before the kernels.
+- The "any column not found" test is a `reduction(.or.:found_missing)`,
+  so only the flag returns to the host.
+- The public `tropopause_findWithBackup` keeps working from host callers
+  (present-or-copy clauses).
+- ccs_config `Depends.nvhpc`: `tropopause_find.o` in `GPU_SCHEME_OBJS`.
+- Porting it exposed the xdsl-ccpp `!$acc&` continuation bug (entry
+  "`!$acc&` continuation lines lost their first variable", 2026-11-10).
+
+Verification: capture replays rk_stratiform and rrtmgp, CPU and GPU,
+bit-for-bit (commit message); every GPU regression since (xdsl97gpu,
+xdsl98gpu) bit-for-bit against the CPU baseline, `GPU_SCHEME_STATUS.md`
+🧪 ✅ in cam4, cam5 and cam7; perf17 shows its kernels
+(`tropopause_twmo`, `tropopause_findwithbackup`, `any_notfound`) on the
+device.
+
+## `gpu-port-vertical-diffusion-simple`: the nine non-solver vertical diffusion schemes on the GPU (2026-11-18)
+
+atmospheric_physics `schemes/vertical_diffusion/` (no `.meta` change):
+- `vertical_diffusion_interstitials.F90` (batch 1, written 2026-11-16,
+  kept in a stash until now): `vertical_diffusion_prepare_inputs` (`th`
+  kernel; the `coords1d` `p` is still built on the host),
+  `compute_kinematic_fluxes_and_obklen` (one column kernel calling the
+  `atmos_phys_pbl_utils` `routine seq` functions; `thvs` private),
+  `vertical_diffusion_set_total_surface_stress` (one kernel, same order of
+  additions).
+- `diffusion_solver.F90` (batch 2): `set_temperature_at_toa_default`,
+  `set_dry_static_energy_at_toa_zero` (one kernel each);
+  `interpolate_to_interfaces` (one data region; top/bottom interfaces in a
+  column kernel, interior `collapse(2)`; `rhoi`, `rhoi_dry`, `dpidz_sq`
+  in one kernel with the squaring kept as two steps; the FIXME top-level
+  overwrite kept as its own kernel after); `implicit_surface_stress_add_drag_coefficient`
+  (`ws`/`tau`/`ksrfturb` arrays became private scalars);
+  `wind_damping_rate` (host copy of `p%rdel(:ncol,pver)` into a local
+  array, since `p` is a host object -- to be replaced by the `pint`
+  interface of `gpu-port-vertical-diffusion-solver`);
+  `vertical_diffusion_tendencies` (`is_dry` per constituent evaluated on
+  the host into a logical array; tendencies `collapse(2)`/`collapse(3)`,
+  dry-basis conversion `* pdel / pdeldry` in the same order). The solver
+  schemes in the same file have no directives and stay on the host.
+- ccs_config `Depends.nvhpc`: `vertical_diffusion_interstitials.o`,
+  `diffusion_solver.o` in `GPU_SCHEME_OBJS`.
+- `build_capture_tests.sh` (user script, scratch): the own-source match for
+  ON-GPU now allows procedure prefixes (`pure`, `elemental`, ...); the five
+  `pure` schemes were labelled CALLEE-GPU although their kernels are their
+  own (`LastTest.log` `file=diffusion_solver.F90`).
+
+Verification:
+- capture_uw_vdiff (c07d) replays, CPU and GPU, zero tolerance: 18/18;
+  all nine ON-GPU. `vertical_diffusion_sponge_layer` and
+  `eddy_diffusivity_adjustment_above_pbl` stay CPU-ONLY in the replay
+  because their kernels are conditional (sponge off, default free-trop
+  scaling), not because they are unported.
+- xdsl99gpu (nvhpc gpu, compare=20261117-02ac990-nvhpc): 31/31 GPU tests
+  with a baseline bit-for-bit (all seven cam4 cases, `uw_vdiff_gpu`,
+  `hb_vdiff_gpu`); no false passes; zm_gpu/mcsp_gpu no baseline (their
+  suites have no vertical diffusion); F2000_C7 RUN FAIL (upstream).
+- Expected gain is small on its own (~0.5 s/day, mostly
+  `vertical_diffusion_tendencies`; perf14 `nsys`): the solver schemes
+  around them stay on the host until `gpu-port-vertical-diffusion-solver`
+  (~1.65 s/day more). No perf run for this step.
+- Process note: the first xdsl99gpu session died during SETUP -- the
+  login node's 10 GB per-user memory cgroup; `cam-sima-regression` SETUP
+  now uses `--parallel-jobs 4`.

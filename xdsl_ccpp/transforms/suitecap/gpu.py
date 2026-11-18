@@ -14,6 +14,7 @@ from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
     KeywordCallOp,
     LazyAllocOp,
+    SafeDeallocOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     GROUP_PHASES,
@@ -30,6 +31,11 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     top_level_ancestor,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+
+
+def _is_run_local(op) -> bool:
+    """A LazyAllocOp that allocates a run-local var on every call."""
+    return op.is_run_local is not None and bool(op.is_run_local.value.data)
 
 
 def _scheme_calls(block) -> list:
@@ -82,6 +88,7 @@ class SuiteOwnedGpuMixin:
                     isa(block_op, LazyAllocOp)
                     and block_op.needs_device_residency is not None
                     and bool(block_op.needs_device_residency.value.data)
+                    and not _is_run_local(block_op)
                 ):
                     resident_var_names.add(block_op.var_name.data)
 
@@ -115,6 +122,58 @@ class SuiteOwnedGpuMixin:
                     InsertPoint.before(ret_op),
                 )
 
+
+    @staticmethod
+    def _inject_run_local_gpu_residency(generated_fns, suite_model):
+        """Device copies of run-local SuiteOwned vars, per call.
+
+        A run-local var (dimensioned by a repeating-phase scalar, e.g. nday)
+        is a local allocatable of the run function, allocated on each call
+        (LazyAllocOp with is_run_local) and deallocated before the return
+        (SafeDeallocOp, _inject_run_local_var_handling). When it needs device
+        residency, its device copy follows the same lifetime: an
+        AccEnterDataOp(create) right after the allocation and an
+        AccExitDataOp(delete) right before the deallocation -- not the
+        once-per-simulation create/delete of module-level SuiteOwned vars
+        (the LazyAllocOp printer's guarded create, _inject_suite_owned_gpu_exit),
+        whose _finalize has no such local.
+        """
+        entries_by_name = {e.local_name: e for e in suite_model.suite_owned_vars()}
+
+        def ref(name):
+            entry = entries_by_name[name]
+            var_type = TypeConversions.convert(
+                entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+            )
+            return ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp) or not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            device_allocs = [
+                op for op in block.ops
+                if isa(op, LazyAllocOp) and _is_run_local(op)
+                and op.needs_device_residency is not None
+                and bool(op.needs_device_residency.value.data)
+                and op.var_name.data in entries_by_name
+            ]
+            if not device_allocs:
+                continue
+            names = {op.var_name.data for op in device_allocs}
+            for alloc in device_allocs:
+                ref_op = ref(alloc.var_name.data)
+                Rewriter.insert_op(ref_op, InsertPoint.after(alloc))
+                Rewriter.insert_op(ccpp_utils.AccEnterDataOp(create=[ref_op.res]),
+                                   InsertPoint.after(ref_op))
+            for dealloc in [op for op in block.ops if isa(op, SafeDeallocOp)]:
+                name = dealloc.var_name.data if dealloc.var_name is not None else None
+                if name not in names:
+                    continue
+                ref_op = ref(name)
+                Rewriter.insert_op(ref_op, InsertPoint.before(dealloc))
+                Rewriter.insert_op(ccpp_utils.AccExitDataOp(delete=[ref_op.res]),
+                                   InsertPoint.before(dealloc))
 
     @staticmethod
     def _build_suite_owned_debug_sync_touches(calls, suite_model, meta_data):

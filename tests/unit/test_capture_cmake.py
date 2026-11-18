@@ -785,7 +785,8 @@ _VMR_HANDLERS = (
 
 def _run_ddthost_capture(tmp_path, flat: bool, handlers: bool = False,
                          driver_source: "str | None" = None, plain_init: bool = False,
-                         accel_variants: bool = False, device_routines: bool = False):
+                         accel_variants: bool = False, device_routines: bool = False,
+                         run_vmr_out: bool = False):
     """examples/ddthost in a repository of its own, make_ddt captured;
     *flat*: its vmr_type without the nested derived-type components;
     *handlers*: vmr_type in a --capture-ddt-handlers registry;
@@ -819,6 +820,15 @@ def _run_ddthost_capture(tmp_path, flat: bool, handlers: bool = False,
             "      ! Check for correct threading behavior\n",
             "      !$acc data copyin(vmr%vmr_array)\n      !$acc end data\n"
             "      ! Check for correct threading behavior\n"))
+    if run_vmr_out:
+        # make_ddt_run's vmr intent(out): built by the call, not read
+        source = repo / "scheme" / "make_ddt.F90"
+        source.write_text(source.read_text().replace(
+            "      type(vmr_type),     intent(inout) :: vmr\n",
+            "      type(vmr_type),     intent(out) :: vmr\n", 1))
+        meta = repo / "scheme" / "make_ddt.meta"
+        meta.write_text(meta.read_text().replace(
+            "  type = vmr_type\n  intent = inout\n", "  type = vmr_type\n  intent = out\n", 1))
     tool = ccppMain()
     options_db = tool.default_options_db()
     scheme_dir = repo / "scheme"
@@ -958,6 +968,29 @@ def test_handled_type_kept_on_the_device_by_its_handler(tmp_path):
     compare = block.index("call vmr_compare('out'")
     assert call < exit_ < block.index("#endif", exit_) < compare
     assert "vmr_on_device" not in cap and "vmr_off_device" not in cap
+
+
+def test_handled_intent_out_type_is_not_put_on_the_device(tmp_path):
+    """An intent(out) handled argument the scheme names in its OpenACC is
+    not entered before the call: the scheme builds it (an RTE object's
+    alloc_*) and moves its own data, and entering the previous call's
+    arrays left a stale device mapping once the scheme reallocated them
+    (rrtmgp_sw_mcica_subcol_gen's cloud_sw: CUDA_ERROR_INVALID_VALUE in the
+    handler's device_exit). It is copied back after the call, before the
+    compare: a scheme that creates its output on the device and leaves it
+    there (rrtmgp-rte-object-residency) would otherwise be compared on its
+    stale host copy."""
+    pytest.importorskip("fparser")
+    drivers, _cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True,
+                                         device_routines=True, run_vmr_out=True)
+    driver = (drivers / "test_make_ddt.F90").read_text()
+    block = driver[driver.index("-- make_ddt_run --"):]
+    assert "vmr_on_device" not in block
+    call = block.index("call make_ddt_run(")
+    exit_ = block.index("call vmr_off_device(vmr, .true.)")
+    assert block.rindex("#ifdef USE_GPU", 0, exit_) > call
+    assert call < exit_ < block.index("call vmr_compare('out', 'vmr', vmr,")
+    assert "call vmr_read('in', 'vmr'" not in block
 
 
 def test_handled_type_without_device_use_stays_on_the_host(tmp_path):
