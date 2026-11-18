@@ -452,14 +452,20 @@ class _DriverBuilder:
                 # itself, which moves its own data; entering the previous
                 # call's arrays would leave a stale mapping once the scheme
                 # reallocates them (rrtmgp_sw_mcica_subcol_gen's cloud_sw).
-                if (p.ddt_device_enter and p.ddt_device_exit
-                        and p.category in ("in", "inout")):
-                    copy_back = p.category == "inout"
-                    ddt_enter.append(_call(self.use(p.ddt_device_enter, p.ddt_read_module),
-                                           _var(name)))
-                    ddt_exit.append(_call(self.use(p.ddt_device_exit, p.ddt_read_module),
-                                          _var(name),
-                                          arith.ConstantOp(IntegerAttr(int(copy_back), i1))))
+                # After the call every output is brought back for the
+                # compare: an intent(out) object the scheme left on the
+                # device (created where it is allocated,
+                # rrtmgp-rte-object-residency) is copied out; exit data of
+                # data that is not present does nothing.
+                if p.ddt_device_enter and p.ddt_device_exit:
+                    if p.category in ("in", "inout"):
+                        ddt_enter.append(_call(
+                            self.use(p.ddt_device_enter, p.ddt_read_module), _var(name)))
+                    if p.category in ("in", "inout", "out"):
+                        copy_back = p.category in ("out", "inout")
+                        ddt_exit.append(_call(
+                            self.use(p.ddt_device_exit, p.ddt_read_module), _var(name),
+                            arith.ConstantOp(IntegerAttr(int(copy_back), i1))))
                 continue
             if p.components:
                 # A derived type recorded component by component

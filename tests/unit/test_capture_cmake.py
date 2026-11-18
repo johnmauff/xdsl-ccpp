@@ -976,14 +976,20 @@ def test_handled_intent_out_type_is_not_put_on_the_device(tmp_path):
     alloc_*) and moves its own data, and entering the previous call's
     arrays left a stale device mapping once the scheme reallocated them
     (rrtmgp_sw_mcica_subcol_gen's cloud_sw: CUDA_ERROR_INVALID_VALUE in the
-    handler's device_exit). The output is still compared."""
+    handler's device_exit). It is copied back after the call, before the
+    compare: a scheme that creates its output on the device and leaves it
+    there (rrtmgp-rte-object-residency) would otherwise be compared on its
+    stale host copy."""
     pytest.importorskip("fparser")
     drivers, _cap = _run_ddthost_capture(tmp_path, flat=False, handlers=True,
                                          device_routines=True, run_vmr_out=True)
     driver = (drivers / "test_make_ddt.F90").read_text()
     block = driver[driver.index("-- make_ddt_run --"):]
-    assert "vmr_on_device" not in block and "vmr_off_device" not in block
-    assert "call vmr_compare('out', 'vmr', vmr," in block
+    assert "vmr_on_device" not in block
+    call = block.index("call make_ddt_run(")
+    exit_ = block.index("call vmr_off_device(vmr, .true.)")
+    assert block.rindex("#ifdef USE_GPU", 0, exit_) > call
+    assert call < exit_ < block.index("call vmr_compare('out', 'vmr', vmr,")
     assert "call vmr_read('in', 'vmr'" not in block
 
 

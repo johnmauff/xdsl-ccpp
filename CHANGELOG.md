@@ -15880,3 +15880,63 @@ changes only by the create/delete pairs for `toa_src_sw` and `sfac`, and
 the two finalize deletes are gone. Test:
 `test_run_local_device_var_created_and_deleted_per_call`.
 `tests/unit` 1548 and `tests/filecheck` 56 passed.
+
+## `rrtmgp-rte-object-residency`: RTE g-point objects stay on the GPU for a whole radiation call (2026-11-17)
+
+Phase 1 of `rrtmgp-gpu-data-movement`. Design:
+`CAM-SIMA.xdsl-ccpp/rrtmgp_rte_residency_design.md`.
+
+atmospheric_physics (`schemes/rrtmgp/`, directives inline in the schemes,
+no helper module, no `.meta` or `Depends.nvhpc` change):
+- `rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`, `rrtmgp_sw_mcica_subcol_gen`:
+  right after each `alloc_2str`/`alloc_1scl`/`sources%alloc`,
+  `!$acc enter data copyin(obj%optical_props)` then `create(...)` of its
+  arrays (`tau`/`ssa`/`g`; the LW sources' four arrays). The host zero
+  fills (added for the replays, `unit-test-scheme-changes`) became calls
+  to RTE's `zero_array` (`mo_rte_util_array`: explicit-shape dummy,
+  `!$acc parallel loop copyout(array)`, so a present array is zeroed on
+  the device and nothing moves; a plain loop on the CPU).
+- `rrtmgp_post`: `free_optics_sw`/`free_optics_lw` delete the members,
+  then the struct, inside their existing `allocated` guards, before the
+  host deallocation; new `free_sources_lw` does the same for the sources.
+- Every existing `copyin`/`copyout`/`copy` clause in the wrappers and in
+  RTE finds the data present and moves nothing (OpenACC reference
+  counting), so the schemes stay correct with host-resident objects.
+- Generated caps unchanged (s72 `rrtmgp_cap.F90` regenerated: identical).
+
+nvfortran bug found on the way (25.9): a `!$acc parallel loop
+default(present)` that indexes an allocatable component of an extended RTE
+type directly (`aer_lw%optical_props%tau(i,k,g)`) aborted with "partially
+present" in the `test_rrtmgp_inputs` GPU replay. `NV_ACC_DEBUG=0x800`
+showed the `enter data create` mapped the right address and size
+(158,592 B), but the kernel's implicit present lookup computed 53 MB from
+the component's descriptor (first two extents right, third garbage) for
+`aer_lw` only, not for `atm_optics_lw` with the same code. Passing the
+array as an actual argument to a routine with a plain dummy (here RTE's
+`zero_array`) avoids it. Expect the same for the flux objects
+(`rrtmgp-flux-object-residency`).
+
+xdsl-ccpp (`transforms/capture_driver_ir.py`): an `out` handled object
+(no `device_enter` before the call, unchanged) now gets the handler's
+`device_exit(obj, copy_out=.true.)` after the call, inside `#ifdef
+USE_GPU`, so a replay compares the device result of an object the scheme
+created on the device (`cloud_sw`, `cloud_lw`, the `rrtmgp_inputs`
+objects). Test: `test_handled_intent_out_type_is_not_put_on_the_device`.
+`tests/unit`: 1549 passed.
+
+Verified:
+- capture c12a (ranks 0/6/7/17 from `unit-tests.txt`): rrtmgp replays CPU
+  and GPU, all 61 passed; `rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`,
+  `rrtmgp_sw_mcica_subcol_gen`, `rrtmgp_post` ON-GPU. (A GPU replay run on
+  a CPU-only node also "passes" with every test CPU-ONLY: the OpenACC
+  binaries fall back to the host.)
+- s74 rrtmgp GPU FPHYStest vs s73 nvhpc CPU: `COMPARE_cpu_gpu` IDENTICAL;
+  s73 physics check "No differences found".
+- xdsl97gpu (aux_sima_gpu vs `20261117-02ac990-nvhpc`): all 31 GPU tests
+  with a CPU baseline bit-for-bit (incl. the MPAS/SE cam4 and DEBUG
+  cases); no new failures (F2000_C7 RUN upstream; `mcsp`/`zm` have no
+  baseline).
+- perf15 (MPAS 120 km cam4 GPU, `acc_time`) vs perf13: `phys_run1`
+  32.6 -> 22.3 s/day; RRTMGP transfers in scheme/RTE code 6.1 -> ~0.48
+  s/day. Leftovers: `rrtmgp-flux-object-residency`,
+  `rrtmgp-rte-validation-transfers`, `rrtmgp-gas-concs-device-vmr`.

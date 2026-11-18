@@ -127,10 +127,12 @@ measured data, and will drift as items are reassessed.
 | `rte-byband-net-device` | 0.5 day (local fixes in the vendored rte-rrtmgp done 2026-11-16: `net_byband_precalc` on the device, `top_at_1` from the device copy of `play` in gas optics; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `gpu-status-scalar-only-schemes` | 0.5 day (`tools/gpu_scheme_status.py`: a mark for schemes whose per-timestep phases touch only scalars, e.g. `rrtmgp_subcycle`, `rrtmgp_variables`; they need no port and should not count as CPU-only) | XS |
 | `cap-per-scheme-timers` | 1-2 days base (timers around each scheme call and around the cap's own syncs/group data regions in the generated suite caps, as language-neutral ops behind a generator option; host supplies the timer routines, CAM-SIMA `perf_mod`; pytest + FileCheck; cap_oracle; one CPU and one GPU perf run); +2-3 days optional step 2 (OpenACC profiling-interface library attributing in-scheme transfer time and bytes to the current scheme), ~3-5 days total | S |
-| `rrtmgp-gpu-data-movement` | umbrella, ~5-8 days for phase 1 (measured by perf13, phase 0 done): `rte-caller-supplied-orientation`, `rte-byband-net-device`, `rrtmgp-rte-object-residency` and a clean perf rerun; the cap-sync cleanups (`gpu-port-rrtmgp-pre`, `gpu-port-prescribe-radiative-gases`) are optional, ~2 days; framework phase optional, 1-2 weeks (items counted once) | M |
-| `rrtmgp-rte-object-residency` | 3-5 days, after `gpu-port-rrtmgp-wrapper-schemes` (create/delete device copies where the RTE objects are allocated and freed, `update self` for the host diagnostics; decide RTE upstream vs CCPP wrappers; `/cam-sima-perf acc_time` before/after; rrtmgp GPU FPHYStest and replays) | S-M |
+| `rrtmgp-gpu-data-movement` | umbrella; phases 0 and 1 done (perf15: `phys_run1` -10.3 s/day). Left, all optional and low priority (~0.6 s/day together): cap-sync cleanups (`gpu-port-rrtmgp-pre`, `gpu-port-prescribe-radiative-gases`) ~2 days; leftover transfers (`rrtmgp-flux-object-residency`, `rrtmgp-rte-validation-transfers`, `rrtmgp-gas-concs-device-vmr`) ~5-8 days; framework phase 1-2 weeks (items counted once) | M |
+| `rrtmgp-flux-object-residency` | 3-5 days (flux objects created on the device where `rrtmgp_pre` allocates them, deleted in `rrtmgp_post`; `update self` before the host diagnostics; `flwds` inside `rrtmgp_post`'s region; capture handlers for the flux types; replays, rrtmgp GPU FPHYStest, acc_time rerun); ~0.17 s/day | S |
+| `rrtmgp-rte-validation-transfers` | 0.5-1 day to decide and switch off (`rte_config_checks`), or 2-3 days to keep the checks and make their inputs resident; ~0.15 s/day | XS |
+| `rrtmgp-gas-concs-device-vmr` | 1-2 days (vmr arrays device-resident before `set_vmr`, so its `copyin(w)` finds them present; `rrtmgp_lw/sw_gas_optics_pre` replays); ~0.05 s/day | XS |
 | `residency-call-args-to-device-callees` | 1-2 weeks (design: tell from the source, not `.meta`, that an array a scheme passes to a callee inside its own `!$acc data` region is used on the device by that callee; then drop the explicit `memory_space = device` from the four RRTMGP `.meta` files; cap_oracle over all cases, rrtmgp replays, GPU regression) | M |
-| `rte-caller-supplied-orientation` | 1-2 days (RTE: optional `top_at_1` or keep a preset orientation; CCPP wrappers: compute once at init from `pref`; drop the interim kernel; replays + rrtmgp/cam4 GPU tests; upstream with `net_byband_precalc` later) | XS |
+| `rte-caller-supplied-orientation` | 1-2 days, upstream-only (user 2026-11-17: the interim per-call kernel stays; do it only with an RTE PR) | XS |
 | `capture-gpu-poison-host-inputs` | 1-2 days if adopted (driver IR: a host fill after the device copyin of each device-resident input, CMake option, pytest; rrtmgp/cam4/pumas GPU replays to see what it flags) | XS |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
@@ -1700,7 +1702,8 @@ change, why):
   undefined until gas optics / aerosols set them, so the
   `test_rrtmgp_inputs` replay compared undefined memory. Answer-neutral;
   one extra pass over each array per radiation call (gas optics zeroes
-  `tau` again).
+  `tau` again). Since 2026-11-17 the fills run on the device (RTE's
+  `zero_array` after `enter data create`; `rrtmgp-rte-object-residency`).
 - atmospheric_physics `schemes/rrtmgp/rrtmgp_lw_rte.F90`: `lw_Ds = 0`
   (on the device, `!$acc kernels`) when `use_LW_optimal_angles` is off;
   intent(out) but set only on the optimal-angles path, so
@@ -1713,7 +1716,8 @@ change, why):
   `alloc_1scl` (filled later by `rrtmgp_lw_mcica_subcol_gen`). All were
   intent(out) but left undefined, so `test_rrtmgp_lw_cloud_optics`
   compared undefined memory. Answer-neutral; one extra pass over each
-  array per LW call.
+  array per LW call. Since 2026-11-17 the `tau` fill runs on the device
+  (`zero_array`; `rrtmgp-rte-object-residency`).
 - atmospheric_physics `schemes/gravity_wave_drag/gravity_wave_drag_frontogenesis.F90`
   (2026-11-15): zero `ubm`/`ubi` at the top of `gw_front_src`, which sets
   them only down to the source level. Below it the host arrays kept
@@ -3155,6 +3159,29 @@ Phase 0 -- measured (perf13, 2026-11-17: MPAS 120 km cam4, one GPU node,
 - Tables: scratchpad `perf13_acc_rank0.md` of the 2026-11-17 session
   (parser `perf13_acc_time.py`); no `perf13.md` in the results directory.
 
+Phase 1 -- measured (perf15, 2026-11-17: same case and `NV_ACC_TIME=1`,
+after `rrtmgp-rte-object-residency`; report
+`/glade/work/dennis/cam_sima_perf/perf15.md`):
+- `phys_run1` 32.6 -> 22.3 s/day (-10.3), the drop phase 1 predicted from
+  perf14's 10.8 s/day RRTMGP total.
+- RRTMGP transfers in scheme/RTE files 6.1 -> ~0.48 (slowest rank),
+  kernels ~0.26; the gas-optics, McICA and RTE object copies are gone and
+  `rrtmgp_inputs` is 0.016 (zeroing via RTE's `zero_array` on the
+  device). Estimated RRTMGP total now ~1 s/day (no nsys rerun).
+- What is left of the 0.48 (per routine, not per site):
+  - flux objects, still host-resident by design: ~0.17
+    (`rrtmgp-flux-object-residency`);
+  - RTE input-validation reductions: ~0.15
+    (`rrtmgp-rte-validation-transfers`);
+  - gas concentrations (`set_vmr`/`get_vmr`): ~0.05
+    (`rrtmgp-gas-concs-device-vmr`);
+  - scheme inputs still coming from the host: ~0.1.
+  These are latency-bound (thousands of tiny copies at ~1600 columns
+  per rank), not bandwidth-bound. Together ~0.5 s/day, small against the
+  ~21 s/day of CPU physics on the GPU node (`zm_convr` 9.1 in perf14).
+- Not RRTMGP: `aerosol_optics`' `update device` stays a cap sync
+  (~0.14, `gpu-port-aerosol-optics`).
+
 perf14 (`nsys`, same case, rank 0, ~13% profiler slowdown; report
 `/glade/work/dennis/cam_sima_perf/perf14.md`, parser `perf14_nsys.py`):
 - RRTMGP is the largest group of GPU-node physics: 10.8 s/day (26%);
@@ -3179,7 +3206,9 @@ Phases (reordered by the measurement):
    the remaining transfer time is pageable-memory overhead; cheap, informs
    phase 1 and the cap syncs generally. Check bit-for-bit vs the CPU
    baseline (should be unaffected).
-1. RTE objects resident (5-8 days): first `rte-caller-supplied-orientation`
+1. Done 2026-11-17 (`rrtmgp-rte-object-residency` resolved; flux objects
+   moved to phase 4). Original plan:
+   RTE objects resident (5-8 days): first `rte-caller-supplied-orientation`
    and a confirmation of `rte-byband-net-device`, then
    `rrtmgp-rte-object-residency` (device copies created where the objects
    are allocated, deleted in `rrtmgp_post`; `rrtmgp_inputs`' zero fills on
@@ -3199,6 +3228,9 @@ Phases (reordered by the measurement):
    four RRTMGP `.meta` files); check `suite-cap-loop-gpu-sync` against the
    s72 cap (the sw diagnostic subcycle already gets its `update self`
    inside the loop) and close it if it no longer applies.
+4. Leftover transfers after phase 1 (optional, low priority, ~0.5 s/day
+   together, perf15): `rrtmgp-flux-object-residency`,
+   `rrtmgp-rte-validation-transfers`, `rrtmgp-gas-concs-device-vmr`.
 
 Out of scope here: the history diagnostics (`gpu-history-accumulate`),
 `gpu-port-aerosol-optics` (cam4/5/7 production; the rrtmgp FPHYStest uses
@@ -3208,65 +3240,61 @@ Test per phase: rrtmgp replays CPU and GPU, the rrtmgp GPU FPHYStest
 against an nvhpc CPU run (zero tolerance), the cam4 GPU regression against
 the CPU baseline, and the cap's `update self`/`update device` list.
 
-**ID: `rrtmgp-rte-object-residency`. Keep the RTE-RRTMGP objects on the
-GPU for a whole radiation call.** Added 2026-11-16 (user request).
+**ID: `rrtmgp-rte-object-residency`. Resolved (2026-11-17)** -- optics and LW source objects created on the device where allocated (`rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`, `rrtmgp_sw_mcica_subcol_gen`) and deleted in `rrtmgp_post`; replay drivers copy out-objects back; perf15 `phys_run1` 32.6 -> 22.3 s/day. CHANGELOG.md L15884.
 
-Today:
-- The RTE objects are host objects created every radiation call:
-  - the optical properties (`tau`/`ssa`/`g`), allocated by the `*_pre`
-    and optics schemes;
-  - the LW sources;
-  - the flux objects, allocated by `rrtmgp_pre`
-    (`initialize_rrtmgp_fluxes_*`);
-  - the gas concentrations.
-- `rrtmgp_post` frees them (`free_optics_*`, `free_fluxes_*`,
-  `gas_concs%reset()`), and `kdist` is loaded once at init.
-- The caps never move derived types (`gpu-ddt-deep-copy-residency`).
-  RTE's frontends wrap their own work in `enter data`/`exit data` per
-  call (e.g. `mo_gas_optics_rrtmgp.F90`), and its `alloc_*` routines
-  create no device copies.
-- Every ported wrapper (`rrtmgp_lw/sw_rte`, `rrtmgp_lw_aerosols`,
-  `rrtmgp_lw_calculate_fluxes`, ...) has its own data region naming the
-  object and then its member arrays. That works whether an object is on
-  the host or the device, which mixed host/GPU porting needs, but each
-  GPU scheme copies its arrays in and out.
+**ID: `rrtmgp-flux-object-residency`. Keep the RTE flux objects on the
+GPU for a whole radiation call.** Added 2026-11-17 (user), from perf15.
 
-Design, for when a radiation call is fully on the GPU:
-1. Right after an object's arrays are allocated,
-   `!$acc enter data create(obj, obj%arrays)`; right before they are
-   freed (`rrtmgp_post`), `!$acc exit data delete(...)`.
-2. `kdist`: already resident -- RTE's `init_abs_coeffs` copies its tables to
-   the device once at init (perf13); nothing to do.
-3. The wrappers' and RTE's own `copyin`/`copy` clauses then find the data
-   present and move nothing; the ported wrappers need no rewrite.
-4. Host readers -- the history diagnostics (`rrtmgp_sw/lw_diagnostics`,
-   `rrtmgp_cloud_diagnostics`) and any wrapper still on the CPU -- need
-   `!$acc update self` of what they read (cf. `gpu-history-accumulate`),
-   so this waits until the wrappers in the chain are ported.
-5. Scalar components (band limits, `top_at_1`, names) stay
-   host-authoritative: an object is only created or copied in, never
-   copied back whole, and only its arrays return (the capture handlers'
-   rule).
-6. `ty_gas_concs` has private components: only RTE's own routines can
-   manage its device copy.
-7. `rrtmgp_inputs`' host half (2026-11-17): it allocates the RTE objects
-   (`gas_concs%init`, `alloc_2str`/`alloc_1scl`, `sources%alloc`) and zeroes
-   their arrays on the host every radiation call. With the objects created
-   on the device, those zero fills become device loops; until then they
-   cost no cap sync (each GPU wrapper copies the object in itself).
-8. `rrtmgp_post`'s `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)` runs on the
-   host after its data region, so the cap copies `flwds` to the host and
-   back around the call; with `flw` resident it moves into the region.
+- `fsw`, `fswc`, `flw`, `flwc` (broadband and byband) are allocated by the
+  host scheme `rrtmgp_pre` and read on the host by
+  `rrtmgp_sw/lw_diagnostics` and `rrtmgp_post` (`flwds`); phase 1 of
+  `rrtmgp-gpu-data-movement` left them out on purpose.
+- Every RTE call and flux scheme therefore copies them: perf15 ~0.17
+  s/day in `rrtmgp_sw/lw_calculate_fluxes`, `sum_byband`,
+  `net_byband_precalc` and the `rrtmgp_lw/sw_rte` copy-outs.
+- Same pattern as the optics objects: `enter data` where `rrtmgp_pre`
+  allocates them (or move the allocation into a ported scheme),
+  `exit data delete` in `rrtmgp_post`'s `free_fluxes_*`, an explicit
+  `update self` of what the host diagnostics read, and
+  `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)` inside `rrtmgp_post`'s data
+  region. The flux types have pointer components: create the targets on
+  the device and attach them (check the capture handlers' rule for
+  pointers).
+- nvfortran (25.9) trap from the optics work: a `default(present)` kernel
+  indexing an allocatable component of an extended RTE type directly can
+  abort "partially present" (its present lookup gets a garbage size from
+  the component's descriptor). Zero or fill the flux arrays through a
+  routine with a plain array dummy (e.g. RTE's `zero_array`), not an
+  in-kernel component access. CHANGELOG.md L15884.
+- Test: rrtmgp replays CPU/GPU (driver copy-back for the out objects as
+  for the optics), rrtmgp GPU FPHYStest vs an nvhpc CPU run, acc_time
+  rerun.
 
-Open: whether RTE's `alloc_*`/`finalize` (upstream rte-rrtmgp PR, cf.
-the `ty_gas_concs` getter) or the CCPP wrappers (atmospheric_physics) do
-the enter/exit.
+**ID: `rrtmgp-rte-validation-transfers`. RTE's input checks cost as much
+transfer time as RRTMGP's kernels.** Added 2026-11-17 (user), from perf15.
 
-Test:
-- The GPU replay drivers already keep the objects resident across each
-  replayed call (the capture handlers' `device_enter`/`device_exit`).
-- The rrtmgp GPU FPHYStest bit-for-bit against the CPU baseline.
-- `/cam-sima-perf ... acc_time` to confirm the per-scheme copies are gone.
+- `mo_rte_util_array_validation`'s `any_vals_outside_2d/3d` and
+  `any_vals_less_than_2d/3d`: ~0.15 s/day of transfers (slowest rank),
+  each a reduction whose scalar result returns to the host, some on
+  inputs still copied in from the host.
+- Options: (a) switch the checks off in production with RTE's
+  `rte_config_checks(.false.)` (`mo_rte_config.F90`; `check_extents` and
+  `check_values` default `.true.`, no CAM-SIMA caller sets them) -- a
+  policy decision for the user, keeping them on in DEBUG builds; (b) keep
+  them and make their inputs resident (largely follows from the other
+  residency items).
+- Changes no answers either way (checks only report errors).
+
+**ID: `rrtmgp-gas-concs-device-vmr`. `set_vmr` copies each gas's mixing
+ratio from the host every radiation call.** Added 2026-11-17 (user), from
+perf15.
+
+- `mo_gas_concentrations.F90` `set_vmr_2d` (`!$acc kernels copyin(w)`)
+  and `get_vmr_2d`: ~0.05 s/day of transfers in perf15.
+- With `w` already present on the device (computed on the device in
+  `rrtmgp_lw/sw_gas_optics_pre` and passed while resident), `copyin`
+  moves nothing; no RTE change needed.
+- Test: gas-optics-pre replays CPU/GPU, rrtmgp GPU FPHYStest.
 
 **ID: `residency-call-args-to-device-callees`. Arrays a scheme hands to a
 device-aware callee are classified "host".** Added 2026-11-16 (user).
@@ -3351,6 +3379,12 @@ Wanted: state the orientation once.
 
 Test: rrtmgp replays CPU/GPU; rrtmgp GPU FPHYStest and cam4 GPU tests
 identical to the nvhpc CPU runs.
+
+Decision (2026-11-17, user): the interim per-call kernel stays. An
+implementation was made and reverted (patches in that session's
+scratchpad, not kept): it changed the gas-optics scheme interfaces for
+no measurable gain. Not a prerequisite of the residency work; only
+worth doing as part of an upstream RTE PR when RTE work resumes.
 
 **ID: `capture-gpu-poison-host-inputs`. Idea (not committed to): GPU replay
 drivers overwrite host copies of device-resident inputs.** Added 2026-11-16
