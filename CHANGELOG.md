@@ -16011,3 +16011,84 @@ Verification:
   diagnostics schemes; all cap syncs 5.29 -> 5.20. The MPAS dycore (63
   s/day, CPU cores) is now 71% of the GPU node's run time. Report:
   `/glade/work/dennis/cam_sima_perf/perf17.md`.
+
+## `gpu-port-tropopause-find`: `tropopause_find` on the GPU (recorded 2026-11-18; ported 2026-11-10)
+
+Recorded late: the port landed 2026-11-10 (atmospheric_physics `0c6ba59`,
+"tropopause_find: OpenACC port of the run-phase algorithms") but the
+BACKLOG item was never resolved and no entry written; found 2026-11-18
+when it was proposed again as a next target.
+
+atmospheric_physics `schemes/tropopause_find/tropopause_find.F90`:
+- Module constants (`cnst_kap`, `cnst_faktor`, `cnst_rga`, `cnst_ka1`,
+  `cnst_rad2deg`): `!$acc declare create` + `update device` in `_init`.
+- Run phase: one `!$acc data present(...)` region over the inputs and every
+  `tropLev`/`tropP`/`tropT`/`tropZ` variant and the `hstobie_*` outputs;
+  the algorithms (`twmo`, `climate`, `cpp`, `hybridstobie`, chemical
+  tropopause, `interpolateP/T/Z`) run as `gang vector` column loops with
+  `loop seq` levels and private per-column scalars.
+- Optional arguments: `present()` evaluated on the host into logicals
+  (`do_p`, `do_t`, `do_z`, `do_trop`, ...) before the kernels.
+- The "any column not found" test is a `reduction(.or.:found_missing)`,
+  so only the flag returns to the host.
+- The public `tropopause_findWithBackup` keeps working from host callers
+  (present-or-copy clauses).
+- ccs_config `Depends.nvhpc`: `tropopause_find.o` in `GPU_SCHEME_OBJS`.
+- Porting it exposed the xdsl-ccpp `!$acc&` continuation bug (entry
+  "`!$acc&` continuation lines lost their first variable", 2026-11-10).
+
+Verification: capture replays rk_stratiform and rrtmgp, CPU and GPU,
+bit-for-bit (commit message); every GPU regression since (xdsl97gpu,
+xdsl98gpu) bit-for-bit against the CPU baseline, `GPU_SCHEME_STATUS.md`
+🧪 ✅ in cam4, cam5 and cam7; perf17 shows its kernels
+(`tropopause_twmo`, `tropopause_findwithbackup`, `any_notfound`) on the
+device.
+
+## `gpu-port-vertical-diffusion-simple`: the nine non-solver vertical diffusion schemes on the GPU (2026-11-18)
+
+atmospheric_physics `schemes/vertical_diffusion/` (no `.meta` change):
+- `vertical_diffusion_interstitials.F90` (batch 1, written 2026-11-16,
+  kept in a stash until now): `vertical_diffusion_prepare_inputs` (`th`
+  kernel; the `coords1d` `p` is still built on the host),
+  `compute_kinematic_fluxes_and_obklen` (one column kernel calling the
+  `atmos_phys_pbl_utils` `routine seq` functions; `thvs` private),
+  `vertical_diffusion_set_total_surface_stress` (one kernel, same order of
+  additions).
+- `diffusion_solver.F90` (batch 2): `set_temperature_at_toa_default`,
+  `set_dry_static_energy_at_toa_zero` (one kernel each);
+  `interpolate_to_interfaces` (one data region; top/bottom interfaces in a
+  column kernel, interior `collapse(2)`; `rhoi`, `rhoi_dry`, `dpidz_sq`
+  in one kernel with the squaring kept as two steps; the FIXME top-level
+  overwrite kept as its own kernel after); `implicit_surface_stress_add_drag_coefficient`
+  (`ws`/`tau`/`ksrfturb` arrays became private scalars);
+  `wind_damping_rate` (host copy of `p%rdel(:ncol,pver)` into a local
+  array, since `p` is a host object -- to be replaced by the `pint`
+  interface of `gpu-port-vertical-diffusion-solver`);
+  `vertical_diffusion_tendencies` (`is_dry` per constituent evaluated on
+  the host into a logical array; tendencies `collapse(2)`/`collapse(3)`,
+  dry-basis conversion `* pdel / pdeldry` in the same order). The solver
+  schemes in the same file have no directives and stay on the host.
+- ccs_config `Depends.nvhpc`: `vertical_diffusion_interstitials.o`,
+  `diffusion_solver.o` in `GPU_SCHEME_OBJS`.
+- `build_capture_tests.sh` (user script, scratch): the own-source match for
+  ON-GPU now allows procedure prefixes (`pure`, `elemental`, ...); the five
+  `pure` schemes were labelled CALLEE-GPU although their kernels are their
+  own (`LastTest.log` `file=diffusion_solver.F90`).
+
+Verification:
+- capture_uw_vdiff (c07d) replays, CPU and GPU, zero tolerance: 18/18;
+  all nine ON-GPU. `vertical_diffusion_sponge_layer` and
+  `eddy_diffusivity_adjustment_above_pbl` stay CPU-ONLY in the replay
+  because their kernels are conditional (sponge off, default free-trop
+  scaling), not because they are unported.
+- xdsl99gpu (nvhpc gpu, compare=20261117-02ac990-nvhpc): 31/31 GPU tests
+  with a baseline bit-for-bit (all seven cam4 cases, `uw_vdiff_gpu`,
+  `hb_vdiff_gpu`); no false passes; zm_gpu/mcsp_gpu no baseline (their
+  suites have no vertical diffusion); F2000_C7 RUN FAIL (upstream).
+- Expected gain is small on its own (~0.5 s/day, mostly
+  `vertical_diffusion_tendencies`; perf14 `nsys`): the solver schemes
+  around them stay on the host until `gpu-port-vertical-diffusion-solver`
+  (~1.65 s/day more). No perf run for this step.
+- Process note: the first xdsl99gpu session died during SETUP -- the
+  login node's 10 GB per-user memory cgroup; `cam-sima-regression` SETUP
+  now uses `--parallel-jobs 4`.

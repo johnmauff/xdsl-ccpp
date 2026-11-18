@@ -78,12 +78,11 @@ measured data, and will drift as items are reassessed.
 | `zm-convr-init-gathered-outputs` | <1 day plus review (6 lines, regression run) | XS |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
 | `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
-| `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
-| `gpu-port-vertical-diffusion-solver` | 6-12 days (plain-array device path for `fin_vol_solve`/`TriDiagDecomp`, bit-for-bit with the operator code; three schemes; shared with `gpu-port-gw-orographic`) | M |
-| `gpu-port-tropopause-find` | 2-3 days (~900 lines of column code, module constants on the device, optional arguments, host callers kept working; rk_stratiform and rrtmgp replays) | S |
+| `gpu-port-vertical-diffusion-solver` | 8-12 days (column solver module bit-for-bit with `linear_1d_operators`; four schemes to `pint` interfaces; `p` construction split into its own scheme; uw_vdiff recapture; replays, CPU + GPU regressions; plan 2026-11-18 in the item) | M |
 | `cloud-optical-properties-drop-ppgrid` | ~1 day (replace `pcols` in 17 array dimensions, `pverp` in `cldclw`, drop `use ppgrid`; rk_stratiform CPU snapshot and GPU FPHYStest bit-for-bit; rerun the rk_stratiform capture and build its 11 replays) | XS |
 | `tropopause-find-untested-algorithms` | 1-3 days (a capture or replay that selects analytic, Stobie and WMO through `tropopause_findWithBackup`, or a pFUnit test; then port them like the other five and check CPU and GPU) | XS-S |
 | `cap-pulls-unwritten-device-data` | 1-3 days (track per variable whether any device scheme can write it; skip the pull at function/block entry when none does; cap_oracle cam4; GPU regression) | XS-S |
+| `cap-avoidable-syncs-ported-schemes` | 2-4 days (survey every cam4 cap `update` next to a GPU-ported scheme and classify its cause, read-only; fix `zm_conv_evap` (qsat_2D + per-point or callee-aware classification, `landfrac`); decide the generator option with the user; zm replay + GPU regression) | S |
 | `gpu-port-kessler-energy-utilities` | ~1 day (three pointwise kernels with present-or-copy clauses, `GPU_SCHEME_OBJS`, FKESSLER GPU run; optional capture replays) | XS |
 | `gpu-port-check-energy-chng` | 4-8 days (port CAM's `cam_thermo` `get_hydrostatic_energy` and its module data to the device, keep error printing on the host, plus `check_energy_zero_fluxes`; FKESSLER GPU and cam-suite regressions) | S-M |
 | `gpu-fphystest-kessler` | umbrella, ~16-28 days left: Kessler's 12 of `gpu-port-shared-utility-schemes` and `dropsonde-cuda-gdb-device-read` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
@@ -104,7 +103,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
 | `scheme-io-capture-new-tests` | 4-7 days of setup and checking, spread over runs (six capture runs: mcsp, cloud_water, FHIST_C4, gw_cam7, microp_aero_bam, tracer_data_test; replay results, driver gaps logged as their own items); not urgent | S |
 | `release-tagging` | 2-4 days (decide the xdsl-ccpp naming with the user; write the tagging skill + agent; dry run on the first candidate state) | S |
-| `gpu-tests-without-device-code` | cloud_water 2-4 days; trcdata_bam = `gpu-port-tropopause-find`; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review) | S-M |
+| `gpu-tests-without-device-code` | cloud_water 2-4 days; microp_aero_bam 10-20 days (ndrop_bam, nucleate_ice; upstream review); trcdata_bam done (tropopause_find) | S-M |
 | `untested-test-suites` | 2-4 days for rayleigh_friction + dry_adiabatic_adjust (testmods gnu/intel/nvhpc + _gpu, regression, baselines); tropopause_find and convection_permitting later | S |
 | `capture-cam-time-coord` | 3-6 days (move the time-coordinate logic `solar_irradiance_data` uses into atmospheric_physics behind `ccpp_io_reader`, current date as an argument; bit-for-bit FPHYStests; capture and replay CPU+GPU) | M |
 | `capture-tracer-data` | 2-4 weeks (`tracer_data` into atmospheric_physics with the date as an argument; history output out of the readers or skipped in replays; `gmean` for `prescribe_lower_boundary_conditions`; `string_utils` -> `atmos_phys_string_utils`; bit-for-bit FPHYStests; capture trcdata_bam and cam4, replay CPU+GPU) | M-L |
@@ -1426,6 +1425,12 @@ cam7: `convective_cloud_water`, `cloud_water_paths`); trcdata_bam via
 via `ndrop_bam_ccpp` and `nucleate_ice_ccpp` (CAM aerosol code, larger,
 needs upstream review). Each port: OpenACC in the `.F90`, object in
 `GPU_SCHEME_OBJS`, capture replay CPU and GPU, then the GPU test.
+Update 2026-11-18: `tropopause_find` has been on the GPU since 2026-11-10
+(`gpu-port-tropopause-find`), so `trcdata_bam_gpu` now runs real device
+code (its suite `suite_tracer_data_test.xml` calls it; BASELINE PASS in
+xdsl98gpu) -- done; `microp_aero_bam_gpu` gains it too (2 of 14 with
+`rebin_seasalt`). Left: cloud_water (still 0 of 4) and microp_aero_bam's
+`ndrop_bam_ccpp`/`nucleate_ice_ccpp`.
 
 **ID: `untested-test-suites`. atmospheric_physics test suites no CAM-SIMA
 test runs.** Added 2026-11-09. Of the 23 suites in
@@ -1446,7 +1451,7 @@ test runs.** Added 2026-11-09. Of the 23 suites in
   original settings (ask the atmospheric_physics developers how it was run).
 - `tropopause_find` (`tropopause_find`, `tropopause_diagnostics`, `qneg`):
   no snapshot found; would need one from CAM. Pairs with
-  `gpu-port-tropopause-find`. Later.
+  `gpu-port-tropopause-find` (port done 2026-11-10). Later.
 - `convection_permitting` (99 schemes): not an FPHYStest -- the physics of
   compset `CAM%MPASCP` (MPAS convection-permitting, analytic IC,
   `config_component.xml`); a later full-model regression or perf target.
@@ -2622,40 +2627,7 @@ Supporting items (not tracked elsewhere):
   `.false.` under `_OPENACC`) and a check at the top of
   `pumas_diagnostics_run` (atmospheric_physics) that returns
   `errflg = 1` while it is false.
-- `gpu-port-vertical-diffusion-simple` — **GPU ports of the vertical
-  diffusion schemes that do not call the solver.** Added 2026-11-08. Nine
-  small schemes, all replayable on CPU and GPU (F2000_C4, uw_vdiff,
-  hb_vdiff captures): `vertical_diffusion_prepare_inputs` (22 lines),
-  `vertical_diffusion_set_total_surface_stress` (26),
-  `compute_kinematic_fluxes_and_obklen` (44), and in
-  `diffusion_solver.F90` `vertical_diffusion_set_temperature_at_toa_default`
-  (14), `vertical_diffusion_set_dry_static_energy_at_toa_zero` (11),
-  `vertical_diffusion_interpolate_to_interfaces` (64),
-  `vertical_diffusion_wind_damping_rate` (20),
-  `implicit_surface_stress_add_drag_coefficient` (31),
-  `vertical_diffusion_tendencies` (51). Pointwise/column loops; the
-  `coords1d` components they read are passed as plain arrays. Gain: cam4
-  cap syncs around them (cap_oracle after `acc-copy-residency`:
-  `compute_kinematic_fluxes_and_obklen` 7, `set_total_surface_stress` 6,
-  `prepare_inputs` 4, `tendencies` 4, ... per step); the rest of the group
-  stays synced until `gpu-port-vertical-diffusion-solver`. Test: the three
-  replays CPU and GPU, then hb_vdiff/uw_vdiff GPU FPHYStest bit-for-bit
-  against the nvhpc CPU baseline.
-  Status 2026-11-16: batch 1 ported, uncommitted, not yet replayed:
-  `compute_kinematic_fluxes_and_obklen`,
-  `vertical_diffusion_set_total_surface_stress` and
-  `vertical_diffusion_prepare_inputs` (`th` on the device; the `coords1d`
-  `p` stays a host object, since its consumers, the solver and
-  `bretherton_park_diff`, run on the host). All three are in
-  `vertical_diffusion_interstitials.F90`. `vertical_diffusion_interstitials.o`
-  was taken out of Depends.nvhpc's GPU list again (2026-11-16, user), so the
-  RRTMGP GPU regression tests RRTMGP only; add it back with the replays.
-  - `capture_uw_vdiff` drivers are regenerated (c07d).
-  - `capture_F2000_C4` (c09e) is not regenerated yet.
-  - `capture_hb_vdiff` (c04c) cannot be regenerated: its case predates
-    the sima0_25_000 merge (no `wv_saturation` metadata), so it needs a
-    recapture.
-  Left: replays CPU+GPU, then batch 2 (the six in `diffusion_solver.F90`).
+- **ID: `gpu-port-vertical-diffusion-simple`. Resolved (2026-11-18)** -- CHANGELOG.md L16047.
 - `gpu-port-vertical-diffusion-solver` — **GPU ports of the three vertical
   diffusion schemes that call `fin_vol_solve`.** Added 2026-11-08.
   `vertical_diffusion_diffuse_dry_static_energy` (46 lines),
@@ -2673,18 +2645,78 @@ Supporting items (not tracked elsewhere):
   `kvq`/`cgh`-style syncs before the other two) and lets the whole vertical
   diffusion group stay on the device. Do after
   `gpu-port-vertical-diffusion-simple`.
-- `gpu-port-tropopause-find` — **GPU port of `tropopause_find`.** Added
-  2026-11-08 (split out of `gpu-port-shared-utility-schemes`). The run
-  routine (197 lines) calls `tropopause_findWithBackup` six times; those
-  use five algorithms (`twmo`, `climate`, `cpp`, `hybridstobie`,
-  `findChemTrop`) and `interpolateP/T/Z`, about 700 lines of column code
-  in `tropopause_find.F90`. Module constants (`cnst_*`) need `!$acc
-  declare` and an update after init; `tropP/T/Z` and `hstobie_*` are
-  optional all the way down (substitute locals in the dispatcher); the
-  public `tropopause_findWithBackup` must keep working from host callers
-  (present-or-copy clauses). Replays: rk_stratiform, rrtmgp. Gain: 9 cam4
-  cap syncs per step (cap_oracle after `acc-copy-residency`); used by
-  rk_stratiform and rrtmgp too.
+  **Plan agreed with the user 2026-11-18** (start after xdsl99gpu, the
+  `-simple` regression, is checked). User decisions: replace the
+  solver calls in the three schemes (diverges from upstream's
+  object-oriented structure; accepted), and change interfaces to remove
+  data movement (priority: no unnecessary data movement).
+  - Column solver: a new module of `!$acc routine seq` routines on plain
+    per-column arrays that reproduce `linear_1d_operators`' arithmetic
+    operation by operation (bit-for-bit, including its `+ 0` additions):
+    build (`diffusion_operator` `spr`/`sub` with default or fixed-layer
+    boundary terms, `deriv_diag`, `diagonal_operator` add of `coef_q`,
+    scalar `lmult_as_diag(-dt)`, `add_to_diag(1)`), decompose
+    (`new_TriDiagDecomp`: `ca`/`ze`/`dnom`) and solve (`decomp_left_div`,
+    with `BoundaryData` `apply_left` for the DSE top value). Uses: momentum
+    (u, v: `coef_q=tau_damp_rate`, `coef_q_diff=kvm*dpidz_sq`), DSE
+    (`kvh*dpidz_sq`, `upper_bndry=BoundaryFixedLayer(0)`,
+    `l_cond=BoundaryData(dse_top)`), tracers (`kvq*dpidz_sq`, decompose
+    once per column, then each diffused constituent). Same code path on
+    CPU and GPU. `linear_1d_operators` stays for GW until
+    `gpu-port-gw-orographic`, which can reuse the column routines.
+  - Interfaces: `diffuse_horizontal_momentum`, `diffuse_dry_static_energy`,
+    `diffuse_tracers` and `wind_damping_rate` take `pint`
+    (`air_pressure_at_interface`) instead of `p` (coords1d) and compute
+    the coordinates per column exactly as `new_Coords1D_from_int`:
+    `mid = 0.5*(ifc(k)+ifc(k+1))`, `del = ifc(k+1)-ifc(k)`,
+    `dst = mid(k+1)-mid(k)`, `rdel = 1/del`, `rdst = 1/dst` (replaces the
+    host `p%rdel` copy in `wind_damping_rate`). Host flags
+    (`do_diffusion_const`, `cnst_fixed_ubc`, `qmincg`) as plain arrays.
+  - Then split the `p` construction out of `vertical_diffusion_prepare_inputs`
+    into a new scheme listed only in suites whose schemes still read `p`
+    (`bretherton_park_diff`: cam5, uw_vdiff; `beljaars_add_updated_residual_stress`),
+    so cam4 no longer needs `pint` on the host for an unused `p`.
+  - Stages: (1) column module + the four schemes on `pint`, no OpenACC;
+    uw_vdiff recapture (old capture has `p`, not `pint`), CPU replays
+    bit-for-bit; (2) OpenACC, objects in `GPU_SCHEME_OBJS`, GPU replays
+    (check build log + binary time, `gpu_kernels.txt`); (3) the `p` split +
+    suite XMLs, generation for all suites, cap_oracle shows the cam4 `pint`
+    sync gone; (4) CPU nvhpc regression vs the baseline (the CPU path
+    changes), GPU regression, perf run.
+- **ID: `gpu-port-tropopause-find`. Resolved (2026-11-10, recorded 2026-11-18)** -- CHANGELOG.md L16015.
+- `cap-avoidable-syncs-ported-schemes` — **The cap syncs arguments of
+  GPU-ported schemes that the scheme never reads on the host.** Added
+  2026-11-18. Example, cam4 cap (xdsl98gpu MPAS cam4): `!$acc update
+  self(t, landfrac)` right before `zm_conv_evap_run`, which runs on the GPU.
+  `derive_memory_space.py` classifies each argument from the scheme's own
+  directives; two avoidable causes:
+  - `t`: in the scheme's `!$acc data copyin`, but also passed from host
+    code to `qsat` (`do k; call qsat(t(1:ncol,k), ...)`), so it is "host"
+    ("an either array the entry point also uses in host code") and the cap
+    refreshes the host copy. `qsat_vect` launches its own kernels with
+    `present` data, so the host copy is never read; the classifier cannot
+    see that from the call statement. Same pattern is likely wherever a
+    ported scheme calls a GPU-capable library routine (`qsat`,
+    `wv_saturation`, RTE) from host code.
+  - `landfrac`: unused by the scheme (`kemask = ke` always; `ke_lnd` unused
+    too), so it is in no clause, defaults to host, and is synced for nothing.
+  Fix for `zm_conv_evap`: replace the per-level loop with one `call
+  qsat(t, pmid, es, qs, ncol, pver)` (`qsat_2D`: 3 kernels instead of 3 per
+  level, same per-element `estblf_vect`/`svp_to_qsat_vect`, so bit-for-bit;
+  needs the full (ncol, pver) arrays, a section would make a host temporary).
+  That alone does not remove the `t` sync (still host code); options:
+  (a) per-point `qsat` (`qsat_line`, `!$acc routine seq`) inside the column
+  kernel -- check bit-for-bit with the vect path; (b) generator: classify an
+  actual argument passed from host code to a callee whose own directives make
+  it `present`/device (callee-aware classification; the sources are already
+  parsed) -- fixes the pattern everywhere. `landfrac`: add to the `copyin`
+  clause (no interface change) or drop `landfrac`/`ke_lnd` (cleaner,
+  diverges from upstream). First step (read-only, no runs): survey every
+  `update self/device` in the generated cam4 cap adjacent to a GPU-ported
+  scheme and classify its cause (unused argument, host use, library call
+  from host, neighbouring CPU scheme); ~95 updates run per step. Test: zm
+  replay CPU/GPU, cap_oracle diff, GPU regression; perf with the next
+  `nsys` run.
 - `cap-pulls-unwritten-device-data` — **The cap pulls device data no
   device scheme ever writes.** Added 2026-11-10 (`gpu-port-tropopause-find`
   cap_oracle). Once `tropopause_find` lists `lat` as `present`, latitude
