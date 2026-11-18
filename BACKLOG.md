@@ -44,6 +44,7 @@ measured data, and will drift as items are reassessed.
 | `composite-multi-package-scoping` | 6-12 days (needs a multi-package composite suite, e.g. CAM4/QPC4, before the scoping rules can be tested) | M |
 | `composite-forloop-index` | 2-4 days (loop index from `forLoop`; then drop RRTMGP's `next_call` hook and subcycle counter) | S |
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
+| `nlcomp-multitape-duplicate-namelist` | 1-2 days (decide upstream CIME fix vs a CAM-SIMA-side workaround; then a compare run to confirm NLCOMP PASS and that a planted namelist change is caught) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-number-concentration-compiler-diffs` | 2-5 days (number concentrations in the zm h1 output and a pairwise cprnc first; multi-step gnu/intel/nvhpc comparison of the number concentrations, DEBUG and NaN-init runs, read ZM's convtran/clamp/floor path for a real defect; decide tolerance or fix with the user) | S |
@@ -75,7 +76,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `pumas-refl-single-division-upstream` | <1 day plus PUMAS review (one-file PR, submodule bump) | XS |
 | `zm-convr-init-gathered-outputs` | <1 day plus review (6 lines, regression run) | XS |
-| `gpu-port-zm-convr` | 8-15 days (~2640-line scheme; gather/scatter over convecting columns, scalar `qsat_hPa` inside column loops, module state from `zm_conv_options`; GPU replay in capture_zm) | M |
 | `gpu-port-gw-orographic` | 8-15 days (`Coords1D` device handling or plain-array interface, `gw_common` path incl. `gw_drag_prof`/`gw_diffusion` tridiagonal solves as device routines, both GW schemes; full-model test only until their drivers build) | M |
 | `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
 | `gpu-port-vertical-diffusion-simple` | 2-4 days (nine small column/pointwise schemes, three replays CPU and GPU, hb_vdiff/uw_vdiff GPU FPHYStest) | S |
@@ -232,6 +232,7 @@ separately), CHANGELOG.md L5850.
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
+| `nlcomp-multitape-duplicate-namelist` | NLCOMP FAILs on every compare run of `FKESSLER se_cslam_multitape` because CIME's namelist parser rejects the repeated `hist_file_config_nl` group, so real namelist changes in that test go unnoticed | XS; found 2026-11-18 (xdsl98; failing since at least xdsl73gpu) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `zm-number-concentration-compiler-diffs` | zm FPHYStest on intel differs from the gnu snapshot only in the hydrometeor number concentrations, cloud liquid number by up to 1.4e-6 (relative) -- too large for the user to accept as rounding | S; found 2026-11-09 (xdsl76i); may be a real defect that feeds into other fields later; same pattern in MCSP: `mcsp-number-concentration-compiler-diffs` | -- |
@@ -301,6 +302,34 @@ pytest tests); TestStatus files are not changed. Open: report `mpibind`'s
 exit status to CISL; upstream the `cs.status` change, and fix the
 standalone post-run check itself (`_post_run_check`), to ESMCI/cime. The
 failures it hid are the five items below; none is new since xdsl50n.
+
+**`nlcomp-multitape-duplicate-namelist`** -- added 2026-11-18. The NLCOMP
+phase of `SMS_Ln9.ne3pg3_ne3pg3_mg37.FKESSLER.derecho_nvhpc.cam-outfrq_se_cslam_multitape`
+(and its `_gpu` twin) FAILs in every regression run with `compare=`: xdsl73gpu,
+78gpu, 91gpu, 94gpu, 95gpu and xdsl98 (CPU) at least; generate-only runs
+(xdsl64n, 66n, 96n) show PASS because they do not compare. Cause: the test
+writes several history tapes, so CAM-SIMA's `atm_in` legitimately has one
+`&hist_file_config_nl` group per tape (three here), and CIME's parser
+(`cime/CIME/compare_namelists.py` `_parse_namelists`, the
+`Duplicate namelist` `expect`, ~L277) rejects a repeated group. The
+exception surfaces in `case_cmpgen_namelists` (`_do_full_nl_comp` ->
+`is_namelist_file` assertion) and is recorded as NLCOMP FAIL with a
+traceback in TestStatus.log, not a diff. No real difference behind it in
+xdsl98: `atm_in` is byte-identical to the `20261117-02ac990-nvhpc`
+baseline, `drv_in` MATCHes, `nuopc.runconfig` differs only in case name,
+model version, run dir and log timestamps. The harm: the FAIL is ignored
+as routine, so a real namelist change in this test would be missed (the
+user had not realized it was failing). Options: (a) upstream (ESMCI/cime)
+-- let `_parse_namelists` accept repeated groups (Fortran allows reading
+the same group several times; compare them as an ordered list per name);
+(b) CAM-SIMA side -- give each tape's group a distinct name or one group
+with per-tape arrays (changes CAM-SIMA's history namelist format, larger);
+(c) interim -- the regression agent's Step 6 compares this test's CaseDocs
+itself and reports the result instead of the bare FAIL. (a) looks
+cleanest; check whether a newer cime (>= 6.6.2, see
+`derecho-false-run-pass`) already handles it. Test: a compare run with
+NLCOMP PASS, plus a deliberately changed `atm_in` value to confirm it is
+caught.
 
 **`nvhpc-ncdata-roundoff`** -- nvhpc FPHYStest cases `gw_cam4`, `hb_vdiff`,
 `kessler`, `microp_aero_bam`, `rk_stratiform`, `rrtmgp` and `uw_vdiff` abort on
@@ -2496,15 +2525,7 @@ Supporting items (not tracked elsewhere):
   regression).
 - **ID: `capture-gpu-status-own-kernels`. Resolved (2026-11-11)** -- CHANGELOG.md L14950.
 - **ID: `gpu-port-hack-convect-shallow`. Resolved (2026-11-11)** -- CHANGELOG.md L14909.
-- `gpu-port-zm-convr` — **GPU port of `zm_convr`.** Added 2026-11-11
-  (the only CPU-ONLY driver left in capture_zm after the `zm_conv_evap`
-  port). `schemes/zhang_mcfarlane/zm_convr.F90` (~2640 lines), the deep
-  convection core of the `zm` suite (and cam4). Needs
-  `gpu-port-wv-saturation`: `qsat_hPa` is called per point inside column
-  loops (cape/buoyancy and the cloud-top search). Gathers convecting
-  columns (`lengath`) before the core, so the port needs the gather and
-  scatter on the device; module settings come from `zm_conv_options`.
-  Test: its GPU replay (capture_zm `test_zm_convr`, zero tolerance).
+- **ID: `gpu-port-zm-convr`. Resolved (2026-11-18)** -- CHANGELOG.md L15944.
 - **ID: `gpu-port-zm-conv-evap`. Resolved (2026-11-11)** -- CHANGELOG.md L14878.
 - `gpu-port-gw-orographic` — **GPU port of
   `gravity_wave_drag_prepare_profiles` and

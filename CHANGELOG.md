@@ -15940,3 +15940,74 @@ Verified:
   32.6 -> 22.3 s/day; RRTMGP transfers in scheme/RTE code 6.1 -> ~0.48
   s/day. Leftovers: `rrtmgp-flux-object-residency`,
   `rrtmgp-rte-validation-transfers`, `rrtmgp-gas-concs-device-vmr`.
+
+## `gpu-port-zm-convr`: `zm_convr` and `zm_conv_cloud_top` on the GPU (2026-11-18)
+
+ZM's deep-convection core now runs entirely on the GPU (the rest of the
+ZM chain -- `zm_conv_evap`, `momtran`, `convtran` -- was already there).
+Ported in four replay-tested stages; no `.meta` change.
+
+atmospheric_physics (`schemes/zhang_mcfarlane/`):
+- `zm_conv_cloud_top`: two kernels in one data region (fill `jctop` with
+  `pver`, then the scatter `jctop(ideep(i)) = jt(i)`; `ideep` entries are
+  distinct, so no conflicts).
+- `zm_convr`:
+  - Module settings read on the device (`rl`, `cpres`, `capelmt`,
+    `tfreez`, `eps1`, `limcnv`, `lparcel_pbl`, ...): `!$acc declare
+    create` + `update device` at the end of `zm_convr_init` (the
+    `wv_saturation` pattern).
+  - `entropy`, `ientropy`, `qsat_hPa`: `!$acc routine seq`.
+  - `ientropy` returns a `converged` flag instead of writing `errmsg`;
+    `parcel_dilute` records the first failed call per column, counts
+    failures with a reduction, and writes the old-format message on the
+    host only when there is one (first failing column). Accepted by the
+    user: the message may name a different point than before (it used to
+    be the last failure in loop order); `errflg` unchanged.
+  - `zm_convr_run`: one data region for the whole routine
+    (present-or-copy arguments, `jt` `copy` since it is written only when
+    some column convects). Gather in one `!$acc serial` loop (keeps the
+    column order of `ideep`); `copy(lengath)` is the only per-call scalar
+    back to the host. The no-convection early return became an
+    `if (lengath > 0)` block -- a `goto` out of the data region does not
+    compile with `-acc` (NVFORTRAN-S-0155).
+  - `buoyan_dilute`, `parcel_dilute`, `cldprp`, `closure`, `q1q2_pjr`:
+    every nest a kernel. Nests with a level recurrence or a per-column
+    temporary run one column per thread with `!$acc loop seq` levels in
+    the original order (loop interchange; bit-for-bit since each
+    column's operations keep their order); pointwise nests
+    `collapse(2)`; per-iteration scalars `private`.
+  - Cross-column quantities kept exact: `khighest`/`klowest` (cldprp),
+    `kmin`/`kmax` (closure) and `ktm`/`kbm` (q1q2_pjr) are min/max
+    reductions. `q1q2_pjr`'s `ktm` loop has no per-column mask, so a
+    column's tendencies above its own top depend on the shallowest top
+    of all gathered columns -- the bound must stay global. `cldprp`'s
+    `kount`/`goto 690` early exit (taken when all columns are done) was
+    dropped: it only skipped iterations masked by `done(i)`.
+- ccs_config `machines/Depends.nvhpc`: `zm_conv_cloud_top.o`,
+  `zm_convr.o` in `GPU_SCHEME_OBJS`.
+
+Verification:
+- Replays, zero tolerance, CPU and GPU: capture_mcsp
+  `test_zm_conv_cloud_top`, capture_zm `test_zm_convr` (ON-GPU, 196
+  kernels in six routines). Trap: the first stage-4 GPU replay "passed"
+  on the stage-3 binary because the driver failed to compile and
+  `build_capture_tests.sh` keeps going (`-k`); check the build log and
+  binary time.
+- xdsl98 (nvhpc CPU, compare=20261117-02ac990-nvhpc): 34/35 RUN and
+  BASELINE PASS (F2000_C7 RUN FAIL, upstream). zm and mcsp are false RUN
+  PASSes (their known nvhpc ncdata_check abort,
+  `zm-number-concentration-compiler-diffs`), with step-1 history
+  bit-for-bit. NLCOMP FAIL on `se_cslam_multitape` is a CIME parser
+  problem, not a difference (`nlcomp-multitape-duplicate-namelist`).
+- xdsl98gpu (nvhpc gpu, same baseline): 31/31 GPU tests with a baseline
+  bit-for-bit, including all seven cam4 cases (MPAS and SE, DEBUG); no
+  false passes; F2000_C7 RUN FAIL (upstream). zm_gpu/mcsp_gpu have no
+  baseline: cprnc of their step-1 `h1i` files against xdsl98 is
+  IDENTICAL (57 and 37 fields, 0 differences).
+- perf17 (MPAS 120 km cam4, one GPU node, `acc_time`, vs perf15 also
+  `acc_time`): `phys_run1` 22.28 -> 15.72 s/day (-29%), run time 101.2 ->
+  93.8 s/day (-7.3%). ZM's kernels take 0.12 s/day for ~6.5 s/day of CPU
+  time. Its cap syncs (0.33 s/day) moved partly to the neighbouring CPU
+  diagnostics schemes; all cap syncs 5.29 -> 5.20. The MPAS dycore (63
+  s/day, CPU cores) is now 71% of the GPU node's run time. Report:
+  `/glade/work/dennis/cam_sima_perf/perf17.md`.
