@@ -571,30 +571,53 @@ class KeywordCallOp(IRDLOperation):
 
 @irdl_op_definition
 class AccDataBeginOp(IRDLOperation):
-    """Emit !$acc data copy(...) copyin(...) copyout(...) present(...) directive."""
+    """Emit !$acc data copy(...) copyin(...) copyout(...) present(...) directive.
+
+    check_only: the region only asserts that its variables are already on
+    the device and moves no data (present / alloc clauses only), so a build
+    may leave it out; the printer emits it only in builds that enable GPU
+    residency checks.
+    """
     name = "ccpp_utils.acc_data_begin"
     copy_arrays    = var_operand_def()   # arrays to copy both ways (inout)
     copyin_arrays  = var_operand_def()   # arrays to copy host → device only
     copyout_arrays = var_operand_def()   # arrays to copy device → host only
     present_arrays = var_operand_def()   # arrays asserted already on device
+    check_only     = opt_prop_def(UnitAttr)
 
     irdl_options = [AttrSizedOperandSegments()]
 
-    def __init__(self, copy=None, copyin=None, copyout=None, present=None):
-        super().__init__(operands=[
-            list(copy    or []),
-            list(copyin  or []),
-            list(copyout or []),
-            list(present or []),
-        ])
+    def __init__(self, copy=None, copyin=None, copyout=None, present=None,
+                 check_only=False):
+        super().__init__(
+            operands=[
+                list(copy    or []),
+                list(copyin  or []),
+                list(copyout or []),
+                list(present or []),
+            ],
+            properties={"check_only": UnitAttr()} if check_only else {},
+        )
+
+    def verify_(self) -> None:
+        if self.check_only is not None and (
+            self.copy_arrays or self.copyin_arrays or self.copyout_arrays
+        ):
+            raise VerifyException(
+                "acc_data_begin: a check_only region may only have present operands"
+            )
 
 @irdl_op_definition
 class AccDataEndOp(IRDLOperation):
-    """Emit !$acc end data directive."""
+    """Emit !$acc end data directive. check_only: ends a check_only
+    AccDataBeginOp region (printed under the same condition)."""
     name = "ccpp_utils.acc_data_end"
+    check_only = opt_prop_def(UnitAttr)
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, check_only=False):
+        super().__init__(
+            properties={"check_only": UnitAttr()} if check_only else {}
+        )
 @irdl_op_definition
 class AccUpdateSelfOp(IRDLOperation):
     """Emit !$acc update self(...) — copies variables from GPU to CPU."""
@@ -692,26 +715,46 @@ class AccParallelOp(IRDLOperation):
 
 @irdl_op_definition
 class OmpTargetDataBeginOp(IRDLOperation):
-    """Emit !$omp target data map(tofrom:...) map(alloc:...) directive."""
+    """Emit !$omp target data map(tofrom:...) map(alloc:...) directive.
+
+    check_only: the region only asserts that its variables are already on
+    the device and moves no data (present / alloc clauses only), so a build
+    may leave it out; the printer emits it only in builds that enable GPU
+    residency checks.
+    """
     name = "ccpp_utils.omp_target_data_begin"
     tofrom_arrays = var_operand_def()   # copy both ways (equivalent to copyin+copyout)
     alloc_arrays  = var_operand_def()   # already on device (equivalent to present)
+    check_only    = opt_prop_def(UnitAttr)
 
     irdl_options = [AttrSizedOperandSegments()]
 
-    def __init__(self, tofrom=None, alloc=None):
-        super().__init__(operands=[
-            list(tofrom or []),
-            list(alloc  or []),
-        ])
+    def __init__(self, tofrom=None, alloc=None, check_only=False):
+        super().__init__(
+            operands=[
+                list(tofrom or []),
+                list(alloc  or []),
+            ],
+            properties={"check_only": UnitAttr()} if check_only else {},
+        )
+
+    def verify_(self) -> None:
+        if self.check_only is not None and self.tofrom_arrays:
+            raise VerifyException(
+                "omp_target_data_begin: a check_only region may only have alloc operands"
+            )
 
 @irdl_op_definition
 class OmpTargetDataEndOp(IRDLOperation):
-    """Emit !$omp end target data directive."""
+    """Emit !$omp end target data directive. check_only: ends a check_only
+    OmpTargetDataBeginOp region (printed under the same condition)."""
     name = "ccpp_utils.omp_target_data_end"
+    check_only = opt_prop_def(UnitAttr)
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, check_only=False):
+        super().__init__(
+            properties={"check_only": UnitAttr()} if check_only else {}
+        )
 
 @irdl_op_definition
 class OmpTargetUpdateFromOp(IRDLOperation):

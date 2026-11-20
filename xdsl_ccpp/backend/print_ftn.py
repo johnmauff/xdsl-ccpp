@@ -135,6 +135,19 @@ from xdsl_ccpp.util.ccpp_conventions import local_name as recorded_local_name
 
 _MAX_LINE_LEN = 99
 
+# Preprocessor macro of GPU builds: OpenACC directives are compiled under it.
+_GPU_BUILD_MACRO = "USE_GPU"
+# Preprocessor macro that enables GPU residency checks: check_only data
+# regions (present()-only assertions, no data movement) are compiled under it
+# instead, so production GPU builds skip them. A host defines it in GPU
+# builds that want "not present" aborts (e.g. DEBUG builds).
+_GPU_PRESENT_CHECKS_MACRO = "CCPP_GPU_PRESENT_CHECKS"
+
+
+def _gpu_guard(op) -> str:
+    """The macro an OpenACC data begin/end op is compiled under."""
+    return _GPU_PRESENT_CHECKS_MACRO if op.check_only is not None else _GPU_BUILD_MACRO
+
 
 def wrap_paren_list(
     prefix: str, items: list, suffix: str, max_col: int, cont_indent: str,
@@ -1237,7 +1250,7 @@ class ftnPrintContext:
                 copyin_names  = [self._get_variable_name_for(v) for v in op.copyin_arrays]
                 copyout_names = [self._get_variable_name_for(v) for v in op.copyout_arrays]
                 present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
-                self.print("#ifdef USE_GPU", use_prefix=False)
+                self.print(f"#ifdef {_gpu_guard(op)}", use_prefix=False)
                 if not copy_names and not copyin_names and not copyout_names and not present_names:
                     self.print("!$acc data")
                 else:
@@ -1249,7 +1262,7 @@ class ftnPrintContext:
                     ])
                 self.print("#endif", use_prefix=False)
             case CCPPAccDataEndOp():
-                self.print("#ifdef USE_GPU", use_prefix=False)
+                self.print(f"#ifdef {_gpu_guard(op)}", use_prefix=False)
                 self.print("!$acc end data")
                 self.print("#endif", use_prefix=False)
             case CCPPAccEnterDataOp():
@@ -1546,6 +1559,8 @@ class ftnPrintContext:
             case CCPPOmpTargetDataBeginOp():
                 tofrom_names = [self._get_variable_name_for(v) for v in op.tofrom_arrays]
                 alloc_names  = [self._get_variable_name_for(v) for v in op.alloc_arrays]
+                if op.check_only is not None:
+                    self.print(f"#ifdef {_GPU_PRESENT_CHECKS_MACRO}", use_prefix=False)
                 if not tofrom_names and not alloc_names:
                     self.print("!$omp target data")
                 else:
@@ -1553,8 +1568,14 @@ class ftnPrintContext:
                         ("map(tofrom:", tofrom_names, ""),
                         ("map(alloc:",  alloc_names,  ""),
                     ])
+                if op.check_only is not None:
+                    self.print("#endif", use_prefix=False)
             case CCPPOmpTargetDataEndOp():
+                if op.check_only is not None:
+                    self.print(f"#ifdef {_GPU_PRESENT_CHECKS_MACRO}", use_prefix=False)
                 self.print("!$omp end target data")
+                if op.check_only is not None:
+                    self.print("#endif", use_prefix=False)
             case CCPPOmpTargetUpdateFromOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_omp_directive("target update", [("from", var_names)])

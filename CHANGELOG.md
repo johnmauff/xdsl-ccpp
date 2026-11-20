@@ -16092,3 +16092,536 @@ Verification:
 - Process note: the first xdsl99gpu session died during SETUP -- the
   login node's 10 GB per-user memory cgroup; `cam-sima-regression` SETUP
   now uses `--parallel-jobs 4`.
+
+## `gpu-port-vertical-diffusion-solver`: the three solver schemes on the GPU, plain column solver, `pint` interfaces (2026-11-18)
+
+User decisions (2026-11-18): replace the object-oriented solver calls in
+these schemes (diverges from upstream's structure), and change interfaces to
+remove data movement.
+
+atmospheric_physics:
+- New `phys_utils/atmos_phys_fin_vol_solver.F90`: `fin_vol_coords_column`
+  (Coords1D(pint): mid, del, rdel, rdst), `fin_vol_decomp_column` (build +
+  LU decomposition of I - dt*(L + diag(coef_q)) with L the finite-volume
+  diffusion operator, coefficient kv*dpidz_sq; default or fixed-layer top
+  boundary) and `fin_vol_left_div_column` (+ `_3d` for q(:,:,m)): the
+  arithmetic of `linear_1d_operators` (`diffusion_operator`, `deriv_diag`,
+  `add`, `lmult_as_diag`, `add_to_diag`, `new_TriDiagDecomp`,
+  `decomp_left_div`, `BoundaryData`) and `coords_1d`, operation by
+  operation, on plain arrays per column (whole arrays + column index, the
+  `tropopause_find` pattern); `!$acc routine seq`. The operator code's
+  `+ 0` additions are left out (numerically equal).
+  `linear_1d_operators`/`vdiff_lu_solver` stay for the GW schemes.
+- `diffusion_solver.F90/.meta`: `diffuse_horizontal_momentum`,
+  `diffuse_dry_static_energy`, `diffuse_tracers` and `wind_damping_rate`
+  take `pint` (`air_pressure_at_interface`) instead of `p` (coords1d) and
+  compute the coordinates per column. The three solver schemes are each one
+  data region + one column kernel (levels, iterations and constituents
+  `loop seq`, in the former statement order per column); momentum decomposes
+  once for v and u. Momentum's unused `t` is in its `copyin` so it is not
+  taken for host data. Tracers' `all()`/`merge` became explicit loops (same
+  NaN behaviour).
+- `vertical_diffusion_interstitials.F90/.meta`: the `p` construction and
+  its `finalize` moved from `vertical_diffusion_prepare_inputs` into a new
+  scheme, `vertical_diffusion_pressure_coordinates`, listed only where `p`
+  is still read (`suite_cam5.xml`, `suite_vdiff_bretherton_park.xml`, for
+  `bretherton_park_diff`); `prepare_inputs` now only computes `th`.
+- `bretherton_park_diff.F90` (host scheme that calls the four schemes
+  directly): `pint=pint` in place of `p=p`, and local copies of kvm, kvh,
+  cgh, cgs and tauresx/y passed to the now-GPU callees. Without them
+  (xdsl101gpu first run: uw_vdiff_gpu BASELINE DIFF, UW fields O(1)) the
+  callees' present-or-copy clauses used the stale device copies of arrays
+  this host scheme had just changed (`host-caller-device-callee-audit`).
+- ccs_config `Depends.nvhpc`: `atmos_phys_fin_vol_solver.o` in
+  `GPU_SCHEME_OBJS`.
+
+Verification:
+- xdsl100 (nvhpc CPU, compare=20261117-02ac990-nvhpc, the new
+  `/cam-sima-regression tests=` option: hb_vdiff, uw_vdiff, 5 SE cam4,
+  2 MPAS cam4): 8/9 BASELINE PASS against the old operator code (MPAS
+  cam4 QPC4 still queued at the time of writing); first uw_vdiff build
+  failed on `bretherton_park_diff`'s `p=p` (fixed, then PASS).
+- capture_uw_vdiff c13a replays CPU and GPU: 18/18 (the 19th,
+  `hb_diff_prepare_vertical_diffusion_inputs`, needs CAM's `ref_pres`);
+  the four schemes ON-GPU, `bretherton_park_diff` CALLEE-GPU.
+- xdsl101gpu (nvhpc gpu, same baseline, `tests=` the same 9): 9/9
+  BASELINE PASS after the `bretherton_park_diff` copies; no false passes.
+- cap_oracle (MPAS cam4 GPU): `cam4_physics_after_coupler` 19 -> 12
+  `update` syncs per step against xdsl99gpu's cap (the `pint` pull and the
+  solver schemes' syncs gone); 4 one-time init syncs added (`ubc_mmr`,
+  `cnst_fixed_ubc`, `do_diffusion_const` now device data).
+- perf18 (MPAS 120 km cam4, one GPU node, acc_time, vs perf17): phys_run2
+  6.39 -> 4.70 s/day (-26%), run time 93.78 -> 92.37; physics CPU time
+  ~14.5 -> ~12.8 s/day. `vertical_diffusion_tendencies_diagnostics`'s sync
+  grew 0.21 -> 0.50 s/day (host diagnostics now pull the tendencies).
+  Report: `/glade/work/dennis/cam_sima_perf/perf18.md`.
+
+## `gpu-port-rk-stratiform`: the Rasch-Kristjansson stratiform cloud group on the GPU (2026-11-18)
+
+User decisions (2026-11-18): next target after the vertical diffusion
+solver (keep removing CPU computation; `gpu-history-accumulate` not yet);
+accept the changed `cfint2` error column, but keep it revisitable
+(`cloud-sedimentation-cfint2-error-column`). All schemes of the group now
+run on the GPU (rk_stratiform replays: every scheme ON-GPU).
+
+atmospheric_physics:
+- Stage 0 (`cloud-optical-properties-drop-ppgrid`):
+  `to_be_ccppized/cloud_optical_properties.F90` no longer uses CAM's
+  `ppgrid` (`pcols` dimensions -> `ncol`, `cldclw` takes `(ncol, pver+1)`),
+  so the rk_stratiform schemes get replay drivers (capture
+  capture_rk_stratiform c14a: 17 replays, none skipped).
+- `cloud_optical_properties.F90`: `rel_point`/`rei_point`, `routine seq`
+  per-point forms of `reltab`/`reitab` (the `retab` table and drop sizes
+  are module parameters); `reltab`/`reitab` loop over them, same arithmetic.
+- `rk_stratiform.F90`: every interstitial is a kernel (`check_qtlcwat`
+  reads its init flags in an `!$acc serial`; `sedimentation`, `detrain`,
+  `external_forcings`, `condensate_repartioning`,
+  `prognostic_cloud_water_tendencies`, `save_qtlcwat`,
+  `cloud_optical_properties` (rel/rei per point; unused `ps`/`pmid` in its
+  `copyin`)). `cloud_fraction_perturbation` is one data region around its
+  direct call to `compute_cloud_fraction_run` (whole arrays, so the
+  callee's present-or-copy finds them) plus two kernels -- this also ends
+  the host-caller hazard listed in `host-caller-device-callee-audit`.
+  `rk_stratiform_pumas_optics_inputs.F90` and
+  `utilities/cloud_condensate_floor.F90`: kernels.
+- `cloud_particle_sedimentation.F90`: one column kernel (fall velocities,
+  liquid and ice fluxes, limits, tendencies, surface fluxes; `cldab` still
+  reset at every level, as before); `getflx`/`cfdotmc`/`cfint2` became
+  `routine seq` column versions on whole arrays + column index;
+  `minmod`/`medan` `routine seq`; module settings `declare create` +
+  `update device` in init. `cfint2`'s error is a per-column flag reported
+  on the host (names the last failing column over all levels, not the last
+  at the first failing level; the out-of-range read in that case is gone).
+- `prognostic_cloud_water.F90`: one column kernel calling a new `routine
+  seq` `prognostic_cloud_water_column` (levels from `top_lev`, the
+  iterations of each level, in the original order per column; columns are
+  independent). `findsp_vc` -> per-point `findsp`, vector `qsat(gam=)` ->
+  `qsat_line` (same arithmetic per point); `findmcnew` per point (the
+  active-column gather became `cwm > 1.e-20`; inactive points still keep
+  `pracwo`/`psacwo`/`psacio`); `relhum_min_adj` inline; `heavy*` `routine
+  seq`. Errors (findsp, empty RH cloud, negative rcwn/rliq/rice) are
+  recorded per column and the host reports the one the original loops met
+  first, with the same `errmsg`/`iulog` text and values. The outputs
+  `fwaut`, `fsaut`, `fracw`, `fsacw`, `fsaci` are now assumed-shape `(:,:)`
+  (were `(ncol,pver)`): the cap passes a section, so an explicit-shape dummy
+  got a temporary, the scheme's `copyout` filled that, and the cap's stale
+  device copy later overwrote the host values (xdsl102gpu first run: only
+  those history fields differed; replays cannot see it).
+- Level values are kept in scalars and stored once (see below).
+- ccs_config `Depends.nvhpc`: `rk_stratiform.o`,
+  `rk_stratiform_pumas_optics_inputs.o`, `cloud_condensate_floor.o`,
+  `cloud_optical_properties.o`, `cloud_particle_sedimentation.o`,
+  `prognostic_cloud_water.o` in `GPU_SCHEME_OBJS`.
+
+nvfortran 25.9 device-code bug (found in the sedimentation port): in
+`cfdotmc_column`, `fdot(i,k) = <quartic>` followed by
+`fdot(i,k) = medan(fdot(i,k), ...)` compiled with no code for the first
+statement (PTX: no division, no store) and `medan` read the stale
+`fdot(i,k)`; the GPU replay differed at a few points (CPU passed; an exact
+Python evaluation matched the CPU). A debug read between the statements
+hid it. Fix: compute into a local scalar and store once; the ported RK
+code follows that rule throughout.
+
+Verification:
+- capture_rk_stratiform (c14a) replays, CPU and GPU, zero tolerance: all
+  pass, every scheme of the group ON-GPU (`cloud_particle_sedimentation`,
+  `prognostic_cloud_water`, `rk_stratiform_cloud_optical_properties`,
+  `rk_stratiform_cloud_fraction_perturbation`, ...). Error paths are not
+  exercised by the replays.
+- xdsl102 (nvhpc CPU subset, compare=20261117-02ac990-nvhpc;
+  rk_stratiform, se_cam4, analy_ic_cam4): 8/8 PASS BASELINE. xdsl102gpu
+  (same, gpu, vs the CPU baseline): 8/8 PASS BASELINE after the `fwaut`...
+  `fsaci` assumed-shape fix (the first run failed BASELINE on those fields in
+  rk_stratiform_gpu and the MPAS GPU cases).
+- perf19 (MPAS 120 km cam4, one GPU node, acc_time, vs perf18): phys_run1
+  15.76 -> 12.87 s/day (-18%); run time 92.37 -> 91.56 (a slow dycore rank
+  added 2.1 s). The RK group's GPU time is ~0.1 s/day (prognostic_cloud_water
+  0.073, sedimentation 0.031) for ~2.9 s/day of CPU time removed; cap syncs
+  5.15 -> 4.63 s/day (-0.74 for the ported schemes, partly moved to the host
+  diagnostics schemes, e.g. rk_stratiform_prognostic_cloud_water_tendencies_
+  diagnostics 0.089 -> 0.143). Physics left on the CPU cores ~10.6 s/day
+  (perf18 12.8); 94 of 159 cam4 schemes have `!$acc`. perf19 predates the
+  `fwaut`...`fsaci` dummy fix (a few extra transfers in
+  prognostic_cloud_water_run). Report: `/glade/work/dennis/cam_sima_perf/perf19.md`.
+
+## `gpu-kernel-launch-reduction` (part): per-point saturation in the GPU schemes, no vector qsat per level (2026-11-19)
+
+User decisions (2026-11-19): from the perf20 nsys trace (wv_saturation launches
+and transfers); per-point `qsat_line` inside the callers' kernels (option b)
+in all four call sites, not `qsat_2D`.
+
+perf20 (rank 0, per simulated day): `qsat_vect` was called 10,998 times
+(~225 per step) from per-level loops, each call a present-or-copy data region,
+two device temporaries and 3-6 kernels: ~33k launches (53% of all) and 2.0 s
+of host wall for 0.108 s of kernel time.
+
+atmospheric_physics:
+- `zm_conv_evap.F90`, `compute_cloud_fraction.F90` (cam4 `qsat` branch): the
+  per-level `qsat` loop is one `collapse(2)` kernel calling the per-point
+  `qsat` (`qsat_line`, `routine seq`). The `cldfrc_ice` branch keeps its vector
+  `qsat_water`/`svp_ice_vect` calls: their GoffGratch vector forms round
+  differently from the per-point ones (`log_tboil - log10(t)` vs
+  `log10(tboil/t)`).
+- `hack_convect_shallow.F90`: the setup `qsat(..., gam=)` moved into the
+  existing `sb`/`hb`/`hbs` kernel; inside `kloop` the pack kernel, the vector
+  `qsat` over `2*ncol` and the scatter kernel are one kernel (two `qsat_line`
+  calls per thread; the `vtemp` scratch still gets the values the vector call
+  left).
+- `vertical_diffusion_diagnostic_utils.F90` (host diagnostics): plain host
+  `do k / do i` loops calling `qsat_line` (no device round trip per level).
+
+Verification:
+- Replays CPU and GPU (hack_convect_shallow, zm_conv_evap,
+  compute_cloud_fraction): pass.
+- xdsl103gpu (gpu, compare=20261117-02ac990-nvhpc; rk_stratiform, se_cam4,
+  analy_ic_cam4): 8/8 BASELINE PASS.
+- perf21 (MPAS 120 km cam4, one GPU node, clean, vs perf10 CPU): RunPhase1
+  79.00 s/day (perf10 GPU 120.29); phys_run1 7.56, phys_run2 4.25; per-rank
+  mean physics 11.50 s/day, ~0.5 s below perf20's unprofiled ranks (within
+  noise for one run each). perf21 is the clean GPU `vs=` reference. Report:
+  `/glade/work/dennis/cam_sima_perf/perf21.md`.
+
+## `gpu-port-gw-orographic` (cam4): gravity wave drag profiles and the orographic source on the GPU, `pint` interfaces (2026-11-19)
+
+User decisions (2026-11-19): plan cam4 now, cam7 later; `Coords1D` handled as
+for the vertical diffusion solver (schemes take `pint` and compute the
+coordinates per column with `atmos_phys_fin_vol_solver`).
+
+atmospheric_physics:
+- `gw_common.F90`: new `gw_drag_prof_column` (`routine seq`, whole arrays +
+  column index): the former array code per column in the same statement
+  order, band as scalars (`ngwv`, `kwv`, `effkwv`), all optional arguments,
+  `kbot_src`/`kbot_tend` passed in as the all-column maxima; level values in
+  scalars and stored once; wave sums in wave order. `gw_drag_prof` keeps its
+  signature (cam7 callers unchanged) and is a host loop over it, with
+  assumed-shape dummies (`c(:, -ngwv:)`, `tau(:, -ngwv:, :)`, ...) instead of
+  explicit-shape. `energy_change` -> host loop over `energy_change_column`.
+  Module data `gravit`, `rog`, `alpha`, `prndl`, `tau_0_ubc`: `declare
+  create` + `update device` in `gravity_wave_drag_common_init`.
+- `gw_diffusion.F90`: `gw_ediff_column`, `gw_diff_tend_column(_3d)` on the
+  `atmos_phys_fin_vol_solver` column routines (default boundaries over
+  `1:kbot`, the arithmetic of `fin_vol_lu_decomp`/`TriDiagDecomp`); no longer
+  uses `linear_1d_operators`, `vdiff_lu_solver`, `coords_1d`.
+  `gw_common.meta` dependencies follow.
+- `gravity_wave_drag_interstitials.F90/.meta`: `prepare_profiles` takes `pint`
+  and no longer outputs `p` (coordinates per column, as `Coords1D(pint)`); one
+  data region, zero-fill and `kvt_gw` kernels, one column kernel for
+  `rhoi`/`ni`/`nm`; its `timestep_final` is gone. New scheme
+  `gravity_wave_drag_pressure_coordinates` (builds `p` in run, frees it in
+  timestep_final) listed only in `suite_cam7.xml` and `suite_gw_cam7_se.xml`;
+  suites-py: the CAM7 sources declare it as `inputs`, the gravity wave
+  category runs it once (`py2sdf` GW sections of cam4/cam7 equal the XML).
+- `gravity_wave_drag_orographic.F90/.meta` (`p` -> `pint`): one data region,
+  four kernels: per column `effgw`/`hdsp`/coordinates; a per-level `any`
+  reduction of the source-region test; per column the source search (stops at
+  the first level where no column extends its source, as the former
+  all-column loop did, not relying on `zm` increasing), averages, unit vector,
+  `ubm`/`ubi`, `tauoro`, `tau` fill and southern-hemisphere factor
+  (`reduction(max:kbot_src)`); per column `gw_drag_prof_column`, tendency
+  sums, `energy_change_column` and outputs. `band_oro` stays on the host.
+- ccs_config `Depends.nvhpc`: `gravity_wave_drag_interstitials.o`,
+  `gravity_wave_drag_orographic.o`, `gw_common.o`, `gw_diffusion.o` in
+  `GPU_SCHEME_OBJS`.
+
+Verification:
+- Stage 1 (library only): capture_gw_cam4 c15a 10/10 and capture_gw_cam7 6/6
+  replays pass CPU and GPU. The stale generated `.cmake` source lists were
+  hand-patched to add `atmos_phys_fin_vol_solver.F90` (`.cmake.orig` kept);
+  regenerated by the next capture.
+- capture_gw_cam4 c15b (new interfaces): replays pass CPU and GPU,
+  `prepare_profiles` and `orographic` ON-GPU. capture_gw_cam7's
+  `test_gravity_wave_drag_prepare_profiles` is stale (old signature) until
+  gw_cam7 is recaptured.
+- xdsl104gpu (gpu, compare=20261117-02ac990-nvhpc; gw_cam4, se_cam4,
+  analy_ic_cam4): 8/8 BASELINE PASS.
+- xdsl104 (CPU, same baseline; gw_cam4, gw_cam7, se_cam4, analy_ic_cam4):
+  9/9 BASELINE PASS.
+
+## `gpu-port-prescribed-fields`: prescribed constituents filled on the device (2026-11-19)
+
+User decisions (2026-11-19): widen `gpu-port-prescribe-radiative-gases` to the
+cam4 schemes that write constituent slices (after the perf20 nsys analysis);
+`prescribed_aerosols` and `prescribe_radiative_gas_vertical_profiles` added when
+the code and the generated caps showed they keep the whole-array syncs
+otherwise.
+
+Each scheme changes one to three constituent slices but takes the whole
+constituent array, so while it ran on the host the cap synced the whole array
+(perf20 cam4, per simulated day: ~0.27 GB `const_array` down before the
+radiative-gas timestep_init and up at the end of the phase; 0.36 GB
+`constituents` + inputs down before `prescribed_ozone`; 0.27 GB `constituents`
+up after `prescribed_volcanic_aerosol`). File reads (`tracer_data`),
+interpolation, unit-string handling and history output stay on the host; only
+the per-point conversion and the constituent writes are kernels, with the same
+arithmetic. `!$acc` on the constituent array in the entry points makes the cap
+treat it as device-resident.
+
+atmospheric_physics:
+- `prescribe_radiative_gas_concentrations` (timestep_init): the global-mean VMR
+  lookup stays a host scalar; one kernel per gas fills its slice.
+- `prescribe_radiative_gas_vertical_profiles` (timestep_init): one column
+  kernel per gas; `phys_utils/atmos_phys_rad_utils.F90` gets
+  `stratospheric_trace_gas_profile_column` (`routine seq`, whole arrays +
+  column index, writes `q(icol, :, m)`) and a private `routine seq` helper
+  `trace_gas_profile_params` (tropopause pressure and decay exponent), which
+  the existing `stratospheric_trace_gas_profile` now also calls (its pFUnit
+  tests still cover the formula).
+- `prescribed_ozone`: units classified on the host; one kernel converts to
+  kg kg-1 per point (molec/cm3 case from `t`/`pmiddry` on the device), writes
+  the slice and returns the converted field for history.
+- `prescribed_aerosols`: each species' mixing ratio formed on the host (copy,
+  or the modal routine), one kernel per species writes the slice; history from
+  the host field (same values).
+- `prescribed_volcanic_aerosol`: one data region; a per-point kernel (mmr,
+  zero below `tropLev`, radius, `volcmass`) and a per-column kernel for
+  `columnmass` (levels summed in order, was `sum(volcmass, 2)`); both history
+  fields come back to the host.
+- ccs_config `Depends.nvhpc`: the five scheme objects and
+  `atmos_phys_rad_utils.o` in `GPU_SCHEME_OBJS`.
+
+Generated caps (cam4, xdsl105gpu/xdsl106gpu vs xdsl104gpu): before
+`prescribed_ozone` only `update self(pmid, pint, phis, zi)` (the
+`advance_trcdata` inputs) is left; the `update self(tropLev, zm, pdel)` before
+and `update device(constituents)` after `prescribed_volcanic_aerosol` are gone.
+In timestep_init the `const_array` download now precedes
+`check_energy_chng_timestep_init` (host) and the end-of-phase upload no longer
+includes `const_array`; that last download goes with
+`gpu-port-check-energy-chng`.
+
+Verification (no replays for the `tracer_data` schemes):
+- `prescribe_radiative_gas_vertical_profiles`: capture_F2000_C4 c09e replay
+  passes CPU and GPU (44/44 calls ON-GPU). The other drivers in that capture
+  are stale (pre-vdiff `pint`, RRTMGP changes): recapture later.
+- xdsl105 / xdsl105gpu (compare=20261117-02ac990-nvhpc; rrtmgp, trcdata_bam,
+  se_cam4, analy_ic_cam4; Stages 1-2): 9/9 and 9/9 BASELINE PASS.
+- xdsl106 / xdsl106gpu (se_cam4, analy_ic_cam4; with the vertical profiles):
+  7/7 and 7/7 BASELINE PASS.
+
+## `gpu-port-check-energy-chng`: energy and water checks on the device (2026-11-19)
+
+User decisions (2026-11-19): option (B), a self-contained hydrostatic-energy
+routine in atmospheric_physics with the host's species data as arguments;
+new standard names (option 1) where no blessed name existed; combine
+`gpu-port-check-energy-gmean` with the wrap-up.
+
+`check_energy_chng` ran on the host after every process (5 calls per step in
+cam4); perf20 nsys, rank 0, per simulated day: 1.82 GB in 2,686 downloads
+before the run phase (0.59 s), 0.55 GB at timestep_init (0.22 s), plus a
+0.27 GB `const_array` upload -- the largest mid-group transfer item.
+
+atmospheric_physics:
+- New `schemes/conservation_adjust/check_energy/check_energy_hydrostatic_energy.F90`:
+  `hydrostatic_energy_column` (`routine seq`), CAM's `cam_thermo`
+  `get_hydrostatic_energy` for moist mixing ratios on whole arrays and a
+  column index, the arithmetic operation by operation; the water vapor and
+  liquid/ice species indices and the enthalpy reference state are arguments
+  (were `cam_thermo` module data); errors returned as codes instead of
+  `endrun`. `enthalpy_reference_code`, the `ENERGY_FORMULA_DYCORE_FV/SE/MPAS`
+  and `ENTHALPY_REFERENCE_*` constants move with it.
+- `check_energy_chng.F90/.meta` (Stage 1): new arguments `wv_idx`,
+  `liq_idx`, `ice_idx`, `enthalpy_reference_state`, `rga` (and `latvap`,
+  `latice` in timestep_init); `check_energy_inputs` validates the formula
+  and reference state on the host before the kernels. No CAM-SIMA host
+  modules left in the scheme's dependencies, which resolves
+  `capture-cam-thermo-formula`.
+- Stage 2: timestep_init and run are one column kernel each (vertical sums
+  `loop seq`, in order); conservation warnings stay on the host (`update
+  self` of the per-column terms only when `print_energy_errors`, columns
+  printed in order). `zm` added to the run phase's copyin (unused on the
+  formula paths, but listed it marks the argument device-resident, so the cap
+  stops syncing it).
+- `check_energy_gmean.F90` (`gpu-port-check-energy-gmean`): one kernel packs
+  `te_ini_dyn`, `teout`, `pint(:, pver+1)`, `pint(:, 1)` into `te(ncol, 4)`,
+  copied out (4*ncol values) for the host `gmean`; the cap no longer pulls the
+  whole `pint` for it.
+- Not ported: `check_energy_zero_fluxes` (host zero-fill of four `ncol`
+  flux vectors).
+- ccs_config `Depends.nvhpc`: `check_energy_chng.o`,
+  `check_energy_hydrostatic_energy.o`, `check_energy_gmean.o` in
+  `GPU_SCHEME_OBJS`.
+
+CAM-SIMA `src/data/air_composition.meta`: the host data as new standard names
+(flag for SE review in the PR): `index_of_water_vapor_in_ccpp_constituents`,
+`number_of_thermodynamically_active_liquid_water_species`,
+`indices_of_thermodynamically_active_liquid_water_species_in_ccpp_constituents`,
+`number_of_thermodynamically_active_ice_species`,
+`indices_of_thermodynamically_active_ice_species_in_ccpp_constituents`,
+`enthalpy_reference_state_for_total_energy`.
+
+Verification:
+- capture_gw_cam4 c15c: the `check_energy_chng` driver now builds (was
+  blocked by `cam_thermo_formula`); replays pass CPU and GPU, ON-GPU after
+  Stage 2.
+- Generated cam4 GPU cap (cap_oracle): no syncs left around
+  `check_energy_chng`; 67 `update` directives in the cap in total.
+- xdsl107 / xdsl107gpu (Stage 1, compare=20261117-02ac990-nvhpc): GPU 9/9
+  BASELINE PASS; CPU 7/7 of the finished cases, the two MPAS cases still
+  queued at the time of writing.
+- xdsl108gpu (Stage 2): 9/9 BASELINE PASS.
+- xdsl109gpu (`zm` copyin + `check_energy_gmean`; gw_cam4, se_cam4,
+  analy_ic_cam4): 8/8 BASELINE PASS.
+- xdsl110 / xdsl110gpu (all 2026-11-19 items together, compare=20261117-02ac990-nvhpc): CPU
+  32/35 pass, the other 3 known (F2000_C7 upstream; zm and mcsp abort at the physics
+  snapshot check, upstream); GPU 31/34 BASELINE PASS, F2000_C7 known, zm and mcsp step-1
+  history IDENTICAL to the CPU baseline (that baseline has no step-2 file).
+
+## `gpu-port-cloud-water`: cloud water paths on the device (2026-11-19)
+
+atmospheric_physics `schemes/cloud_water/`:
+- `cloud_water_paths.F90`: one data region; the zero-fills and the level
+  loops as `collapse(2)` pointwise kernels, values kept in scalars and stored
+  once; same arithmetic.
+- `convective_cloud_water.F90`: the same pattern; the invalid
+  `conv_water_in_rad` error path stays a host check before the kernels.
+- ccs_config `Depends.nvhpc`: `cloud_water_paths.o`,
+  `convective_cloud_water.o` in `GPU_SCHEME_OBJS`.
+
+Verification: capture_cloud_water replays pass CPU and GPU before and after
+the port (both ON-GPU after). Model runs: xdsl110 / xdsl110gpu, see the
+`gpu-port-check-energy-chng` entry (L16400).
+
+## `gpu-kernel-launch-reduction`: tropopause, hack and RTE checks (2026-11-19)
+
+The three pieces of the perf20 launch analysis that need no kernel merging
+(~95 + ~155 + ~95 launches per step); all bit-for-bit by construction.
+
+atmospheric_physics:
+- `hack_convect_shallow.F90`: the level loop (`kloop`, ~4 kernels per level)
+  is one kernel, columns `gang vector` outside and levels `loop seq` inside
+  (columns are independent within a level). The `debug_verbose` output, which
+  printed from inside the loop, is recorded on the device
+  (`convect_dbg(ncol, pver)`, `dbg_vals(5, pver)`) and printed on the host
+  after the kernel, in the same order.
+- `tropopause_find.F90`: `tropopause_findWithBackup` runs, when both
+  algorithms have a column form (every combination `tropopause_find_run`
+  uses), one kernel per call: per column the fill values, the primary
+  algorithm, then the backup if that column was not found -- what the
+  separate kernels and the `any_notfound` reduction between them did, column
+  by column. New `routine seq` column routines
+  `tropopause_climate/hybridstobie/twmo/cpp_column` (the former kernel
+  bodies) behind `tropopause_column_using`; CHEMTROP is TWMO, the
+  high-latitude reset, then climate, per column. `climate_weights` holds the
+  climatology time interpolation. CHEMTROP as a backup and the host
+  algorithms (analytic, Stobie, WMO) keep the separate path; the old
+  per-algorithm entry points are one kernel each over the column routines.
+- `rrtmgp_post.F90` (resolves `rrtmgp-rte-validation-transfers`): after a
+  step that ran longwave, `rte_config_checks(extents=.true., values=.false.)`
+  -- RTE's input value checks (`any_vals_outside`/`any_vals_less_than`, each
+  a reduction back to the host) run only through the first radiation call,
+  as RTE's all-sky example does; the host-only extent checks stay on (user
+  decision 2026-11-19, over always-off or a namelist switch). A rank all in
+  night on that step never checks its shortwave inputs.
+
+Verification: hack_shallow, rrtmgp and rk_stratiform (`tropopause_find`)
+replays pass CPU and GPU. The RTE switch is not visible in replays (fresh
+process each, `rrtmgp_post` not replayed): model runs only -- xdsl110 /
+xdsl110gpu, see the `gpu-port-check-energy-chng` entry (L16400).
+
+Deferred (user, 2026-11-19): merging adjacent kernels within schemes. Estimated
+~130 launches per step, ~0.1 s/day against ~5 s/day of cap syncs; revisit
+per scheme from the next nsys trace.
+
+## `gpu-port-rrtmgp-pre`: day/night compaction on the device (2026-11-19)
+
+atmospheric_physics `schemes/rrtmgp/rrtmgp_pre.F90/.meta`:
+- `rrtmgp_pre_timestep_init`: the day/night column compaction runs in one
+  device thread (`!$acc serial`, the same loop, so the lists are in column
+  order); only the counts return (through local scalars, so the cap's
+  residency rule does not see `nday`/`nnite` as device data). `coszrs` is
+  read and `idxday`/`idxnite` written on the device.
+- `rrtmgp_pre_run`: unused `coszrs`, `idxday`, `idxnite` arguments removed
+  (the cap synced all three to the host before it).
+- ccs_config `Depends.nvhpc`: `rrtmgp_pre.o` in `GPU_SCHEME_OBJS`.
+- capture_rrtmgp `test_rrtmgp_pre.F90` hand-patched (the removed keyword
+  arguments; `.orig` kept) until the next generation.
+
+Verification: rrtmgp replays pass CPU and GPU; xdsl110 / xdsl110gpu, see the
+`gpu-port-check-energy-chng` entry (L16400). cam4 GPU cap: no syncs left
+around `rrtmgp_pre`.
+
+## `gpu-cap-present-regions` (options 1 and 2): one present region per call, compiled only for residency checks (2026-11-20)
+
+The suite caps wrapped each call to a GPU scheme in one `!$acc data
+present(x)` region per device argument (xdsl110gpu SE `cam4_cap.F90`: 678
+regions, e.g. 7 around `tropopause_find_run`). perf20 nsys, rank 0, per
+simulated day: 27,385 regions, enter 0.13 s + exit 0.04 s + the wait at each
+exit 0.13 s ~= 0.30 s. The regions move no data; they turn residency bugs
+into "not present" aborts.
+
+Option 1, one region per call (`transforms/gpu_data_pass.py`):
+- `_emit_present` replaced by `_collect_present` (the `emit_present`
+  callback of `cap_shared.emit_coalesced_updates` now records
+  `{call_op: [ref, ...]}`, each ref once per call) and
+  `_emit_present_regions`, run after `emit_coalesced_updates`: one
+  `AccDataBeginOp(present=[...])` / `OmpTargetDataBeginOp(alloc=[...])` per
+  call over all its present variables, directly around the call (inside the
+  call's `update self/device` syncs, which used to land between the
+  per-variable regions). Never merged across calls (criss-crossing regions).
+- `cap_shared.emit_coalesced_updates` docstring: present touches are handed
+  to the callback, which decides how to emit them.
+- cam4 GPU cap (cap_oracle, generation only): 678 -> 161 regions; no other
+  change except one `update self(constituents)` before
+  `rk_stratiform_check_qtlcwat` now just outside the call's region.
+
+Option 2, the regions only in builds with residency checks (user decision
+2026-11-19: tied to DEBUG):
+- `dialects/ccpp_utils.py`: `check_only` (optional `UnitAttr`) on
+  `AccDataBeginOp`, `AccDataEndOp`, `OmpTargetDataBeginOp`,
+  `OmpTargetDataEndOp`: the region only asserts residency and moves no data.
+  Verifier: a `check_only` begin may have only `present` (acc) / `alloc`
+  (omp) operands.
+- `backend/print_ftn.py`: `check_only` acc regions print under
+  `#ifdef CCPP_GPU_PRESENT_CHECKS` instead of `#ifdef USE_GPU`
+  (`_gpu_guard`, macro names as printer constants); `check_only` omp
+  regions get the same `#ifdef` (other omp directives stay unguarded).
+- `_emit_present_regions` sets `check_only`. The present clauses
+  `gpu_ccpp_cap_pass.py` folds into its combined suite-call regions are
+  unchanged.
+- ccs_config `machines/cmake_macros/nvhpc.cmake`: `-DCCPP_GPU_PRESENT_CHECKS`
+  when `(OPENACC_GPU_OFFLOAD OR OPENMP_GPU_OFFLOAD) AND DEBUG`. xdsl111gpu
+  build logs: defined in all 5 `SMS_D` GPU cases, absent from the other 29.
+
+Tests: `tests/unit/test_gpu_present_regions.py` (5): one region per call
+over all its variables and none around the host call (acc and omp), the
+`CCPP_GPU_PRESENT_CHECKS` guard on begin and end (acc and omp), the
+verifier. The region test fails on the old per-variable emitter. No FileCheck
+golden contains these regions. `pytest tests/unit`: 1554 passed.
+
+Verification:
+- xdsl111gpu (compare=20261117-02ac990-nvhpc): 31/34 BASELINE PASS (DEBUG
+  cases with the merged regions, production cases without any), 3 known:
+  F2000_C7 (upstream) and zm/mcsp (CPU baseline from runs aborted at the
+  physics snapshot check; step-1 history IDENTICAL).
+- perf22 (MPAS cam4 GPU, nsys rank 0, production build; vs perf20, both
+  include the 2026-11-19 ports and launch reduction): cap present-region
+  enter/exit events 54,771 -> 0; kernel launches 79,415 -> 25,835 (launch
+  host time 0.79 -> 0.34 s); OpenACC wait events 182,659 -> 53,100
+  (2.62 -> 1.83 s); mean physics (phys_run1 + phys_run2) 11.50 -> 8.62 s per
+  simulated day (-25%, all changes together). Report:
+  `/glade/work/dennis/cam_sima_perf/perf22.md`.
+
+## `gpu-port-hb-diff-prepare-inputs`: Holtslag-Boville coupler-flux copies on the device (2026-11-20)
+
+atmospheric_physics `schemes/holtslag_boville/holtslag_boville_diff_interstitials.F90`:
+- `hb_diff_prepare_vertical_diffusion_inputs_run`: one data region
+  (`copyin` of `wsx/wsy/shf_from_coupler`, `cflx_from_coupler`; `copyout` of
+  `taux`, `tauy`, `shflux`, `cflux`), a pointwise column kernel for the
+  three surface fields and a `collapse(2)` kernel for `cflux` (columns x
+  constituents); plain copies as before, `itaures` stays a host scalar.
+  `hb_free_atm_diff_prepare_vertical_diffusion_inputs_run` (CAM6/7, not in
+  cam4) unchanged.
+- ccs_config `Depends.nvhpc`: `holtslag_boville_diff_interstitials.o` in
+  `GPU_SCHEME_OBJS`.
+
+cam4 GPU cap (cap_oracle): the `update self` of the four coupler fields
+before the call and the `update device` of `taux`/`tauy`/`shflux`/`cflux`
+after it are gone (a `check_only` present region instead);
+`shf_from_coupler` and `cflx_from_coupler` are now pulled later in the
+existing `update self` before `vertical_diffusion_tendencies_diagnostics`,
+which reads them on the host (until `gpu-history-accumulate`). 64 -> 62
+`update` directives; per step 4 pulls + 4 pushes -> 2 pulls.
+
+Verification: no replay (the capture driver needs CAM's `ref_pres`).
+xdsl112gpu (hb_vdiff, uw_vdiff, all SE and MPAS cam4 GPU tests, D and
+non-D; compare=20261117-02ac990-nvhpc): 9/9 BASELINE PASS, the file
+compiled `-acc` in all 9.

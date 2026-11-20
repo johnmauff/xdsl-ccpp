@@ -359,25 +359,54 @@ class GPUDataPass(ModulePass):
                 debug_sync_touches[key] = (ref, [(call_op, "produced", True)])
         return debug_sync_touches
 
-    def _emit_present(self, ref, call_op):
-        """Wrap a single call in its own present()-only data region.
+    @staticmethod
+    def _collect_present(present_by_call):
+        """An emit_present callback for cap_shared.emit_coalesced_updates
+        that records each (ref, call) present touch in present_by_call
+        ({call_op: [ref, ...]}, in touch order, each ref once per call)
+        instead of emitting it; _emit_present_regions emits them."""
 
-        present() is a pure runtime assertion, no data movement -- emitted
-        individually per touching call rather than coalesced across a run
-        (unlike the update self/device runs cap_shared.emit_coalesced_updates
-        emits): repeating it is free, and coalescing it across multiple
-        calls would risk producing improperly-nested
-        (criss-crossing) !$acc data regions if another diverged var's own
-        present run happens to overlap without nesting inside this one.
+        def collect(ref, call_op):
+            refs = present_by_call.setdefault(call_op, [])
+            if not any(r is ref for r in refs):
+                refs.append(ref)
+
+        return collect
+
+    def _emit_present_regions(self, present_by_call):
+        """Wrap each call in one present()-only data region over all of its
+        present touches.
+
+        present() is a pure runtime assertion, no data movement. All the
+        variables one call touches share one region (one enter/exit event
+        per call instead of one per variable); regions are never coalesced
+        across calls, which could produce improperly-nested (criss-crossing)
+        data regions where another variable's present touches overlap.
+        Emitted after cap_shared.emit_coalesced_updates, so the region sits
+        directly around the call, inside the update self/device syncs that
+        call's runs put before and after it.
+
+        The regions are check_only: they catch residency bugs as "not
+        present" aborts but are not needed for correct results, so only
+        builds with GPU residency checks enabled (DEBUG) compile them.
         """
-        Rewriter.insert_op(
-            directive_op(self.directive, AccDataBeginOp, {"present": [ref]}, OmpTargetDataBeginOp, {"alloc": [ref]}),
-            InsertPoint.before(call_op),
-        )
-        Rewriter.insert_op(
-            directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
-            InsertPoint.after(call_op),
-        )
+        for call_op, refs in present_by_call.items():
+            Rewriter.insert_op(
+                directive_op(
+                    self.directive,
+                    AccDataBeginOp, {"present": list(refs), "check_only": True},
+                    OmpTargetDataBeginOp, {"alloc": list(refs), "check_only": True},
+                ),
+                InsertPoint.before(call_op),
+            )
+            Rewriter.insert_op(
+                directive_op(
+                    self.directive,
+                    AccDataEndOp, {"check_only": True},
+                    OmpTargetDataEndOp, {"check_only": True},
+                ),
+                InsertPoint.after(call_op),
+            )
 
     def _get_device_constituent_views(self, scheme_name, table_name, meta_data):
         """Return {local_name: standard_name} for the memory_space=device
@@ -441,10 +470,9 @@ class GPUDataPass(ModulePass):
         genuinely needs the device copy synced (via the surrounding
         update run's boundary) before it executes; blindly hoisting an
         update sync across it would leave that present call observing a
-        stale device copy. present touches are still emitted individually
-        within a "run" (see _emit_present) since coalescing them has no
-        correctness or performance upside; only update runs are actually
-        coalesced -- and, across every diverged host/CapScratch var in
+        stale device copy. present touches get one region per call over
+        every variable that call touches (see _emit_present_regions), never
+        coalesced across calls; update runs are coalesced -- and, across every diverged host/CapScratch var in
         this function, grouped into a shared call whenever their run
         boundaries coincide (see cap_shared.emit_coalesced_updates, called
         once per function from _process_physics_fn with both this
@@ -683,7 +711,11 @@ class GPUDataPass(ModulePass):
                 self._build_debug_sync_touches(calls, meta_data, arg_by_std)
             )
         if merged_touches:
-            emit_coalesced_updates(self.directive, merged_touches, self._emit_present)
+            present_by_call: dict = {}  # call_op -> [ref, ...]
+            emit_coalesced_updates(
+                self.directive, merged_touches, self._collect_present(present_by_call)
+            )
+            self._emit_present_regions(present_by_call)
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
