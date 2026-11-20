@@ -2107,12 +2107,11 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     touch genuinely needs the device copy synced before it executes, so it
     breaks an update run rather than being absorbed into it (unchanged
     from the prior _emit_diverged_touches/_inject_suite_owned_gpu_update
-    logic). "present" touches are still emitted individually via
-    `emit_present(ref, call_op)` -- a pure runtime assertion, cheap to
-    repeat per call, and coalescing it across calls risks producing
-    improperly-nested (criss-crossing) data regions if another identity's
-    own present run overlaps without nesting inside it (see
-    gpu_data_pass.py's _emit_present docstring).
+    logic). "present" touches are handed to `emit_present(ref, call_op)`
+    one at a time; the caller decides how to emit them (gpu_data_pass.py
+    collects them and wraps each call in one present region over all its
+    variables, never across calls, which could criss-cross -- see its
+    _emit_present_regions).
 
     "update" touches accumulate into a run needing an `update self(...)`
     before the run (pull the latest device value in, since a stretch of
