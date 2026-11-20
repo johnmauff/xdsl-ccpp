@@ -16599,3 +16599,29 @@ Verification:
   (2.62 -> 1.83 s); mean physics (phys_run1 + phys_run2) 11.50 -> 8.62 s per
   simulated day (-25%, all changes together). Report:
   `/glade/work/dennis/cam_sima_perf/perf22.md`.
+
+## `gpu-port-hb-diff-prepare-inputs`: Holtslag-Boville coupler-flux copies on the device (2026-11-20)
+
+atmospheric_physics `schemes/holtslag_boville/holtslag_boville_diff_interstitials.F90`:
+- `hb_diff_prepare_vertical_diffusion_inputs_run`: one data region
+  (`copyin` of `wsx/wsy/shf_from_coupler`, `cflx_from_coupler`; `copyout` of
+  `taux`, `tauy`, `shflux`, `cflux`), a pointwise column kernel for the
+  three surface fields and a `collapse(2)` kernel for `cflux` (columns x
+  constituents); plain copies as before, `itaures` stays a host scalar.
+  `hb_free_atm_diff_prepare_vertical_diffusion_inputs_run` (CAM6/7, not in
+  cam4) unchanged.
+- ccs_config `Depends.nvhpc`: `holtslag_boville_diff_interstitials.o` in
+  `GPU_SCHEME_OBJS`.
+
+cam4 GPU cap (cap_oracle): the `update self` of the four coupler fields
+before the call and the `update device` of `taux`/`tauy`/`shflux`/`cflux`
+after it are gone (a `check_only` present region instead);
+`shf_from_coupler` and `cflx_from_coupler` are now pulled later in the
+existing `update self` before `vertical_diffusion_tendencies_diagnostics`,
+which reads them on the host (until `gpu-history-accumulate`). 64 -> 62
+`update` directives; per step 4 pulls + 4 pushes -> 2 pulls.
+
+Verification: no replay (the capture driver needs CAM's `ref_pres`).
+xdsl112gpu (hb_vdiff, uw_vdiff, all SE and MPAS cam4 GPU tests, D and
+non-D; compare=20261117-02ac990-nvhpc): 9/9 BASELINE PASS, the file
+compiled `-acc` in all 9.

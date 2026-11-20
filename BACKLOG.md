@@ -82,14 +82,13 @@ measured data, and will drift as items are reassessed.
 | `gpu-cap-present-regions` | option 3 only (options 1-2 done 2026-11-20): `default(present)` in the ported schemes, scheme by scheme with replays, after residency is guaranteed; not sized | - |
 | `gpu-widen-column-kernels` | 3.5-4.5 days in three pieces, each bit-for-bit and replay-checked: `qneg` collapse(3) + atomic stats (0.5), `diffuse_tracers` columns x constituents (1), McICA KISS jump-ahead (2-3, exhaustive integer unit test first); est. ~0.23 s/day of rank-0 kernel time | S |
 | `gpu-async-queues` | idea, not planned: first an nsys gap analysis (idle GPU time inside vs between scheme data regions, scheme entry-region enter/wait/exit counts), ~0.5 day; the work itself depends on option 3 of `gpu-cap-present-regions` | - |
-| `gpu-port-hb-diff-prepare-inputs` | <1 day (`hb_diff_prepare_vertical_diffusion_inputs`: one kernel for the coupler-flux copies; no replay (`ref_pres`): hb_vdiff and cam4 GPU subsets) | XS |
 | `gpu-cam4-unused-device-args` | ~0.5-1 day: drop 5 unused args (`zm_conv_evap` landfrac, `zm_conv_momtran` dsubcld, hack pmiddry/pdeldry, `rrtmgp_sw_cloud_optics` idxday) + decide `zm_convr` lat; cap_oracle, replays, GPU subset regression; perf20 cost ~8 ms/day | XS |
 | `gpu-cam4-host-uses-in-device-schemes` | ~3-5 days in pieces: constituent-view residency rule in xdsl-ccpp (1-2, removes 3 whole-constituent pulls/step), `compute_cloud_fraction` qsat on device (0.5), perturbation's inner call (0.5-1), hack `pdel` (0.25), `rrtmgp_post` flwds (0.5); `prescribed_ozone` trcdata on device not included; perf20 cost: constituent pulls ~0.25-0.45 s/day (scaled to 3 sites), ozone ~0.08, perturbation ~0.03, rest <0.01 | M |
 | `gpu-cam4-host-scheme-syncs` | ~0.5-1 day: `diffuse_horizontal_momentum` timestep_init kernel; `lat` pull (generator: no pull of an unwritten var across phases, or device read); perf20 cost ~11 ms/day | S |
 | `gpu-run-local-suite-owned-alloc` | size first (nsys, ~0.25 day); fix ~1 day in xdsl-ccpp (allocate once at `columns_on_task` or grow-only); perf20 cost ~6 ms/day of enter/exit events (+ host allocate/deallocate) | S |
 | `gpu-constituent-view-copy-regions` | ~0.5-1 day: emit `check_only` present instead of `copy` when the constituent array is resident; perf20 cost ~8 ms/day | XS |
 | `gpu-rrtmgp-reset-fluxes-byband` | ~0.5-1 day: check RTE's use of the by-band arrays, zero on the device or keep them allocated; perf22 cost ~0.21 s/day (rank 0) | XS |
-| `gpu-history-accumulate` | design project first (user, 2026-11-10): a design document for device-resident history buffers before any estimate; implementation was guessed at 6-12 days plus upstream review | M-L |
+| `gpu-history-accumulate` | merge upstream `development` first (#514 restart writing rewrote `cam_hist_file.F90`); then ~13-18 days plus upstream review (estimate 2026-11-20, design notes 2026-11-19; +1 for restart read/write of device buffers): device avg/min/max/var buffers (3-4), device entry point in `cam_history` (2), `lst` filled only on output steps (2-3), diagnostics schemes on the device (3-5), testing (2-3); PUMAS proc_rates +1-2 when wanted. Three stages, each M or smaller | L |
 | `host-caller-device-callee-audit` | 1-2 days (read every direct call from a host scheme to a GPU-ported scheme -- rk_stratiform -> compute_cloud_fraction, clubb -> hb_pbl_dependent_coefficients, kessler driver -- and check each argument the caller changes on the host; fix as in bretherton_park_diff; GPU tests of the affected suites) | XS |
 | `gpu-port-bretherton-park` | 10-20 days (`bretherton_park_diff` 724 lines + `eddy_diff` 3386, `caleddy` ~1650 with gotos and character-string choices; replay exists (c13a); cam5/uw_vdiff only, low priority until cam5 has a test or perf case) | L |
 | `cloud-sedimentation-cfint2-error-column` | <1 day if revisited (store the first failing level per column on the device, pick on the host; rk_stratiform replays CPU+GPU); only if the old message matters | XS |
@@ -2519,19 +2518,40 @@ Supporting items (not tracked elsewhere):
 - **ID: `gpu-port-zm-convr`. Resolved (2026-11-18)** -- CHANGELOG.md L15944.
 - **ID: `gpu-port-zm-conv-evap`. Resolved (2026-11-11)** -- CHANGELOG.md L14878.
 - `gpu-port-cloud-water` — **Resolved (2026-11-19)** -- CHANGELOG.md L16464.
-- `gpu-port-hb-diff-prepare-inputs` — **`hb_diff_prepare_vertical_diffusion_inputs`
-  on the device.** Added 2026-11-19 (user; knowingly a move of data
-  movement for now). `schemes/holtslag_boville/holtslag_boville_diff_interstitials.F90`
-  (run, 5 statements): copies the coupler's `wsx/wsy_from_coupler`,
-  `shf_from_coupler` and `cflx_from_coupler(ncol, pcnst)` into the vertical
-  diffusion inputs `taux`, `tauy`, `shflux`, `cflux` and sets `itaures`. The
-  inputs come from the coupler on the host, so the surface fields cross once
-  whichever side copies; porting moves the transfer to the inputs and removes
-  one host stop between device schemes. The full gain needs the coupler
-  exchange on the device. Port: one kernel (plus the `cflux` 2-D copy);
-  `itaures` stays a host scalar. Test: no replay today (its capture driver
-  needs CAM's `ref_pres`, see the vdiff solver entry, CHANGELOG.md L16096),
-  so hb_vdiff and cam4 GPU subsets vs the CPU baseline.
+- `gpu-port-hb-diff-prepare-inputs` — **Resolved (2026-11-20)** -- CHANGELOG.md L16603.
+- **Testing plan for the cam4 data-movement items** (user, 2026-11-20;
+  applies to `gpu-cam4-unused-device-args`, `gpu-cam4-host-uses-in-device-schemes`,
+  `gpu-cam4-host-scheme-syncs`, `gpu-run-local-suite-owned-alloc`,
+  `gpu-constituent-view-copy-regions`). Replays check a scheme's numerics
+  CPU vs GPU from driver data; they cannot see the cap (syncs, residency,
+  regions) or a host caller of a ported scheme. So:
+  1. **Scheme batch** -- replays per item as it is done, then one GPU subset
+     regression (cam4 SE + MPAS, D and non-D, plus the FPHYStest testmods of
+     the touched schemes) vs the CPU baseline:
+     - unused args removed (replays of the touched schemes; their drivers
+       need regeneration or a hand patch since the interfaces change;
+       `cap_oracle diff`: only the listed `update self` lines go);
+     - `compute_cloud_fraction` qsat on the device (replay; watch
+       bit-for-bit, saturation math moves host -> device);
+     - hack `pdel` (replay);
+     - `diffuse_horizontal_momentum` timestep_init kernel (replay if the
+       capture covers that phase, else the regression);
+     - regression only (no replay possible): `rrtmgp_post` `flwds`
+       (`rrtmgp_post` is not replayed) and the perturbation scheme's inner
+       call (host caller of a ported scheme, see
+       `reference_host_caller_device_callee`).
+  2. **Generator batch** (xdsl-ccpp; affects every GPU cap) -- per item
+     `pytest tests/unit` and `cap_oracle diff` on several GPU cases (cam4,
+     rrtmgp, kessler: only the intended lines change; a CPU case: no
+     change), then one full GPU regression (no CPU regression needed):
+     - the `lat` no-pull across phases (`gpu-cam4-host-scheme-syncs`);
+     - run-local allocations (`gpu-run-local-suite-owned-alloc`);
+     - `check_only` constituent-view regions
+       (`gpu-constituent-view-copy-regions`).
+  3. **Constituent-view residency rule** (`gpu-cam4-host-uses-in-device-schemes`,
+     ~0.25-0.45 s/day, the riskiest: wrong means stale constituents) -- its
+     own full GPU regression, or last in the generator batch, so a failure
+     points at it.
 - `gpu-cam4-unused-device-args` — **Unused arguments of GPU schemes make
   the cam4 cap sync host copies.** Added 2026-11-20 (user; after
   `gpu-port-hb-diff-prepare-inputs`). Found in the cam4 GPU cap regenerated
@@ -2945,6 +2965,50 @@ Supporting items (not tracked elsewhere):
     stale step -- caught by bit-for-bit history files: CPU baselines,
     multitape and history testmods); `sampled_on_subcycle` fields, several
     `history_out_field` calls per step, blocked (dynamics-grid) buffers.
+  Estimate (2026-11-20, user asked; L, ~12-17 engineer-days plus upstream
+  review in ESMCI/history_output and CAM-SIMA):
+  - history_output `hist_buffer`: avg/min/max/var buffers created on the
+    device, plain-array accumulate kernels, clear after write, one
+    `update self` per buffer at output, fill checks as a device count with
+    the message on the host: 3-4 days.
+  - CAM-SIMA `cam_history`: device-data entry point in `history_out_field`
+    (or a presence check), `flag_xyfill`, column/block indexing, per-file
+    buffers: 2 days.
+  - `lst` buffers filled only on output steps (the output-step query must
+    agree exactly with `history_write_files`: `hist_write_nstep0`,
+    restart/initial files): 2-3 days, the riskiest piece.
+  - **Diagnostics schemes on the device: 3-5 days -- a gap in the design
+    notes above.** "Diagnostics schemes stay unchanged" does not stop the
+    cap's pulls: they come from the schemes being host schemes (no
+    `!$acc`, so their arguments are classified host), not from
+    `history_out_field`. Pass-through schemes (argument straight into
+    `history_out_field`) need `memory_space = device` in `.meta` (or a
+    generator rule for history pass-throughs); schemes that compute first
+    (unit scaling, gathered-to-column scatter, 0/1 flags) need small ports.
+    cam4 has ~30 diagnostics schemes, most a few lines each.
+  - Testing: bit-for-bit history files (avg normalization order),
+    multitape/history testmods, CPU path unchanged, history_output unit
+    tests: 2-3 days.
+  - PUMAS `proc_rates` output (todo above): not included, +1-2 days.
+  Staging, each its own regression: (1) device avg buffers + device entry
+  point (~5-6 days); (2) diagnostics schemes marked/ported to the device --
+  where the ~2.1 s/day of diagnostics pulls (perf22 nsys rank 0: 2.63 s
+  host time, 6.8 GB/day) goes away (~3-5 days); (3) `lst` on output steps
+  only (~2-3 days + testing).
+  **Before starting: merge upstream ESCOMP/CAM-SIMA `development`**
+  (checked 2026-11-20 via the GitHub API). Local `xdsl-ccpp-adapter` lacks
+  b8b67c7 "Restart writing in CAM-SIMA (#514)" (sima0_25_001, 2026-11-09):
+  `cam_hist_file.F90` +1379/-493, new `cam_hist_restart.F90`,
+  `cam_history.F90`/`cam_history_support.F90` changes; the estimate above
+  assumed the pre-#514 files. Expect a conflict with the local 02ac990
+  (history01_05 + zero-fill of unsampled columns, upstream issue #571).
+  Also missing: f30629d (sima0_25_002, MPAS 8.4.2 -- full CPU+GPU
+  regression, check the `MPAS_DYCORE_GPU_OFFLOAD` Makefile switch), ce8331c,
+  8d34b02. history_output: local `history01_05` is ahead of upstream's
+  `history01_04`. **New requirement from #514:** history restart files
+  save mid-window buffers (running averages), so device-resident buffers
+  need an `update self` before a restart write and an `update device`
+  after a restart read; add to stage 1 (~+1 day).
 - **ID: `gpu-port-vertical-diffusion-simple`. Resolved (2026-11-18)** -- CHANGELOG.md L16047.
 - **ID: `gpu-port-vertical-diffusion-solver`. Resolved (2026-11-18)** -- CHANGELOG.md L16096.
 - **ID: `gpu-port-rk-stratiform`. Resolved (2026-11-18)** -- CHANGELOG.md L16159.
