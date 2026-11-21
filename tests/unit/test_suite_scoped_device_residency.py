@@ -147,8 +147,11 @@ class TestSuiteScopedDivergenceWithoutHostDeclaration:
         )
         suite_fn = _fn_body(fortran, "test_suite_scoped_suite_physics")
         assert "present(qv_a" in suite_fn
-        assert "update self(qv_a" in suite_fn
         assert "update device(qv_a" in suite_fn
+        # The device scheme only reads it (intent in), so the device copy is
+        # never newer and the host scheme needs no pull
+        # (find_device_readonly_host_vars).
+        assert "update self(qv_a" not in suite_fn
 
     def test_residency_established_at_ccpp_cap_level(self, run_host_match, ccpp_context):
         """Before this fix, a diverged var with no host-level memory_space

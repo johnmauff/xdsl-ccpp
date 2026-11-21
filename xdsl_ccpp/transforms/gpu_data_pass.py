@@ -22,6 +22,8 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     call_section,
     emit_coalesced_updates,
     merge_adjacent_updates,
+    constituent_array_entered_per_group,
+    find_device_readonly_host_vars,
     find_diverged_capscratch_vars,
     find_diverged_suite_vars,
     fn_phase,
@@ -39,6 +41,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
+    CCPPType,
 )
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
@@ -422,17 +425,22 @@ class GPUDataPass(ModulePass):
             and arg.getAttr("memory_space") == "device"
         }
 
-    def _emit_constituent_view_copies(self, calls, meta_data, arg_by_std):
+    def _emit_constituent_view_copies(self, calls, meta_data, arg_by_std, resident=False):
         """Wrap each call that takes a device constituent view in its own
-        copy() region over those views.
+        data region over those views.
 
         When lc_constituent_array is not resident, the constituents are
         updated on the host between device calls (by the host model,
         host-side schemes and tendency appliers writing through other views
-        of the same memory), so each call copies its views in and back out.
-        When it is resident (resolve-constituent-residency: a device user of
-        the whole array), these regions find the views present and move
-        nothing; the syncs around CPU users come from the divergence
+        of the same memory), so each call copies its views in and back out:
+        a copy() region.
+        When it is resident (*resident*: the ccpp cap enters it around every
+        group call, cap_shared.constituent_array_entered_per_group), the
+        views are always present and a copy() region would move nothing
+        while still costing an enter/exit event and a wait per call (cam4:
+        ~24 per step). The region is then a check_only present() region,
+        like _emit_present_regions': compiled only with GPU residency
+        checks (DEBUG). The syncs around CPU users come from the divergence
         machinery (_process_diverged_capscratch_vars).
 
         Called after the blanket hostless region is built, so these
@@ -447,12 +455,18 @@ class GPUDataPass(ModulePass):
                     refs.append(ref)
             if not refs:
                 continue
+            if resident:
+                acc_begin = {"present": refs, "check_only": True}
+                omp_begin = {"alloc": refs, "check_only": True}
+                end = {"check_only": True}
+            else:
+                acc_begin, omp_begin, end = {"copy": refs}, {"tofrom": refs}, {}
             Rewriter.insert_op(
-                directive_op(self.directive, AccDataBeginOp, {"copy": refs}, OmpTargetDataBeginOp, {"tofrom": refs}),
+                directive_op(self.directive, AccDataBeginOp, acc_begin, OmpTargetDataBeginOp, omp_begin),
                 InsertPoint.before(call_op),
             )
             Rewriter.insert_op(
-                directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
+                directive_op(self.directive, AccDataEndOp, end, OmpTargetDataEndOp, end),
                 InsertPoint.after(call_op),
             )
 
@@ -572,7 +586,8 @@ class GPUDataPass(ModulePass):
         return resolved
 
     def _process_physics_fn(
-        self, fn_op, meta_data, diverged_vars=frozenset(), diverged_capscratch_vars=frozenset()
+        self, fn_op, meta_data, diverged_vars=frozenset(), diverged_capscratch_vars=frozenset(),
+        readonly_vars=frozenset(), constituents_resident=False,
     ):
         """Insert acc.data markers around GPU scheme calls in one subroutine.
 
@@ -589,6 +604,12 @@ class GPUDataPass(ModulePass):
           scheme call instead -- see _process_diverged_host_vars.
         - diverged CapScratch cap vars: routed per individual scheme call
           instead -- see _process_diverged_capscratch_vars.
+        readonly_vars: host vars no scheme writes on the device
+        (find_device_readonly_host_vars); their CPU users get no update
+        self pull.
+        constituents_resident: the ccpp cap enters lc_constituent_array
+        around every group call (constituent_array_entered_per_group); the
+        constituent views' regions are then check_only present regions.
         """
         if not fn_op.body.blocks:
             return
@@ -687,7 +708,9 @@ class GPUDataPass(ModulePass):
                     )
 
         # --- device constituent views: a copy() region per call ---
-        self._emit_constituent_view_copies(calls, meta_data, arg_by_std)
+        self._emit_constituent_view_copies(
+            calls, meta_data, arg_by_std, constituents_resident
+        )
 
         # --- diverged host vars + CapScratch cap vars: per-scheme-call
         # routing, merged into one resolved-touches dict so a host var and
@@ -713,7 +736,8 @@ class GPUDataPass(ModulePass):
         if merged_touches:
             present_by_call: dict = {}  # call_op -> [ref, ...]
             emit_coalesced_updates(
-                self.directive, merged_touches, self._collect_present(present_by_call)
+                self.directive, merged_touches, self._collect_present(present_by_call),
+                host_current_at_entry=frozenset(("host", v) for v in readonly_vars),
             )
             self._emit_present_regions(present_by_call)
 
@@ -732,6 +756,31 @@ class GPUDataPass(ModulePass):
         # BuildSchemeDescription already builds for SuiteCAP/GPUCcppCapPass.
         bsd = BuildSchemeDescription()
         bsd.traverse(ccpp_mod)
+
+        # The ccpp cap's decision, over every suite: lc_constituent_array
+        # entered around each group call.
+        constituents_resident = constituent_array_entered_per_group(
+            {
+                scheme.attributes["name"]
+                for suite in bsd.schemes.values()
+                for group in suite
+                for scheme in _iter_schemes(group)
+            },
+            meta_data,
+        )
+
+        # Host vars no scheme writes on the device: the host copy is never
+        # stale, so CPU users need no pull. Every scheme with metadata
+        # counts, called or not -- the suites share the host variables'
+        # device copies, and a scheme outside the suite lists (a package
+        # member) can only remove variables from the set.
+        readonly_vars = find_device_readonly_host_vars(
+            {
+                name for name, props in meta_data.items()
+                if props.getAttr("type") == CCPPType.SCHEME
+            },
+            meta_data,
+        )
 
         # Find all suite cap modules and process their _physics subroutines,
         # plus the register/initialize/finalize/timestep_initial/
@@ -764,7 +813,8 @@ class GPUDataPass(ModulePass):
                     continue
                 if fn_phase(child) is not None:
                     self._process_physics_fn(
-                        child, meta_data, diverged_vars, diverged_capscratch_vars
+                        child, meta_data, diverged_vars, diverged_capscratch_vars,
+                        readonly_vars, constituents_resident,
                     )
 
         # One update directive per kind at each point, whichever step

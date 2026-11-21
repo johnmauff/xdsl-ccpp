@@ -122,6 +122,51 @@ def test_device_views_copied_per_call(tmp_path):
     assert not re.search(r"enter data [^\n]*lc_constituent_array", host)
 
 
+def test_device_views_check_only_when_array_resident(tmp_path):
+    """examples/advection with apply_constituent_tendencies taking the whole
+    array on the device: the ccpp cap enters lc_constituent_array around
+    every group call, so the views' per-call regions are present checks
+    compiled only with CCPP_GPU_PRESENT_CHECKS, not copies
+    (gpu-constituent-view-copy-regions)."""
+    ex = "examples/advection"
+    meta = open(f"{ex}/apply_constituent_tendencies.meta").read()
+    whole = "  standard_name = ccpp_constituents\n"
+    assert meta.count(whole) == 1
+    meta = meta.replace(whole, whole + "  memory_space = device\n")
+    (tmp_path / "apply_constituent_tendencies.meta").write_text(meta)
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    options_db.update({
+        "suites": [f"{ex}/cld_suite.xml"],
+        "scheme_files": [f"{ex}/{n}.meta" for n in ("const_indices", "cld_liq", "cld_ice",
+                                                    "cld_shadow")]
+                        + [str(tmp_path / "apply_constituent_tendencies.meta")],
+        "host_files": [f"{ex}/{n}.meta" for n in ("test_host_data", "test_host_mod",
+                                                  "test_host")],
+        "host_name": "test_host",
+        "out": str(tmp_path / "out"),
+        "tempdir": str(tmp_path / "tmp"),
+        "verbose": 0,
+        "directive": "acc",
+    })
+    result = tool.run(options_db)
+    caps = {os.path.basename(p): open(os.path.join(options_db["out"], p)).read()
+            for p in result.written if p.endswith(".F90")}
+    host = next(t for n, t in caps.items() if n.endswith("_ccpp_cap.F90"))
+    suite = next(t for n, t in caps.items()
+                 if n.endswith("_cap.F90") and not n.endswith("_ccpp_cap.F90"))
+    assert re.search(r"enter data copyin\(lc_constituent_array\)", host)
+    assert not re.search(r"!\$acc data copy\(cld_(liq|ice)_array\)", suite)
+    for callee, view in [("cld_liq_init", "cld_liq_array"),
+                         ("cld_ice_init", "cld_ice_array"),
+                         ("cld_ice_run", "cld_ice_array")]:
+        assert re.search(
+            rf"#ifdef CCPP_GPU_PRESENT_CHECKS\s*\n\s*!\$acc data present\({view}\)\s*\n"
+            rf"#endif\s*\n(?:#ifdef [^\n]*\n[^\n]*\n#endif\s*\n)*"
+            rf"\s*if \(errflg \.eq\. 0\) then\s*\n\s*call {callee}\(", suite
+        ), callee
+
+
 _SCHEME_TMPL = """\
 [ccpp-table-properties]
   name = {name}
