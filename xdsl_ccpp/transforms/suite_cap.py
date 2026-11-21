@@ -127,7 +127,7 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
         ccpp_suite_state_global, string_const_globals = self._build_state_globals(all_strings_used)
 
         allocatable_mod_vars, interstitial_var_names, run_local_entries = (
-            self._build_module_vars(suite_model)
+            self._build_module_vars(suite_model, generated_fns)
         )
         if allocatable_mod_vars:
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)

@@ -16700,3 +16700,126 @@ Verification (compare=20261117-02ac990-nvhpc, zero tolerance):
   bisection runs at 12600 and 16200 s. Their `cam4_cap.F90` is
   byte-identical to xdsl113gpu's (F2000_C4, FHIST_C4, QPC4).
 - The RRTMGP `.meta` cleanup: xdsl113gpu rrtmgp GPU tests BASELINE PASS.
+
+## cam4 scheme batch: hack debug sums and horizontal-momentum damping on the device (2026-11-20)
+
+Two atmospheric_physics scheme edits from the cam4 data-movement survey
+(`gpu-cam4-host-uses-in-device-schemes`, `gpu-cam4-host-scheme-syncs`):
+
+- `hack_convect_shallow.F90`: with `debug_verbose`, the column-1 moist static
+  energy and precipitable water integrals (`hsum1/2`, `qsum1/2`) are summed in
+  an `!$acc serial` region before the existing `update self`, not on the
+  host in the print loop. `pdel` has no host use left, so the cap no longer
+  pulls it for the scheme. No data movement saved: `pdel` now arrives with a
+  later pull that already existed.
+- `diffusion_solver.F90`: `vertical_diffusion_diffuse_horizontal_momentum_timestep_init`
+  zeroes `ksrf` and `tau_damp_rate` in two kernels inside
+  `!$acc data copyout(...)` (still `pure`). The cap's `update self` /
+  `update device(ksrf, tau_damp_rate)` around it go: four transfers per step.
+
+Capture: `vertical_diffusion_pressure_coordinates` added to the uw_vdiff
+scheme list; c16a (hb_vdiff) and c16b (uw_vdiff) recaptured after the solver
+port (`0a41a06`) left stale `test_vertical_diffusion_prepare_inputs`
+drivers. Verification: replays hb_vdiff 17/17, uw_vdiff 19/19, CPU and GPU;
+xdsl118gpu (cam4 SE + MPAS, hack_shallow, hb_vdiff, uw_vdiff GPU tests;
+compare=20261117-02ac990-nvhpc): 10/10 BASELINE PASS.
+
+## Constituent views on the device when the whole array is already device data (2026-11-20)
+
+Bug in `resolve-constituent-residency` (`constituent_residency_pass.py`,
+`_apply_constituent_rule`): with CPU writers of the constituents, the
+device-capable views become device data only when some scheme takes the
+whole array on the device. The rule looked for that whole-array user only
+among the still-undecided arguments; in cam4 `derive_memory_space` had
+already made every whole-array user device, so the rule took the "views
+only" branch and left `cldice`/`cldliq` host. The cap then pulled the whole
+constituent array before `rk_stratiform_check_qtlcwat` and before each
+`compute_cloud_fraction` (3 x ~5 MB per step). Now it looks among all
+constituent uses on the device.
+
+cap_oracle (xdsl113gpu cases): cam4 SE and MPAS 3 -> 1 whole-array pulls per
+step (the one left, `update self(rhcloud, rel, rei, constituents)` before
+`rk_stratiform_cloud_optical_properties_diagnostics`, is history output,
+`gpu-history-accumulate`); cam7 views device, pulls unchanged; every other
+GPU cap identical. Test: `test_constituent_residency.py`
+`test_whole_array_already_device_makes_device_capable_views_device` (fails
+without the fix). Verification: xdsl119gpu (all 7 cam4 GPU tests, D and
+non-D; compare=20261117-02ac990-nvhpc): 7/7 BASELINE PASS. Expected saving:
+~0.14-0.29 s/day (perf20: 1.5-3 ms per pull, 2 pulls of 3 gone, 48 steps).
+
+## `gpu-cam4-host-scheme-syncs`: no pulls of variables the device only reads (2026-11-21)
+
+`emit_coalesced_updates` treated the host copy of every synced variable as
+stale at the start of each cap function, so the first CPU reader in each
+phase pulled it, even when no device code had written it since the cap
+filled the device copy (at init, per-step `enter data copyin`, or the
+per-call `data copy` of the coupler fields). New
+`cap_shared.find_device_readonly_host_vars`: host variables every scheme
+with metadata takes as intent `in` wherever it uses them on the device (all
+phases, all suites, called or not: a device writer anywhere excludes the
+variable; no declared intent counts as a writer). `GPUDataPass` passes them
+to `emit_coalesced_updates(host_current_at_entry=...)`: their host copy
+counts as current at function entry and across subcycle-loop boundaries,
+so their runs push after CPU writes but never pull. CAM-SIMA has no OpenACC
+outside `src/physics`, so nothing else writes them on the device.
+
+cap_oracle (xdsl113gpu cases, before the next two items): 24 caps differ,
+every change removes names from `update self` lists only (no pushes, nothing
+added). cam4: `lat` 3 pulls per step (`prescribe_lower_boundary_conditions`
+timestep_init, `zm_convr_run`, ...) and one pull each of 18 state and
+coupler variables (`pmid`, `pint`, `pdel`, `piln`, `rpdel`, `omega`,
+`inv_exner`, `shf`, `cflx`, `wsx`, `wsy`, `cpairv`, ...), mostly before the
+CPU diagnostics schemes; similar in adiabatic, held_suarez, kessler, tj2016,
+the PBL/vdiff suites, pumas, gw_cam4/cam7 and cam7. Tests:
+`test_device_readonly_vars.py` (9); `test_suite_scoped_device_residency.py`
+and `test_gpu_debug_sync.py` (device scheme reads `qv` with intent `in`)
+now expect no `update self(qv_a)`. Done with it: `gpu-cam4-unused-device-args`
+(`zm_convr` `lat`, no scheme edit).
+
+## `gpu-constituent-view-copy-regions`: present checks instead of copies (2026-11-21)
+
+`GPUDataPass._emit_constituent_view_copies` wrapped every call taking a
+device constituent view in `!$acc data copy(<views>)`. When the ccpp cap
+enters `lc_constituent_array` around every group call, those regions move
+nothing but cost an enter/exit event and a wait each (perf20, MPAS cam4:
+2,792 per day, ~8 ms). New `cap_shared.constituent_array_entered_per_group`
+(the `ccpp_cap` residency condition, computed before it: some scheme in any
+suite takes the whole array, not a view, with `memory_space = device` in its
+`_run` table). Then the regions are `check_only` `present(<views>)`
+(`map(alloc:)` for omp), compiled only with `CCPP_GPU_PRESENT_CHECKS` like
+the per-call present regions; otherwise still `copy`.
+
+cap_oracle (after the previous item): 149 regions in 22 caps; every changed
+line is `data copy(...)` -> `data present(...)` or its guard `USE_GPU` ->
+`CCPP_GPU_PRESENT_CHECKS`; cam4 38 -> 6 `data copy` regions (the 6 left are
+hostless scratch). Suites without a resident array keep their copies. Test:
+`test_advected_constituent_binding.py`
+`test_device_views_check_only_when_array_resident`.
+
+## `gpu-run-local-suite-owned-alloc`: run-local allocations kept across calls (2026-11-21)
+
+Suite-owned arrays dimensioned by a scalar a repeating phase produces
+(RRTMGP's `nday`) were locals of the group's run function: allocated, created
+on the device, deleted and deallocated on every call (cam4 before_coupler: 8
+of each, `t_day`, `pmid_day`, `pint_day`, `coszrs_day`, `alb_dir`, `alb_dif`,
+`toa_src_sw`, `sfac`). New `ModuleAssemblyMixin._keep_run_local_allocations`
+(called from `_build_module_vars`): the cap's own allocations of such vars
+become `LazyAllocOp`s with `realloc_on_resize` (the package-cap segment
+form), and the vars module variables: allocated and created on first use,
+reallocated (device copy deleted first) only when the extents change,
+deleted in `_finalize` with the other suite-owned arrays. Not changed: vars
+the schemes allocate themselves (no cap allocation; stay locals) and vars
+with a default value (re-initialized every call; none in the cases). Ranks
+whose `nday` is constant (all day or all night) now allocate nothing; ranks
+the terminator crosses still reallocate when it changes. Allocating once at
+the largest size would need exact-shape views of a pool; not done (perf20
+cost of the whole item ~6 ms/day plus host allocation).
+
+cap_oracle (after the previous item): only cam4 (SE, MPAS), cam7 and rrtmgp
+differ, the 8 arrays only. Test: `test_chained_interstitial_allocation.py`
+`test_run_local_device_var_kept_across_calls` (replaces the per-call test).
+
+Verification of the last three items and the constituent-view fix together
+(generator batch; `pytest tests/unit`: 1581 passed): xdsl120gpu (full
+`aux_sima_gpu`, compare=20261117-02ac990-nvhpc): pending. Performance:
+perf23 (MPAS GPU, nsys rank 0) vs perf22: pending.

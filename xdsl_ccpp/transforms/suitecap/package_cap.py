@@ -148,7 +148,7 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
     fn_sigs = gen._build_fn_signatures(fn_sigs_by_name, scheme_entries, [])
     type_import_globals = gen._build_ddt_use_stubs(scheme_entries)
     allocatable_mod_vars, interstitial_var_names, run_local_entries = (
-        gen._build_module_vars(suite_model))
+        gen._build_module_vars(suite_model, generated_fns))
     if allocatable_mod_vars:
         gen._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
     if run_local_entries:
