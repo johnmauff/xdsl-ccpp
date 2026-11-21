@@ -30,6 +30,7 @@ contains
       a(i) = c(i)
     end do
     !$acc end data
+    b(1) = 0.  ! host use: b is referenced, not "never referenced"
   end subroutine
   subroutine m_dispatch(n, a)
     integer, intent(in) :: n

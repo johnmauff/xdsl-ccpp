@@ -16625,3 +16625,78 @@ Verification: no replay (the capture driver needs CAM's `ref_pres`).
 xdsl112gpu (hb_vdiff, uw_vdiff, all SE and MPAS cam4 GPU tests, D and
 non-D; compare=20261117-02ac990-nvhpc): 9/9 BASELINE PASS, the file
 compiled `-acc` in all 9.
+
+## acc-derive-memory-space rules A-C: fewer false host uses in GPU schemes (2026-11-20)
+
+`derive_memory_space.py` classifies a GPU scheme's array arguments from its
+own `!$acc` (rule (a)); an array the classifier cannot place stays "host"
+and the cap syncs it around the call. Three sources of false "host" fixed in
+`transforms/fparser2_to_meta.py` (user discussion 2026-11-20: preferred to
+editing each scheme's `.meta`, and it cleans up `memory_space = device`
+entries written by hand):
+
+- **A, never-referenced arrays.** `_note_unreferenced` (acc and no-acc
+  entry points): array dummies (not derived types) that appear nowhere in
+  the execution part or its internal procedures, apart from inquiry
+  intrinsics (`size(x)`) and keyword names, go to the new
+  `AccResidency.unreferenced`; `tools/ccpp_dsl.py` classifies them
+  `ACC_SYNCED` (device only where the variable is device data elsewhere, no
+  sync, never anchors residency). `validate_source.compare_memory_space`
+  prints a note for each.
+- **B, arrays passed to callees inside the scheme's data region.**
+  `_mapped_call_arguments` now covers function references as well as CALLs
+  (`_procedure_references`: `Call_Stmt`, `Function_Reference` incl.
+  type-bound, `Part_Ref` / `Structure_Constructor` of undeclared names) and
+  contiguous rank-1 sections (`_passed_array`: a bare name, or `x(i1:i2)` /
+  `x(:)` of a rank-1 array; strided sections, elements and higher-rank
+  sections may be copied into a host temporary, so they stay host uses).
+  `_note_host_uses` takes the scheme's `decl_map`.
+- **C, keyword names are not references.** `_referenced_names` skips
+  `name =` directly after `(` or `,` inside parentheses (not `==`, `=>`);
+  parenthesis depth carries across `&` continuation lines
+  (`_scan_state`, `_continues`, `_line_start_state`).
+  `call compute_cloud_fraction_run(..., cloud = cloud2, rhu00 = rhu002,
+  relhum = relhum2)` in `rk_stratiform_cloud_fraction_perturbation_run`
+  no longer counts as a host use of the scheme's own `cloud`, `rhu00`,
+  `relhum`.
+
+Effect, cam4 GPU cap (SE, xdsl112gpu -> xdsl117gpu): 62 -> 57 `update`
+directives. Gone: `update self` of `landfrac` (`zm_conv_evap`), `dsubcld`
+(`zm_conv_momtran`), `idxday` (`rrtmgp_sw_cloud_optics`), `pdeldry` (hack;
+`pmiddry` is now pulled once, later, with the variables a host scheme reads),
+`rhu00, relhum` and `update device(rhu00)` around the perturbation scheme;
+its `update self(cldfrc)` moves from before to after the call. No scheme
+edits needed for `gpu-cam4-unused-device-args` (except `zm_convr` `lat`,
+which is used). With rule B, atmospheric_physics drops the hand-written
+`memory_space = device` from `rrtmgp_sw_rte.meta` (4), `rrtmgp_lw_rte.meta`
+(2), `toa_src_sw` (`rrtmgp_sw_gas_optics.meta`) and `tsfg`
+(`rrtmgp_lw_gas_optics.meta`); `p_lay`, `p_lev`, `t_lay` keep it (passed as
+2-D column sections `x(iCol:iCol2,:)`, still a host use) with a comment.
+
+Tests: `tests/unit/test_fparser2_to_meta_memory_space.py` +16 (unreferenced
+arrays incl. inquiry-only use, internal procedures and no-acc entry points;
+function references with and without keywords, type-bound, rank-1 sections
+in the data region stay "either", strided sections / elements / a local
+indexed by a mapped array stay host; keyword names, assignments on
+continuation lines and comparisons still host uses);
+`test_acc_memory_space_check.py` fixture gains a host use. `pytest
+tests/unit`: 1570 passed.
+
+Verification (compare=20261117-02ac990-nvhpc, zero tolerance):
+- xdsl113gpu (full GPU suite): all BASELINE PASS apart from the known
+  failures, except `SMS_D_Ln9.ne3pg3_ne3pg3_mt233.F1850_C4`
+  `outfrq_se_cam4_gpu`: rounding-level all-sky SW differences (FT, QRS,
+  FSNS) from 12600 s. Bisected in that case (same build, cap edited by
+  hand): rule C off -> pass; then the `rhu00` push and the `rhu00, relhum`
+  pull removed one at a time -> pass; then the byte-identical all-rules cap
+  (the one F2000_C4, FHIST_C4 and QPC4 passed with) -> **pass**. The rule C
+  classification of the perturbation scheme is right (its data region and
+  both loops after the call run on the device). The failure did not
+  reproduce; cause unknown (the failing executable was overwritten). Its
+  history files: `run/bisect_allrules/` in the xdsl113gpu F1850 case (whose
+  TestStatus now shows the last bisection run, a PASS).
+- xdsl117gpu (all 7 SE and MPAS cam4 GPU tests, D and non-D, from the
+  restored generator): 7/7 BASELINE PASS; F1850 identical to the passing
+  bisection runs at 12600 and 16200 s. Their `cam4_cap.F90` is
+  byte-identical to xdsl113gpu's (F2000_C4, FHIST_C4, QPC4).
+- The RRTMGP `.meta` cleanup: xdsl113gpu rrtmgp GPU tests BASELINE PASS.

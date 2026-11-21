@@ -550,6 +550,9 @@ class AccResidency:
     ref_lines: dict[str, list[int]] = field(default_factory=dict)
     # Callees whose directives classified some of its arguments.
     via_callees: set[str] = field(default_factory=set)
+    # Non-derived array dummies the routine never references
+    # (_note_unreferenced): classified ACC_SYNCED.
+    unreferenced: set[str] = field(default_factory=set)
 
     def note(self, name: str, category: str, line_no: int, how: str) -> None:
         """Record *name*'s use; "device" outranks "either", which outranks
@@ -646,17 +649,86 @@ def _clause_variables(arg_text: str) -> list[tuple[str, bool]]:
     return result
 
 
+def _scan_state(text: str, depth: int, last: str) -> tuple[int, str]:
+    """Parenthesis depth and last significant character (not a blank or
+    `&`) after the code of one lowercased source line, from *depth* and
+    *last* before it; strings and comments are skipped."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "!":
+            break
+        if c in "'\"":
+            end = text.find(c, i + 1)
+            i = n if end == -1 else end + 1
+            last = c
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        if c not in " &\t":
+            last = c
+        i += 1
+    return depth, last
+
+
+def _continues(line: str) -> bool | None:
+    """Whether *line*'s code ends with `&` (continued on the next line);
+    None for a line with no code (blank, comment or directive)."""
+    i, n, code_end = 0, len(line), len(line)
+    while i < n:
+        c = line[i]
+        if c == "!":
+            code_end = i
+            break
+        if c in "'\"":
+            close = line.find(c, i + 1)
+            i = n if close == -1 else close + 1
+            continue
+        i += 1
+    code = line[:code_end].rstrip()
+    if not code:
+        return None
+    return code.endswith("&")
+
+
+def _line_start_state(source_lines: list[str], line_no: int) -> tuple[int, str]:
+    """Parenthesis depth and last significant character at the start of
+    line *line_no* (1-indexed): the statement's earlier lines (those
+    continued with `&`, comment lines between them skipped) scanned."""
+    start = line_no
+    k = line_no - 1
+    while k >= 1:
+        cont = _continues(source_lines[k - 1])
+        if cont is None:
+            k -= 1
+            continue
+        if not cont:
+            break
+        start = k
+        k -= 1
+    depth, last = 0, ""
+    for line in source_lines[start - 1:line_no - 1]:
+        if _continues(line) is not None:
+            depth, last = _scan_state(line.lower(), depth, last)
+    return depth, last
+
+
 def _referenced_names(
     source_lines: list[str], first: int, last: int, skip_inquired: bool = False,
 ) -> set[str]:
     """Identifiers referenced in Fortran source lines *first*..*last*
     (1-indexed, inclusive), ignoring comments (and so directives), string
-    literals and component names (an identifier right after `%`). With
+    literals, component names (an identifier right after `%`) and keyword
+    names of argument lists (`name =` right after `(` or `,` inside
+    parentheses: `call f(cloud = cloud2)` does not reference `cloud`). With
     *skip_inquired*, also the identifier right after `<inquiry intrinsic>(`
     (`size(x, 1)` does not read x)."""
     names: set[str] = set()
-    for line in source_lines[first - 1:last]:
-        text = line.lower()
+    for line_no in range(first, last + 1):
+        text = source_lines[line_no - 1].lower()
+        depth, prev = _line_start_state(source_lines, line_no)
         i, n = 0, len(text)
         after_percent = False
         skip_next = False
@@ -668,29 +740,43 @@ def _referenced_names(
                 end = text.find(c, i + 1)
                 i = n if end == -1 else end + 1
                 after_percent = False
+                prev = c
                 continue
             if c.isalpha() or c == "_":
                 j = i
                 while j < n and (text[j].isalnum() or text[j] == "_"):
                     j += 1
                 word = text[i:j]
-                if not after_percent and not skip_next:
+                k = j
+                while k < n and text[k] == " ":
+                    k += 1
+                is_keyword = (
+                    depth > 0 and prev in "(,"
+                    and k < n and text[k] == "="
+                    and text[k + 1:k + 2] not in ("=", ">")
+                )
+                if not after_percent and not skip_next and not is_keyword:
                     names.add(word)
                 after_percent = False
                 skip_next = False
-                if skip_inquired and word in _INQUIRY_INTRINSICS:
-                    k = j
-                    while k < n and text[k] == " ":
-                        k += 1
-                    if k < n and text[k] == "(":
-                        skip_next = True
-                        j = k + 1
+                prev = word[-1]
+                if skip_inquired and word in _INQUIRY_INTRINSICS and k < n and text[k] == "(":
+                    skip_next = True
+                    depth += 1
+                    prev = "("
+                    j = k + 1
                 i = j
                 continue
             if c == "%":
                 after_percent = True
             elif c != " ":
                 after_percent = False
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            if c not in " &\t":
+                prev = c
             i += 1
     return names
 
@@ -746,6 +832,7 @@ def _classify_acc_residency(
 
     if not directives:
         _note_calls_and_refs(sub, source_lines, decl_map, result, is_derived)
+        _note_unreferenced(sub, source_lines, decl_map, result, is_derived)
         return result
     result.has_acc = True
 
@@ -815,8 +902,35 @@ def _classify_acc_residency(
                     result.note(name, ACC_DEVICE, line_no, how)
                 else:
                     result.note(name, ACC_EITHER, line_no, "implicit")
-    _note_host_uses(sub, source_lines, bodies, data_regions, result)
+    _note_host_uses(sub, source_lines, bodies, data_regions, result, decl_map)
+    _note_unreferenced(sub, source_lines, decl_map, result, is_derived)
     return result
+
+
+def _note_unreferenced(sub, source_lines: list[str], decl_map: dict[str, dict],
+                       result: AccResidency, is_derived) -> None:
+    """Record in result.unreferenced the non-derived array dummies the
+    entry point never references: not in its directives, not in its
+    execution part or its internal procedures' (inquiry intrinsics such as
+    `size(x)` and keyword names do not count). The scheme neither reads nor
+    writes them, so the cap needs no sync for them; they are classified
+    ACC_SYNCED (device only where the variable is device data elsewhere,
+    never anchoring residency)."""
+    import fparser.two.Fortran2003 as f03
+    from fparser.two.utils import walk
+
+    arrays = {
+        name for name, decl in decl_map.items()
+        if decl["rank"] > 0 and not is_derived(name) and name not in result.args
+    }
+    if not arrays:
+        return
+    referenced: set[str] = set()
+    for part in walk(sub, f03.Execution_Part):
+        span = _node_line_span(part)
+        if span is not None:
+            referenced |= _referenced_names(source_lines, span[0], span[1], skip_inquired=True)
+    result.unreferenced = arrays - referenced
 
 
 def _note_calls_and_refs(sub, source_lines: list[str], decl_map: dict[str, dict],
@@ -930,56 +1044,109 @@ def _is_data_region_end(words: list[str], language: str) -> bool:
     return words[:3] == ["end", "target", "data"]
 
 
-def _mapped_call_arguments(sub, data_regions: list[tuple[int, int, set[str]]],
-                           names: set[str]) -> set[tuple[int, str]]:
-    """(line, name) for each of *names* passed whole (a bare name) to a
-    call inside a structured data region whose clauses name it: the routine
-    put it on the device for that callee (PUMAS's micro_pumas_tend passes
-    `relvar` to kk2000_liq_autoconversion, whose own kernels use it with
-    default(present)), so the reference is not a use on the host."""
+def _statement_span(node) -> tuple[int, int] | None:
+    """The source span of the statement holding *node* (fparser2 sets spans
+    on statements, not on the expressions inside them)."""
+    while node is not None:
+        item = getattr(node, "item", None)
+        if item is not None and getattr(item, "span", None):
+            return item.span
+        node = getattr(node, "parent", None)
+    return None
+
+
+def _procedure_references(sub):
+    """(statement span, [actual argument node, ...]) of every procedure
+    reference in *sub*: CALL statements, and function references, which
+    fparser2 parses as a Part_Ref (no keyword arguments), a
+    Structure_Constructor (with them) or, for a type-bound procedure with
+    keyword arguments (`x%gas_optics(..., tlev=t)`), a Function_Reference.
+    A Part_Ref or Structure_Constructor whose name is declared in *sub* (a
+    local or dummy array, a derived type) is not a procedure reference. A
+    keyword argument contributes its value."""
     import fparser.two.Fortran2003 as f03
     from fparser.two.utils import walk
 
+    declared = {str(e.children[0]).lower() for e in walk(sub, f03.Entity_Decl)}
+    kinds = (f03.Call_Stmt, f03.Function_Reference, f03.Part_Ref, f03.Structure_Constructor)
+    for node in walk(sub, kinds):
+        name = str(node.children[0]).lower()
+        if isinstance(node, (f03.Part_Ref, f03.Structure_Constructor)) and name in declared:
+            continue
+        arg_list = node.children[1]
+        actuals = []
+        for item in (arg_list.items if arg_list is not None else ()):
+            if isinstance(item, (f03.Actual_Arg_Spec, f03.Component_Spec)):
+                item = item.children[1]
+            actuals.append(item)
+        span = _statement_span(node)
+        if span is not None:
+            yield span, actuals
+
+
+def _passed_array(actual, decl_map: dict[str, dict]) -> str | None:
+    """The dummy array an actual argument passes without a temporary: a
+    bare name, or a stride-free section of a rank-1 array (`x(i1:i2)`,
+    `x(:)`, contiguous). Other sections may be copied into a temporary on
+    the host for the callee, so they are not."""
+    import fparser.two.Fortran2003 as f03
+
+    if isinstance(actual, f03.Name):
+        return str(actual).lower()
+    if isinstance(actual, f03.Part_Ref) and isinstance(actual.children[0], f03.Name):
+        name = str(actual.children[0]).lower()
+        subscripts = actual.children[1].items if actual.children[1] is not None else ()
+        if (
+            decl_map.get(name, {}).get("rank") == 1
+            and len(subscripts) == 1
+            and isinstance(subscripts[0], f03.Subscript_Triplet)
+            and subscripts[0].children[2] is None
+        ):
+            return name
+    return None
+
+
+def _mapped_call_arguments(sub, data_regions: list[tuple[int, int, set[str]]],
+                           names: set[str], decl_map: dict[str, dict]) -> set[tuple[int, str]]:
+    """(line, name) for each of *names* passed to a procedure (a CALL or a
+    function reference) inside a structured data region whose clauses name
+    it, whole or as a contiguous rank-1 section (_passed_array): the
+    routine put it on the device for that callee (PUMAS's micro_pumas_tend
+    passes `relvar` to kk2000_liq_autoconversion, whose own kernels use it
+    with default(present); rrtmgp_sw_rte passes `coszen_day(iCol:iCol2)`
+    and `toa_src_sw` to the function rte_sw), so the reference is not a use
+    on the host."""
     exempt: set[tuple[int, str]] = set()
     if not data_regions:
         return exempt
-    for call in walk(sub, f03.Call_Stmt):
-        span = _node_line_span(call)
-        if span is None:
-            continue
+    for span, actuals in _procedure_references(sub):
         mapped = set()
         for first, last, region_names in data_regions:
             if first < span[0] and span[1] < last:
                 mapped |= region_names
         if not mapped:
             continue
-        actual_list = call.children[1]
-        bare = set()
-        for item in (actual_list.items if actual_list is not None else ()):
-            if isinstance(item, f03.Actual_Arg_Spec):
-                item = item.children[1]
-            if isinstance(item, f03.Name):
-                bare.add(str(item).lower())
-        for name in bare & mapped & names:
+        passed = {_passed_array(a, decl_map) for a in actuals} - {None}
+        for name in passed & mapped & names:
             exempt.update((line_no, name) for line_no in range(span[0], span[1] + 1))
     return exempt
 
 
 def _note_host_uses(sub, source_lines: list[str], bodies: list[tuple[int, int]],
                     data_regions: list[tuple[int, int, set[str]]],
-                    result: AccResidency) -> None:
+                    result: AccResidency, decl_map: dict[str, dict]) -> None:
     """Turn the "either" arguments that the entry point's execution part
     also references outside every compute construct body (*bodies*) into
-    ACC_HOST (see there), at the first such line. A whole array passed to
-    a call inside a data region that maps it is not such a reference
-    (_mapped_call_arguments)."""
+    ACC_HOST (see there), at the first such line. An array passed whole
+    (or as a contiguous rank-1 section) to a procedure inside a data region
+    that maps it is not such a reference (_mapped_call_arguments)."""
     import fparser.two.Fortran2003 as f03
     from fparser.two.utils import walk
 
     either = {name for name, use in result.args.items() if use.category == ACC_EITHER}
     if not either:
         return
-    exempt = _mapped_call_arguments(sub, data_regions, either)
+    exempt = _mapped_call_arguments(sub, data_regions, either, decl_map)
     parts = [_node_line_span(p) for p in walk(sub, f03.Execution_Part)]
     for part in parts:
         if part is None:

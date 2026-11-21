@@ -202,13 +202,17 @@ def _check_fortran_source(
                 print(f"Warning: {finding}", file=sys.stderr)
             elif verbose >= 2:
                 print(f"  {finding}", file=sys.stderr)
-    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DERIVED
+    from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DERIVED, ACC_SYNCED
 
+    # Arrays the entry point never references need no sync: "synced"
+    # (device only where the variable is device data elsewhere).
     classification = {
-        proc: {**{arg: ACC_DERIVED for arg in residency.derived_types},
+        proc: {**{arg: ACC_SYNCED for arg in residency.unreferenced},
+               **{arg: ACC_DERIVED for arg in residency.derived_types},
                **{arg: use.category for arg, use in residency.args.items()}}
         for proc, residency in acc_residency.items()
-        if (residency.args or residency.derived_types) and proc in own_procs
+        if (residency.args or residency.derived_types or residency.unreferenced)
+        and proc in own_procs
     }
     return err.getvalue(), classification
 
