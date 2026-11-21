@@ -208,14 +208,21 @@ def _apply_constituent_rule(uses: list[tuple[str, ccpp.ArgumentOp]]) -> list[str
     readers stay host data that the cap syncs around (whole-array update
     self / update device, find_diverged_capscratch_vars). With CPU writers
     and only per-constituent views on the device nothing changes: views
-    never make the array resident, so the schemes keep copying per call."""
+    never make the array resident, so the schemes keep copying per call.
+
+    The whole-array device user may already be device data before this
+    rule (derive_memory_space sets memory_space = device where another
+    scheme's directives require it), so it is looked for among all the
+    uses on the device, not only the still-undecided ones (cam4: every
+    whole-array user was decided there, and the cldice/cldliq views stayed
+    host, pulling the whole array before each of their schemes)."""
     capable = [(t, a) for t, a in uses if a.device_capable is not None and a.memory_space is None]
     if not capable:
         return []
     cpu_writers = sorted(
         f"{t}: '{a.arg_name.data}'" for t, a in uses if _writes(a) and not _on_device(a)
     )
-    if cpu_writers and not any(_is_whole_array(a) for _, a in capable):
+    if cpu_writers and not any(_is_whole_array(a) and _on_device(a) for _, a in uses):
         return [
             "constituents stay host data (written on the CPU by "
             + ", ".join(cpu_writers) + "; only per-constituent views are used on the "

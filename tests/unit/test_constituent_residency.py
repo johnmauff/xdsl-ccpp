@@ -108,6 +108,24 @@ def test_cpu_view_writer_does_not_block_a_whole_array_device_user():
     assert "cld_ice_run: 'cld_ice_array'" in writers  # (and the examples' init phases)
 
 
+def test_whole_array_already_device_makes_device_capable_views_device():
+    # The whole-array user was made device before this rule
+    # (derive_memory_space: memory_space = device, no device_capable), as in
+    # cam4. It still makes the array resident, so a device_capable view
+    # becomes device despite the CPU writers (the examples' init phases);
+    # before, the rule looked only at undecided arguments, found no
+    # whole-array user and kept the view host.
+    module = _module()
+    whole, view = _whole_and_view(module)
+    whole.properties["memory_space"] = builtin.StringAttr("device")
+    view.properties["device_capable"] = UnitAttr()
+    report = resolve_constituent_residency(module)
+    assert view.memory_space is not None and view.memory_space.data == "device"
+    assert any(l.startswith("cld_ice_run: 'cld_ice_array' memory_space = device") for l in report)
+    assert not any("stay host data" in l for l in report)
+    assert any(l.startswith("constituents written on the CPU (synced):") for l in report)
+
+
 def test_cpu_whole_array_writer_with_only_view_device_users_keeps_them_host():
     # Views alone never make the array resident: nothing changes.
     module = _module()
