@@ -1097,6 +1097,46 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
     )
 
 
+def find_device_readonly_host_vars(scheme_names, meta_data) -> frozenset:
+    """Return the host-var names (model_var_name values) that schemes in
+    `scheme_names` use on the device (memory_space=device) but never write
+    there: every device occurrence, in every phase, has intent in.
+
+    The device copy of such a variable is never newer than the host copy:
+    it changes only when the cap pushes the host's values (update device
+    after a CPU writer, entry copyin). So a CPU reader needs no update self
+    pull, in any phase (emit_coalesced_updates' host_current_at_entry);
+    without this the cap pulls once per cap function, e.g. cam4's latitude
+    before each CPU scheme that reads it, and the state inputs (pmid, pdel,
+    pint, ...) before the CPU diagnostics schemes.
+
+    `scheme_names` must cover every scheme that could run on the device
+    (gpu_data_pass passes every scheme with metadata): a device writer
+    anywhere makes the device copy newer. A scheme arg with no declared
+    intent counts as a writer (arg_writes)."""
+    device_vars: set = set()
+    written: set = set()
+    for scheme_name in scheme_names:
+        props = meta_data.get(scheme_name)
+        if props is None:
+            continue
+        for table_name, table in props.arg_tables.items():
+            if split_scheme_table_name(table_name) is None:
+                continue
+            for arg in table.getFunctionArguments():
+                if not (
+                    arg.hasAttr("model_var_name")
+                    and arg.hasAttr("memory_space")
+                    and arg.getAttr("memory_space") == "device"
+                ):
+                    continue
+                host_var = arg.getAttr("model_var_name")
+                device_vars.add(host_var)
+                if arg_writes(arg):
+                    written.add(host_var)
+    return frozenset(device_vars - written)
+
+
 def resolve_capscratch_cap_var_name(
     std_name: str, is_constituent: bool, is_advected: bool = False,
 ) -> "str | None":
@@ -1241,6 +1281,36 @@ def constituent_array_resident(scheme_names, meta_data) -> bool:
                     ) == "lc_constituent_array"
                 ):
                     return True
+    return False
+
+
+def constituent_array_entered_per_group(scheme_names, meta_data) -> bool:
+    """True when the ccpp cap enters lc_constituent_array around every
+    suite-group call that passes it or one of its views
+    (ccpp_cap._inject_constituent_step_syncs): some scheme in scheme_names
+    -- every suite's schemes, since the decision is the cap's, not a
+    suite's -- takes the whole array (not a view) with memory_space =
+    device in its _run table. The same condition as ccpp_cap's
+    _build_cap_var_map setting framework_var_residency, which looks at the
+    whole array only in the _run phase. Then a device scheme's constituent
+    views are always present (gpu_data_pass._emit_constituent_view_copies)."""
+    for scheme_name in scheme_names:
+        table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, "_run")
+        if table_name is None:
+            continue
+        for arg in meta_data[scheme_name].getArgTable(table_name).getFunctionArguments():
+            if (
+                arg.hasAttr("ownership_kind")
+                and arg.getAttr("ownership_kind") == ArgOwnershipKind.CapScratch
+                and arg.hasAttr("standard_name")
+                and not arg.hasAttr("advected")
+                and arg.hasAttr("memory_space")
+                and arg.getAttr("memory_space") == "device"
+                and resolve_capscratch_cap_var_name(
+                    arg.getAttr("standard_name"), arg.hasAttr("constituent"),
+                ) == "lc_constituent_array"
+            ):
+                return True
     return False
 
 
@@ -2087,7 +2157,10 @@ def _overwritten_section(update_run: list):
     return first.section
 
 
-def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present) -> None:
+def emit_coalesced_updates(
+    directive: str, resolved_touches: dict, emit_present,
+    host_current_at_entry: frozenset = frozenset(),
+) -> None:
     """Shared run-coalescing + cross-variable grouping core for
     `update self`/`update device` synchronization, used consistently by
     every GPU-residency ownership kind (HostMatched, CapScratch, and
@@ -2138,6 +2211,11 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     between touches (entering or leaving a subcycle loop: writes later in a
     loop body reach the next iteration) make the host copy stale again.
 
+    host_current_at_entry: identities whose device copy is never newer than
+    the host copy (no device call writes them; find_device_readonly_host_vars).
+    Their host copy counts as current when the function starts and across
+    subcycle-loop boundaries, so their runs never pull.
+
     "device" touches are "present" touches without the emitted assertion:
     the caller already wraps that call in its own data region (a
     constituent view's copy region, gpu_data_pass.py), so the touch only
@@ -2177,13 +2255,14 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
         update_run.clear()
         return host_current or section is None
 
-    for ref, touch_list in resolved_touches.values():
+    for identity, (ref, touch_list) in resolved_touches.items():
         if ref is None:
             continue
 
+        never_stale = identity in host_current_at_entry
         update_run: list = []  # [Touch, ...]
-        host_current = False  # host copy equals the device copy
-        run_host_current = False  # ... when update_run began
+        host_current = never_stale  # host copy equals the device copy
+        run_host_current = never_stale  # ... when update_run began
         last_block = None
         for touch in (Touch(*t) for t in touch_list):
             block = touch.call_op.parent_block()
@@ -2195,7 +2274,7 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 # next need nothing more; the host copy is not trusted
                 # across the boundary.
                 _close_run(ref, update_run, run_host_current)
-                host_current = False
+                host_current = never_stale
             last_block = block
             if touch.category in ("present", "device"):
                 if touch.category == "present":

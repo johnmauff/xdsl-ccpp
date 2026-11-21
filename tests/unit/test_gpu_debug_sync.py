@@ -341,8 +341,9 @@ _DUAL_CALL_SUITE_XML = """\
 # unrelated to the divergence) written by the SAME call that terminates
 # qv's own update run -- proves a "produced" (debug-sync) touch and a
 # diverged var's own "update"-run touch sharing a call boundary coexist
-# correctly as two independent directives (self-before/device-after for
-# qv, self-after-only for zz_var) rather than corrupting or wrongly
+# correctly as two independent directives (device-after for qv -- no
+# self-before, qv is only read on the device -- and self-after-only for
+# zz_var, at the same point) rather than corrupting or wrongly
 # cross-merging into one nonsensical combined directive -- these are
 # opposite-direction syncs (self vs device) at a shared point, so unlike
 # two "produced" touches sharing a call, they can never actually merge
@@ -468,7 +469,8 @@ class TestDebugSyncMerging:
         self, run_host_match, ccpp_context
     ):
         """qv's own divergence run ends at scheme_b's call (the "update"
-        side, needing a self-before + device-after pair around it); zz_var
+        side, needing a device-after push; no self-before, since only
+        scheme_b writes qv); zz_var
         is an unrelated device-producing var ALSO written by that same
         call, needing only a self-after (produced) sync. These are
         opposite-direction syncs at the same point, so they must NOT be
@@ -484,9 +486,12 @@ class TestDebugSyncMerging:
         assert "call test_sync_merge_scheme_b_run(" in suite_fn
         call_pos = suite_fn.index("call test_sync_merge_scheme_b_run(")
 
-        # qv's own divergence run: self-before + device-after, unaffected
-        # by zz_var's presence.
-        assert "update self(qv_a)" in suite_fn[:call_pos]
+        # qv's own divergence run: device-after, unaffected by zz_var's
+        # presence. No self-before: scheme_a only reads qv on the device
+        # (intent in), so the host copy is never stale
+        # (find_device_readonly_host_vars). The device-after push and
+        # zz_var's self-after sync sit at the same point.
+        assert "update self(qv_a)" not in suite_fn
         assert "update device(qv_a)" in suite_fn[call_pos:]
 
         # zz_var's own produced (debug-sync) touch: self-after only, right

@@ -77,17 +77,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `pumas-refl-single-division-upstream` | <1 day plus PUMAS review (one-file PR, submodule bump) | XS |
 | `zm-convr-init-gathered-outputs` | <1 day plus review (6 lines, regression run) | XS |
+| `wv-sat-goffgratch-point-matches-vector` | ~0.5 day code plus new baselines on every compiler (CPU + GPU regressions) and the atmospheric_physics review; answer-changing, its own PR | XS |
 | `gpu-port-gw-orographic` | cam4 done (CHANGELOG.md L16284); cam7 sources left: 8-15 days (four schemes as column kernels on `gw_drag_prof_column`, their fixer/flux helpers per column, `pint` interfaces, gw_cam7 recapture + replays CPU+GPU, gw_cam7 GPU FPHYStest) | M |
 | `gpu-kernel-launch-reduction` | qsat, tropopause, hack and RTE checks done; left: kernel merging within schemes (deferred by the user until the next nsys trace shows which schemes are launch-bound; ~2-3 days for compute_cloud_fraction / hb exchange / gas-optics pre / rrtmgp_inputs / ZM, est. ~0.1 s/day) | XS-S |
 | `gpu-cap-present-regions` | option 3 only (options 1-2 done 2026-11-20): `default(present)` in the ported schemes, scheme by scheme with replays, after residency is guaranteed; not sized | - |
 | `gpu-widen-column-kernels` | 3.5-4.5 days in three pieces, each bit-for-bit and replay-checked: `qneg` collapse(3) + atomic stats (0.5), `diffuse_tracers` columns x constituents (1), McICA KISS jump-ahead (2-3, exhaustive integer unit test first); est. ~0.23 s/day of rank-0 kernel time | S |
 | `gpu-async-queues` | idea, not planned: first an nsys gap analysis (idle GPU time inside vs between scheme data regions, scheme entry-region enter/wait/exit counts), ~0.5 day; the work itself depends on option 3 of `gpu-cap-present-regions` | - |
-| `gpu-cam4-unused-device-args` | unused args done by rule A without scheme edits (2026-11-20, CHANGELOG.md L16629); left: `zm_convr` `lat` (only in an error message: drop it from the message or keep it host), ~0.25 day | XS |
-| `gpu-cam4-host-uses-in-device-schemes` | ~2.5-4 days in pieces: constituent-view residency rule in xdsl-ccpp (1-2, removes 3 whole-constituent pulls/step), `compute_cloud_fraction` qsat on device (0.5), hack `pdel` (0.25), `rrtmgp_post` flwds (0.5); `prescribed_ozone` trcdata on device not included; perf20 cost: constituent pulls ~0.25-0.45 s/day (scaled to 3 sites), ozone ~0.08, rest <0.01 (perturbation piece done by rule C, CHANGELOG.md L16629) | M |
-| `gpu-cam4-host-scheme-syncs` | ~0.5-1 day: `diffuse_horizontal_momentum` timestep_init kernel; `lat` pull (generator: no pull of an unwritten var across phases, or device read); perf20 cost ~11 ms/day | S |
-| `gpu-run-local-suite-owned-alloc` | size first (nsys, ~0.25 day); fix ~1 day in xdsl-ccpp (allocate once at `columns_on_task` or grow-only); perf20 cost ~6 ms/day of enter/exit events (+ host allocate/deallocate) | S |
-| `gpu-constituent-view-copy-regions` | ~0.5-1 day: emit `check_only` present instead of `copy` when the constituent array is resident; perf20 cost ~8 ms/day | XS |
-| `gpu-rrtmgp-reset-fluxes-byband` | ~0.5-1 day: check RTE's use of the by-band arrays, zero on the device or keep them allocated; perf22 cost ~0.21 s/day (rank 0) | XS |
+| `gpu-cam4-host-uses-in-device-schemes` | constituent views and hack `pdel` done (2026-11-20, CHANGELOG.md L16727, L16704); `rrtmgp_post` flwds moved to `rrtmgp-flux-object-residency`; left: `compute_cloud_fraction` `cldfrc_ice` qsat on the device (0.5 day, waits for `wv-sat-goffgratch-point-matches-vector`); `prescribed_ozone` trcdata on device not included (perf20 ~0.08 s/day) | S |
+| `gpu-run-local-suite-owned-alloc` | not worth it for speed alone (perf20 ~6 ms/day of enter/exit events + host allocation; perf23 could not see the 2026-11-21 attempt); a correct version must handle zero extents (free and delete at extent 0, or never enter a zero-size array), ~1 day plus a test with an all-night rank; reverted attempt CHANGELOG.md L16799 | S |
 | `aerosol-objects-as-scheme-arguments` | decision first (upstream: atmospheric_physics + CAM-SIMA aerosol owners); then ~3-5 days: BAM aerosol data as plain array arguments of `ndrop_bam_ccpp` / `nucleate_ice_ccpp` via an interstitial, recapture, replays; prerequisite for their replays and GPU ports | S |
 | `gpu-history-accumulate` | merge upstream `development` first (#514 restart writing rewrote `cam_hist_file.F90`); then ~13-18 days plus upstream review (estimate 2026-11-20, design notes 2026-11-19; +1 for restart read/write of device buffers): device avg/min/max/var buffers (3-4), device entry point in `cam_history` (2), `lst` filled only on output steps (2-3), diagnostics schemes on the device (3-5), testing (2-3); PUMAS proc_rates +1-2 when wanted. Three stages, each M or smaller | L |
 | `host-caller-device-callee-audit` | 1-2 days (read every direct call from a host scheme to a GPU-ported scheme -- rk_stratiform -> compute_cloud_fraction, clubb -> hb_pbl_dependent_coefficients, kessler driver -- and check each argument the caller changes on the host; fix as in bretherton_park_diff; GPU tests of the affected suites) | XS |
@@ -2514,6 +2511,30 @@ Supporting items (not tracked elsewhere):
   `xdsl-support` working tree, kept out of the `wv_saturation` PR by
   request; a small separate PR (bit-for-bit expected; confirm with a
   regression).
+- `wv-sat-goffgratch-point-matches-vector` — **Make the per-point
+  Goff-Gratch forms match the vector forms (answer-changing).** Added
+  2026-11-20 (from `compute_cloud_fraction`'s `cldfrc_ice` branch, which
+  can't move to per-point device calls bit-for-bit). In atmospheric_physics
+  `to_be_ccppized/wv_sat_methods.F90` (already upstream, `fb23338`):
+  `GoffGratch_svp_water` uses `log10(tboil/t)`, `GoffGratch_svp_water_vect`
+  uses `log_tboil - log10(t(i))`; `GoffGratch_svp_ice_vect` uses a `parameter`
+  `log_param = log10(6.1071_r8)` and the per-point form calls `log10` at run time.
+  MurphyKoop and Bolton already match. PUMAS uses the vector form
+  (`micro_pumas_v1.F90:104`), the cam4 schemes the per-point one.
+  User decision 2026-11-20: option 1, per-point takes the vector expressions,
+  as a **single change in its own PR**, nothing else in it.
+  Change: module `log_tboil`, set in `wv_sat_methods_init`, added to the
+  `declare create`/`update device` lists; both water forms use it; `log_param`
+  at module scope for both ice forms. Answer impact: roundoff wherever the
+  per-point water form runs (cam4 everywhere, incl. the GPU `qsat_line`
+  kernels); vector callers (PUMAS) unchanged. Verify: CPU regressions on
+  gnu/intel/nvhpc with new baselines, GPU vs the new nvhpc CPU baseline
+  (bit-for-bit), and FPHYStest snapshot checks against the CAM snapshots
+  (check that CAM's copy of `wv_sat_methods` also comes from atmos_phys,
+  or note the mismatch in the PR). Issue draft:
+  `issue_goffgratch_vect_point.md` (session scratchpad, 2026-11-20).
+  Unblocks a per-point, device-resident `cldfrc_ice` branch in
+  `compute_cloud_fraction` (removes the `t` pull without rule B extension).
 - **ID: `capture-gpu-status-own-kernels`. Resolved (2026-11-11)** -- CHANGELOG.md L14950.
 - **ID: `gpu-port-hack-convect-shallow`. Resolved (2026-11-11)** -- CHANGELOG.md L14909.
 - **ID: `gpu-port-zm-convr`. Resolved (2026-11-18)** -- CHANGELOG.md L15944.
@@ -2523,7 +2544,10 @@ Supporting items (not tracked elsewhere):
 - **Testing plan for the cam4 data-movement items** (user, 2026-11-20;
   applies to `gpu-cam4-unused-device-args`, `gpu-cam4-host-uses-in-device-schemes`,
   `gpu-cam4-host-scheme-syncs`, `gpu-run-local-suite-owned-alloc`,
-  `gpu-constituent-view-copy-regions`). Replays check a scheme's numerics
+  `gpu-constituent-view-copy-regions`). Status 2026-11-21: scheme batch
+  done (xdsl118gpu 10/10), generator batch done incl. the constituent-view
+  rule (xdsl119gpu 7/7 for the rule; full GPU regression xdsl120gpu
+  pending); left: `compute_cloud_fraction` (after the wv-sat PR). Replays check a scheme's numerics
   CPU vs GPU from driver data; they cannot see the cap (syncs, residency,
   regions) or a host caller of a ported scheme. So:
   1. **Scheme batch** -- replays per item as it is done, then one GPU subset
@@ -2532,13 +2556,13 @@ Supporting items (not tracked elsewhere):
      - unused args removed (replays of the touched schemes; their drivers
        need regeneration or a hand patch since the interfaces change;
        `cap_oracle diff`: only the listed `update self` lines go);
-     - `compute_cloud_fraction` qsat on the device (replay; watch
-       bit-for-bit, saturation math moves host -> device);
+     - `compute_cloud_fraction` qsat on the device: deferred until
+       `wv-sat-goffgratch-point-matches-vector` (2026-11-20);
      - hack `pdel` (replay);
      - `diffuse_horizontal_momentum` timestep_init kernel (replay if the
        capture covers that phase, else the regression);
-     - regression only (no replay possible): `rrtmgp_post` `flwds`
-       (`rrtmgp_post` is not replayed). (The perturbation scheme's inner
+     - `rrtmgp_post` `flwds`: moved to `rrtmgp-flux-object-residency`
+       (2026-11-20); `zm_convr` `lat`: to the generator batch. (The perturbation scheme's inner
        call and the unused arguments were done by rules A-C,
        CHANGELOG.md L16629.)
   2. **Generator batch** (xdsl-ccpp; affects every GPU cap) -- per item
@@ -2553,42 +2577,7 @@ Supporting items (not tracked elsewhere):
      ~0.25-0.45 s/day, the riskiest: wrong means stale constituents) -- its
      own full GPU regression, or last in the generator batch, so a failure
      points at it.
-- `gpu-cam4-unused-device-args` — **Unused arguments of GPU schemes make
-  the cam4 cap sync host copies.** Mostly done 2026-11-20 by rule A of
-  acc-derive-memory-space (CHANGELOG.md L16629): `landfrac`, `dsubcld`, `pdeldry`,
-  `idxday` are no longer synced, no scheme edits; left: `zm_convr` `lat`
-  (last bullet below). Original notes follow. Added 2026-11-20 (user; after
-  `gpu-port-hb-diff-prepare-inputs`). Found in the cam4 GPU cap regenerated
-  on branch `gpu-cap-present-regions` (all data-movement directives of
-  `cam4_physics_before/after_coupler` and their timestep_init/final, minus
-  group entry/exit, diagnostics and aerosol_optics). memory_space is derived
-  from a scheme's `!$acc` clauses (`derive_memory_space.py`); an argument the
-  scheme never references gets no classification, stays host, and the cap
-  pulls it (`update self`) before the call -- and pushes it back after the
-  call if it is inout -- whenever the variable is device data elsewhere.
-  Every step, for nothing:
-  - `zm_conv_evap_run` `landfrac`: `update self(landfrac)`.
-  - `zm_conv_momtran_run` `dsubcld`: `update self(dsubcld)`.
-  - `hack_convect_shallow_run` `pmiddry`, `pdeldry` (left in by
-    `gpu-port-hack-convect-shallow`): part of `update self(pmiddry, pdel,
-    dpdry)` (`pdel` is a real host use, see `gpu-cam4-host-uses-in-device-schemes`).
-  - `rrtmgp_sw_cloud_optics_run` `idxday`: `update self(idxday)` (the
-    scheme uses only `idxnite`).
-  - `zm_convr_run` `lat`: `update self(lat)` -- not unused but passed down
-    to `buildplume` only for an error message (`zm_convr.F90` ~L1588,
-    `' lat: ',lat(i)`). Options: drop it from the message (column index
-    only), or keep it a host argument (the message is printed on the host).
-  Cost (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports): 200 transfers, ~8 ms, 20 MB (perf20 cap predates the
-  hack port, so hack's `pmiddry`/`pdeldry` are not in it; expect ~0.01 s/day).
-  Worth doing for cleanliness and as a pattern, not for speed.
-  Fix: remove the unused arguments from the scheme (`.F90` and `.meta`;
-  atmospheric_physics interface change, note it in the commit message and
-  `unit-test-scheme-changes`), or mark them `memory_space = device` if they
-  must stay. Check: regenerate the cam4 GPU cap (`cap_oracle diff`), the
-  listed `update self` lines go away and nothing else changes; replays of
-  the touched schemes CPU+GPU; GPU subset regression vs the CPU baseline
-  (bit-for-bit expected). Also check the other cam4-family caps
-  (`cap_oracle`) for the same pattern in schemes outside cam4.
+- `gpu-cam4-unused-device-args` — **Resolved (2026-11-21)** -- CHANGELOG.md L16629, L16750.
 - `gpu-cam4-host-uses-in-device-schemes` — **GPU schemes that read or
   write arguments in host code, so the cam4 cap syncs around them.** Added
   2026-11-20 (user; after `gpu-port-hb-diff-prepare-inputs`; same survey as
@@ -2598,18 +2587,11 @@ Supporting items (not tracked elsewhere):
   - **Whole constituent array, 3x** (likely the largest remaining
     transfer): `update self(constituents)` before
     `rk_stratiform_check_qtlcwat_run` and `update self(t, constituents)`
-    before each of the two `compute_cloud_fraction_run` calls. Trigger:
-    `cldice`/`cldliq` are constituent views, and constituent views keep
-    their own reader/writer rule in `resolve-constituent-residency` (they
-    are not promoted by the copy-clause rule, acc-copy-residency
-    2026-11-08), so a host view of one constituent pulls the whole
-    `constituents` array. Both schemes only read them inside kernels
-    (`rk_stratiform.F90` check_qtlcwat ~L80, `compute_cloud_fraction.F90`
-    ~L448-461). Fix in xdsl-ccpp: a constituent view read only in kernels
-    (an "either" view, with the constituent array resident) becomes device
-    like any other copy-clause argument; check the reader/writer rule's
-    reason before changing it (CHANGELOG acc-copy-residency entry).
-  - `compute_cloud_fraction_run` `temp` (cap `t`): real host use --
+    before each of the two `compute_cloud_fraction_run` calls. Done
+    2026-11-20 (a bug in `_apply_constituent_rule`; 3 -> 1 pulls, the one
+    left is history output), CHANGELOG.md L16727.
+  - `compute_cloud_fraction_run` `temp` (cap `t`), **open** (waits for
+    `wv-sat-goffgratch-point-matches-vector`): real host use --
     `call qsat_water(temp(1:ncol, k), ...)` and `call svp_ice_vect(temp(1:ncol, k), ...)`
     per level in host code (~L284-285). Fix: the device column
     `wv_saturation` routines (`gpu-kernel-launch-reduction` qsat piece,
@@ -2617,23 +2599,19 @@ Supporting items (not tracked elsewhere):
   - `rk_stratiform_cloud_fraction_perturbation_run` `cloud`, `rhu00`,
     `relhum`: done 2026-11-20 by rule C (keyword names are not host uses,
     CHANGELOG.md L16629).
-  - `hack_convect_shallow_run` `pdel`: copied in (`!$acc data copyin`, ~L393)
-    and used in kernels, but the classifier finds a host use -- probably the
-    debug energy sums (~L1006-1007); confirm, then move it into the kernel or
-    under the debug-only path.
+  - `hack_convect_shallow_run` `pdel`: done 2026-11-20 (debug sums in an
+    `!$acc serial` region), CHANGELOG.md L16704.
   - `prescribed_ozone_run` `pmid`, `pint`, `phis`, `zi`: `update self` of
     all four every step, passed to the trcdata read/interpolation on the
     host (~L230). Real host use; fix only with trcdata interpolation on
     the device (larger; separate item if wanted).
-  - `rrtmgp_post_run` `flwds` (inout): `update self(flwds)` before,
-    `update device(flwds)` after; `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)`
-    (~L75) runs on the host from the RTE flux object. Fix: a kernel over
-    the device copy of `flux_dn` (check where RTE keeps it; the
-    `rte_config_checks` change of 2026-11-19 is in this scheme).
+  - `rrtmgp_post_run` `flwds` (inout): moved to `rrtmgp-flux-object-residency`
+    (2026-11-20): `flux_dn` is host-only after `rrtmgp_lw_rte`.
   Cost (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports):
   - whole-constituent pulls: 50 pulls, 78 ms, 266 MB (~1.5-3 ms per 5.3 MB
-    pull); perf20 had one such site per step, the current cap three, so
-    expect **~0.25-0.45 s/day** -- the only piece here worth doing for speed;
+    pull); perf20 had one such site per step, the current cap three; the
+    fix removes two, ~0.14-0.29 s/day (2 x 48 steps x 1.5-3 ms; the earlier
+    ~0.25-0.45 overstated it) -- the only piece here worth doing for speed;
   - `prescribed_ozone`: 350 transfers, 83 ms, 357 MB;
   - perturbation (`cldfrc`, `rhu00`, `relhum`): 200 transfers, 25 ms, 71 MB;
   - `compute_cloud_fraction` `t`: 50 pulls, 5 ms, 18 MB;
@@ -2644,24 +2622,7 @@ Supporting items (not tracked elsewhere):
   Effort per piece: see the effort table. Each piece: `cap_oracle diff` on the cam4 GPU
   cap, replays of the touched schemes CPU+GPU, GPU subset regression vs the
   CPU baseline (bit-for-bit).
-- `gpu-cam4-host-scheme-syncs` — **Host-only scheme phases that sync every
-  step in cam4.** Added 2026-11-20 (user; after
-  `gpu-port-hb-diff-prepare-inputs`; same survey). Besides
-  `hb_diff_prepare_vertical_diffusion_inputs` (its own item):
-  - `vertical_diffusion_diffuse_horizontal_momentum_timestep_init`
-    (`diffusion_solver.F90`): `update self(ksrf, tau_damp_rate)` before and
-    `update device(ksrf, tau_damp_rate)` after, every step
-    (`cam4_timestep_init_physics_after_coupler`). Port the phase (a small
-    kernel) or check whether its outputs change at all after the first step.
-  - `prescribe_lower_boundary_conditions` timestep_init:
-    `update self(lat)` every step (`cam4_timestep_init_physics_before_coupler`).
-    `lat` never changes after initialization, so the host copy is always
-    current; either the generator learns that a variable not written since
-    the last sync needs no pull across group/phase boundaries (today the
-    host copy is not trusted across them, `emit_coalesced_updates`), or
-    the scheme reads it on the device.
-  Cost (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports): 250 transfers, ~11 ms, 38 MB.
-  Check as above.
+- `gpu-cam4-host-scheme-syncs` — **Resolved (2026-11-21)** -- CHANGELOG.md L16704, L16750.
 - `gpu-run-local-suite-owned-alloc` — **RRTMGP's per-call scratch arrays
   are allocated and created on the device every step.** Added 2026-11-20
   (user; after `gpu-port-hb-diff-prepare-inputs`; same survey; the user put
@@ -2690,23 +2651,19 @@ Supporting items (not tracked elsewhere):
   ~6 ms (create/delete events themselves record no time; the host
   `allocate`/`deallocate` is not included) -- ~0.01 s/day, so probably not
   worth it for speed.
-- `gpu-constituent-view-copy-regions` — **Per-call `copy()` regions of
-  constituent views when the constituent array is resident.** Added
-  2026-11-20 (user; after `gpu-port-hb-diff-prepare-inputs`; same survey).
-  `GPUDataPass._emit_constituent_view_copies` wraps every call taking a
-  device constituent view in `!$acc data copy(<view>)`: cam4 has ~20 per
-  step in before_coupler (`copy(qv)` around `geopotential_temp`,
-  `dadadj`, `zm_convr`, `zm_conv_evap`, `rk_stratiform_*`, ...) and 4 in
-  after_coupler (`copy(q_wv)`). The constituent array is resident there
-  (`enter data copyin(lc_constituent_array)` at group entry in the ccpp
-  cap), so these move nothing, but each is an enter/exit event and a wait,
-  like the present regions of `gpu-cap-present-regions`. Measured
-  (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports): 2,792 enter/exit events, ~8 ms (~0.01 s/day). They are needed as copies when the array is not
-  resident. Fix: when `resolve-constituent-residency` makes the array
-  resident for the group, emit them as `check_only` present regions
-  (compiled only with `CCPP_GPU_PRESENT_CHECKS`), else keep the copies.
-  Check: cap_oracle on cam4 and a suite with a non-resident constituent
-  array, GPU regression (DEBUG and production tests).
+  **Attempt reverted (2026-11-21, CHANGELOG.md L16799):** kept the cap's
+  allocations as module variables reallocated on a change of extents
+  (`realloc_on_resize`). xdsl120gpu `SMS_D_Ln9.ne3pg3_ne3pg3_mt233.QPC4`
+  `outfrq_se_cam4_gpu` aborted in `rrtmgp_sw_cloud_optics` (`ec_ice_optics_sw`):
+  `bbari_b(:)` "partially present" against a size-0 present-table entry
+  for `alb_dir` (`cam4_cap.F90` line 6256). On an all-night rank `nday = 0`;
+  the zero-size allocation reserves no heap memory, its `enter data create`
+  leaves a size-0 entry at that address, and kept across calls the heap
+  later hands the address to another array. Per-call create/delete kept
+  the entry short-lived. Package-cap segments use the same
+  `realloc_on_resize` form with device residency for `nday` arrays, so
+  they likely carry the same latent bug (check before relying on them on GPU).
+- `gpu-constituent-view-copy-regions` — **Resolved (2026-11-21)** -- CHANGELOG.md L16779.
 - `aerosol-objects-as-scheme-arguments` — **`ndrop_bam_ccpp` and
   `nucleate_ice_ccpp` read their aerosol data from host objects, so they
   have no replay and are hard to port.** Added 2026-11-20 (user asked why
@@ -2735,24 +2692,7 @@ Supporting items (not tracked elsewhere):
   as well (the two large CPU schemes of microp_aero_bam / CAM5 / CAM7 next
   to the ported `compute_subgrid_vertical_velocity_clubb`,
   `scale_subgrid_vertical_velocity`, `dust_default_radii`).
-- `gpu-rrtmgp-reset-fluxes-byband` — **`rrtmgp_pre` zeroes the by-band
-  flux arrays on the host.** Added 2026-11-20 (perf22 nsys CPU sampling):
-  0.21 of `rrtmgp_pre`'s 0.24 s/day on rank 0 is `reset_fluxes_byband`, the
-  largest host-only compute left in a ported scheme. `rrtmgp_pre.F90`
-  `initialize_rrtmgp_fluxes_byband` allocates `fluxes%fluxes%flux_*` and
-  `bnd_flux_up/dn/net(/dn_dir)` (ncol x nlevels x nbands) on every radiation
-  call and `reset_fluxes_byband` (~L401) zeroes them with host array
-  assignments; `rrtmgp_post` frees them (`free_fluxes_byband`). So the cost
-  is likely first-touch page faults of fresh allocations as much as the
-  stores. Before changing: find where RTE (`ty_fluxes_byband` reduce, called
-  in the sw/lw calc schemes) fills these on the device and whether night /
-  non-computed columns rely on the zeros (the arrays are sized ncol, RTE
-  runs on the nday/compacted columns). Options: zero on the device (one
-  kernel per array, or `!$acc enter data create` + device fill if RTE uses
-  the device copy), or allocate once and keep (with
-  `gpu-run-local-suite-owned-alloc` in mind). Test: rrtmgp replays CPU+GPU,
-  rrtmgp + cam4 GPU subsets vs the CPU baseline; the next nsys run for the
-  time.
+- `gpu-rrtmgp-reset-fluxes-byband` — **Resolved (2026-11-21)** -- CHANGELOG.md L16838.
 - `gpu-port-check-energy-gmean` — **Resolved (2026-11-19)** -- CHANGELOG.md L16400.
 - `gpu-cap-present-regions` — **Fewer `!$acc data present(...)` regions
   in the generated caps.** Options 1 (one region per call) and 2 (regions
@@ -3426,8 +3366,9 @@ Supporting items (not tracked elsewhere):
     no replay possible since the scheme keeps using the host modules).
   - Effort ~1 week: plan + CPU compute (regressions bit-for-bit + new
     replay), then GPU kernels (replays CPU+GPU, GPU subsets). Payoff in
-    cam4: ~0.25 s/day host + the ~0.78 GB/day `aer_tau*` upload (perf20);
-    after `gpu-port-check-energy-chng` and `gpu-history-accumulate`.
+    cam4: ~0.25 s/day host + the ~0.78 GB/day `aer_tau*` upload (perf20).
+    Order (user, 2026-11-21): after `gpu-rrtmgp-reset-fluxes-byband`, before
+    `gpu-history-accumulate` (`gpu-port-check-energy-chng` done 2026-11-19).
   - New standard names (plan arrays, tables): flag for SE review.
   - Related CPU-only observations (modal path): `water_uptake` is called
     ~4x per bin per call (SW constructor, `wet_volume` -> `water_volume` ->
