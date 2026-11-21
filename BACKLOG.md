@@ -84,6 +84,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-widen-column-kernels` | 3.5-4.5 days in three pieces, each bit-for-bit and replay-checked: `qneg` collapse(3) + atomic stats (0.5), `diffuse_tracers` columns x constituents (1), McICA KISS jump-ahead (2-3, exhaustive integer unit test first); est. ~0.23 s/day of rank-0 kernel time | S |
 | `gpu-async-queues` | idea, not planned: first an nsys gap analysis (idle GPU time inside vs between scheme data regions, scheme entry-region enter/wait/exit counts), ~0.5 day; the work itself depends on option 3 of `gpu-cap-present-regions` | - |
 | `gpu-cam4-host-uses-in-device-schemes` | constituent views and hack `pdel` done (2026-11-20, CHANGELOG.md L16727, L16704); `rrtmgp_post` flwds moved to `rrtmgp-flux-object-residency`; left: `compute_cloud_fraction` `cldfrc_ice` qsat on the device (0.5 day, waits for `wv-sat-goffgratch-point-matches-vector`); `prescribed_ozone` trcdata on device not included (perf20 ~0.08 s/day) | S |
+| `gpu-run-local-suite-owned-alloc` | not worth it for speed alone (perf20 ~6 ms/day of enter/exit events + host allocation; perf23 could not see the 2026-11-21 attempt); a correct version must handle zero extents (free and delete at extent 0, or never enter a zero-size array), ~1 day plus a test with an all-night rank; reverted attempt CHANGELOG.md L16799 | S |
 | `gpu-rrtmgp-reset-fluxes-byband` | ~0.5-1 day: check RTE's use of the by-band arrays, zero on the device or keep them allocated; perf22 cost ~0.21 s/day (rank 0) | XS |
 | `aerosol-objects-as-scheme-arguments` | decision first (upstream: atmospheric_physics + CAM-SIMA aerosol owners); then ~3-5 days: BAM aerosol data as plain array arguments of `ndrop_bam_ccpp` / `nucleate_ice_ccpp` via an interstitial, recapture, replays; prerequisite for their replays and GPU ports | S |
 | `gpu-history-accumulate` | merge upstream `development` first (#514 restart writing rewrote `cam_hist_file.F90`); then ~13-18 days plus upstream review (estimate 2026-11-20, design notes 2026-11-19; +1 for restart read/write of device buffers): device avg/min/max/var buffers (3-4), device entry point in `cam_history` (2), `lst` filled only on output steps (2-3), diagnostics schemes on the device (3-5), testing (2-3); PUMAS proc_rates +1-2 when wanted. Three stages, each M or smaller | L |
@@ -2623,7 +2624,46 @@ Supporting items (not tracked elsewhere):
   cap, replays of the touched schemes CPU+GPU, GPU subset regression vs the
   CPU baseline (bit-for-bit).
 - `gpu-cam4-host-scheme-syncs` — **Resolved (2026-11-21)** -- CHANGELOG.md L16704, L16750.
-- `gpu-run-local-suite-owned-alloc` — **Resolved (2026-11-21)** -- CHANGELOG.md L16799.
+- `gpu-run-local-suite-owned-alloc` — **RRTMGP's per-call scratch arrays
+  are allocated and created on the device every step.** Added 2026-11-20
+  (user; after `gpu-port-hb-diff-prepare-inputs`; same survey; the user put
+  GPU memory-allocation work off on 2026-11-19, so this is to size before
+  doing). The allocations are in xdsl-ccpp's generated interface code (the
+  suite cap), not in RRTMGP: suite-owned variables dimensioned by a
+  repeating-phase scalar (`nday`, which changes every radiation step) are
+  "run-local" -- a local allocatable of the group's run function,
+  `allocate` on each call and `deallocate` before return
+  (`suitecap/suite_owned.py` `_is_run_local_var`, LazyAllocOp
+  `is_run_local`), and for device residency an `!$acc enter data create`
+  after the allocation and `exit data delete` before the deallocation
+  (`suitecap/gpu.py`, the run-local create/delete method). cam4
+  before_coupler: `t_day`, `pmid_day`, `pint_day`, `coszrs_day`,
+  `alb_dir`, `alb_dif`, `toa_src_sw`, `sfac` -- 8 host allocations, 8
+  creates and 8 deletes per call. `lw_Ds` (dimensioned by
+  `columns_on_task`) is module-level and created once. Options: allocate
+  once at the largest size (`columns_on_task` for `nday`) and pass
+  `x(1:nday, :)` (only safe if every receiving dummy is assumed-shape --
+  an explicit-shape dummy makes a temporary and a stale device copy,
+  `reference_explicit_shape_dummy_gpu`); or grow-only reallocation
+  (reallocate only when `nday` exceeds the current size). Size first: nsys
+  per-call cost of the creates/deletes (the nvhpc pool allocator hides
+  `cuMemAlloc`; ~13 + 8 us per create/delete pair measured in perf20 for
+  scheme regions). Measured (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports): 800 enter/exit data events,
+  ~6 ms (create/delete events themselves record no time; the host
+  `allocate`/`deallocate` is not included) -- ~0.01 s/day, so probably not
+  worth it for speed.
+  **Attempt reverted (2026-11-21, CHANGELOG.md L16799):** kept the cap's
+  allocations as module variables reallocated on a change of extents
+  (`realloc_on_resize`). xdsl120gpu `SMS_D_Ln9.ne3pg3_ne3pg3_mt233.QPC4`
+  `outfrq_se_cam4_gpu` aborted in `rrtmgp_sw_cloud_optics` (`ec_ice_optics_sw`):
+  `bbari_b(:)` "partially present" against a size-0 present-table entry
+  for `alb_dir` (`cam4_cap.F90` line 6256). On an all-night rank `nday = 0`;
+  the zero-size allocation reserves no heap memory, its `enter data create`
+  leaves a size-0 entry at that address, and kept across calls the heap
+  later hands the address to another array. Per-call create/delete kept
+  the entry short-lived. Package-cap segments use the same
+  `realloc_on_resize` form with device residency for `nday` arrays, so
+  they likely carry the same latent bug (check before relying on them on GPU).
 - `gpu-constituent-view-copy-regions` — **Resolved (2026-11-21)** -- CHANGELOG.md L16779.
 - `aerosol-objects-as-scheme-arguments` — **`ndrop_bam_ccpp` and
   `nucleate_ice_ccpp` read their aerosol data from host objects, so they

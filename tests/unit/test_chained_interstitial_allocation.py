@@ -329,12 +329,10 @@ class TestRealCapgenChainedInterstitialVariable:
 
 
 # A run-local SuiteOwned array (dimensioned by a _timestep_init output)
-# that a memory_space=device scheme writes (rrtmgp's toa_src_sw/sfac,
-# nday-sized, once rrtmgp_sw_solar_var ran on the device): a module
-# variable, allocated and created on the device on first use and
-# reallocated only when its extents change; its device copy is deleted in
-# _finalize (gpu-run-local-suite-owned-alloc). Before, it was a local of
-# the run function, allocated, created, deleted and deallocated per call.
+# that a memory_space=device scheme writes: its device copy is created and
+# deleted with each per-call allocation, in the run function -- not in
+# _finalize, where the local does not exist (rrtmgp's toa_src_sw/sfac,
+# nday-sized, once rrtmgp_sw_solar_var ran on the device).
 _DEVICE_SCHEME_A_RUN = f"""\
 [ccpp-table-properties]
   name = scheme_a
@@ -354,7 +352,7 @@ _DEVICE_SCHEME_A_RUN = f"""\
 """
 
 
-def test_run_local_device_var_kept_across_calls(run_host_match, ccpp_context):
+def test_run_local_device_var_created_and_deleted_per_call(run_host_match, ccpp_context):
     module = run_host_match(
         scheme_metas=[_scheme_c_meta("_timestep_init"), _DEVICE_SCHEME_A_RUN],
         host_metas=[_HOST_META], suite_xml=_FLAT_SUITE_XML,
@@ -364,20 +362,10 @@ def test_run_local_device_var_kept_across_calls(run_host_match, ccpp_context):
     out = StringIO()
     print_to_ftn(module, out)
     fortran = out.getvalue()
-    module_scope = fortran.split("CONTAINS")[0]
-    assert "real(kind=kind_phys), allocatable :: produced(:)" in module_scope
     run = _fn_body(fortran, "test_suite_physics")
-    assert "allocatable :: produced" not in run
-    # Reallocated (device copy deleted first) only on a change of extents.
-    resize = run.index("if (any(shape(produced) /= [")
-    delete = run.index("!$acc exit data delete(produced)")
-    free = run.index("deallocate(produced)")
-    first = run.index("if (.not. allocated(produced)) then")
     alloc = run.index("allocate(produced(")
     create = run.index("!$acc enter data create(produced)")
-    call = run.index("call scheme_a_run(")
-    assert resize < delete < free < first < alloc < create < call
-    # Not freed after the call.
-    assert "allocated(produced)) deallocate" not in run
-    final = _fn_body(fortran, "test_suite_finalize")
-    assert "!$acc exit data delete(produced)" in final
+    delete = run.index("!$acc exit data delete(produced)")
+    dealloc = run.index("if (allocated(produced)) deallocate(produced)")
+    assert alloc < create < delete < dealloc
+    assert "produced" not in _fn_body(fortran, "test_suite_finalize")

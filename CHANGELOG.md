@@ -16796,7 +16796,11 @@ hostless scratch). Suites without a resident array keep their copies. Test:
 `test_advected_constituent_binding.py`
 `test_device_views_check_only_when_array_resident`.
 
-## `gpu-run-local-suite-owned-alloc`: run-local allocations kept across calls (2026-11-21)
+## `gpu-run-local-suite-owned-alloc`: run-local allocations kept across calls (2026-11-21; reverted)
+
+**Reverted the same day** (xdsl120gpu: a size-0 device entry kept across calls collided
+with another array; see the BACKLOG entry). The description below is of the reverted
+change.
 
 Suite-owned arrays dimensioned by a scalar a repeating phase produces
 (RRTMGP's `nday`) were locals of the group's run function: allocated, created
@@ -16819,7 +16823,14 @@ cap_oracle (after the previous item): only cam4 (SE, MPAS), cam7 and rrtmgp
 differ, the 8 arrays only. Test: `test_chained_interstitial_allocation.py`
 `test_run_local_device_var_kept_across_calls` (replaces the per-call test).
 
-Verification of the last three items and the constituent-view fix together
-(generator batch; `pytest tests/unit`: 1581 passed): xdsl120gpu (full
-`aux_sima_gpu`, compare=20261117-02ac990-nvhpc): pending. Performance:
-perf23 (MPAS GPU, nsys rank 0) vs perf22: pending.
+Verification of the generator batch (`pytest tests/unit`: 1581 passed):
+xdsl120gpu (full `aux_sima_gpu`, compare=20261117-02ac990-nvhpc), with the
+run-local change: 26 BASELINE PASS, the known failures (mcsp, zm: aborted
+CPU baselines; F2000_C7 at RUN), and one FAIL,
+`SMS_D_Ln9.ne3pg3_ne3pg3_mt233.QPC4` `outfrq_se_cam4_gpu` at RUN, caused by
+the run-local change (reverted). Performance: perf23 (MPAS GPU, nsys rank 0,
+with all four changes) vs perf22: physics 9.91 -> 9.64 s/day on the slowest
+rank, cap sync host time 4.29 -> 4.00 s, cap memcpy 11.85 -> 10.75 GB/day;
+the gain is the constituent-view fix (stratiform-cloud syncs 0.230 ->
+0.012 s); two GPU ports since perf22 contribute too
+(`/glade/work/dennis/cam_sima_perf/perf23.md`).

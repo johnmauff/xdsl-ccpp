@@ -213,10 +213,6 @@ class SuiteOwnedMixin:
         in a repeating phase (e.g. nday in rrtmgp_pre_timestep_init). A
         module-level lazy alloc would lock in the first-call size; matches
         capgen-v1 (local allocatable, allocated and deallocated per call).
-        The cap's own allocations of such vars are then turned into
-        module variables reallocated only when the extents change
-        (_keep_run_local_allocations); vars the schemes allocate stay
-        locals.
         """
         for dim_std_name in entry.alloc_dim_std_names:
             dim_entry = suite_model.get(dim_std_name.lower())

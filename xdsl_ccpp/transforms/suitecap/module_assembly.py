@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from xdsl.dialects import func, llvm, memref
 from xdsl.dialects.builtin import (
-    BoolAttr,
     StringAttr,
     i8,
 )
@@ -68,24 +67,17 @@ class ModuleAssemblyMixin:
         ]
         return ccpp_suite_state_global, string_const_globals
 
-    def _build_module_vars(self, suite_model, generated_fns=()):
+    def _build_module_vars(self, suite_model):
         """Return (allocatable_mod_vars, interstitial_var_names, run_local_entries).
 
         run_local_entries are declared as locals in _run, not at module scope.
-
-        A run-local var the cap allocates itself (a LazyAllocOp with
-        is_run_local in *generated_fns*, no default value) is made a module
-        variable instead, reallocated only when its extents change
-        (_keep_run_local_allocations; gpu-run-local-suite-owned-alloc).
         """
-        kept = self._keep_run_local_allocations(generated_fns)
         interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
         run_local_entries = []
         for entry in suite_model.suite_owned_vars():
             if (entry.rank > 0 and not entry.is_ddt
-                    and self._is_run_local_var(entry, suite_model)
-                    and entry.local_name not in kept):
+                    and self._is_run_local_var(entry, suite_model)):
                 run_local_entries.append(entry)
                 continue
             if entry.is_ddt:
@@ -120,45 +112,6 @@ class ModuleAssemblyMixin:
                 )
             interstitial_var_names.add(entry.local_name.lower())
         return allocatable_mod_vars, interstitial_var_names, run_local_entries
-
-    @staticmethod
-    def _keep_run_local_allocations(generated_fns) -> set:
-        """Turn the cap's per-call allocations of run-local vars into
-        allocations kept across calls; return the names of the vars turned.
-
-        A run-local var (_is_run_local_var: dimensioned by a scalar a
-        repeating phase produces, e.g. RRTMGP's nday) was a local
-        allocatable of the run function, allocated on every call and
-        deallocated before its return, and with device residency created
-        and deleted on the device each call too (cam4: 8 allocations,
-        creates and deletes per before_coupler call). Each of its
-        LazyAllocOps becomes realloc_on_resize instead: the var is a module
-        variable, allocated (and created on the device) on first use and
-        reallocated only when the extents change -- the package-cap segment
-        form. Its device copy is deleted in _finalize like other module
-        suite-owned vars (_inject_suite_owned_gpu_exit).
-
-        Not turned: a var with a default value (a run-local var is
-        re-initialized on every call; a kept allocation only when
-        allocated), and a var the scheme allocates itself (no LazyAllocOp).
-        All of a var's LazyAllocOps must qualify."""
-        allocs: dict = {}
-        for fn in generated_fns:
-            if not isa(fn, func.FuncOp):
-                continue
-            for op in fn.walk():
-                if isa(op, LazyAllocOp) and op.is_run_local is not None \
-                        and bool(op.is_run_local.value.data):
-                    allocs.setdefault(op.var_name.data, []).append(op)
-        kept = set()
-        for name, ops in allocs.items():
-            if any(op.init_value_region is not None for op in ops):
-                continue
-            for op in ops:
-                del op.properties["is_run_local"]
-                op.properties["realloc_on_resize"] = BoolAttr.from_bool(True)
-            kept.add(name)
-        return kept
 
     @staticmethod
     def _inject_run_local_var_handling(generated_fns, run_local_entries):
