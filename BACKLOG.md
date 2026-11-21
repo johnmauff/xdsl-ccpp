@@ -85,7 +85,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-async-queues` | idea, not planned: first an nsys gap analysis (idle GPU time inside vs between scheme data regions, scheme entry-region enter/wait/exit counts), ~0.5 day; the work itself depends on option 3 of `gpu-cap-present-regions` | - |
 | `gpu-cam4-host-uses-in-device-schemes` | constituent views and hack `pdel` done (2026-11-20, CHANGELOG.md L16727, L16704); `rrtmgp_post` flwds moved to `rrtmgp-flux-object-residency`; left: `compute_cloud_fraction` `cldfrc_ice` qsat on the device (0.5 day, waits for `wv-sat-goffgratch-point-matches-vector`); `prescribed_ozone` trcdata on device not included (perf20 ~0.08 s/day) | S |
 | `gpu-run-local-suite-owned-alloc` | not worth it for speed alone (perf20 ~6 ms/day of enter/exit events + host allocation; perf23 could not see the 2026-11-21 attempt); a correct version must handle zero extents (free and delete at extent 0, or never enter a zero-size array), ~1 day plus a test with an all-night rank; reverted attempt CHANGELOG.md L16799 | S |
-| `gpu-rrtmgp-reset-fluxes-byband` | ~0.5-1 day: check RTE's use of the by-band arrays, zero on the device or keep them allocated; perf22 cost ~0.21 s/day (rank 0) | XS |
 | `aerosol-objects-as-scheme-arguments` | decision first (upstream: atmospheric_physics + CAM-SIMA aerosol owners); then ~3-5 days: BAM aerosol data as plain array arguments of `ndrop_bam_ccpp` / `nucleate_ice_ccpp` via an interstitial, recapture, replays; prerequisite for their replays and GPU ports | S |
 | `gpu-history-accumulate` | merge upstream `development` first (#514 restart writing rewrote `cam_hist_file.F90`); then ~13-18 days plus upstream review (estimate 2026-11-20, design notes 2026-11-19; +1 for restart read/write of device buffers): device avg/min/max/var buffers (3-4), device entry point in `cam_history` (2), `lst` filled only on output steps (2-3), diagnostics schemes on the device (3-5), testing (2-3); PUMAS proc_rates +1-2 when wanted. Three stages, each M or smaller | L |
 | `host-caller-device-callee-audit` | 1-2 days (read every direct call from a host scheme to a GPU-ported scheme -- rk_stratiform -> compute_cloud_fraction, clubb -> hb_pbl_dependent_coefficients, kessler driver -- and check each argument the caller changes on the host; fix as in bretherton_park_diff; GPU tests of the affected suites) | XS |
@@ -2693,24 +2692,7 @@ Supporting items (not tracked elsewhere):
   as well (the two large CPU schemes of microp_aero_bam / CAM5 / CAM7 next
   to the ported `compute_subgrid_vertical_velocity_clubb`,
   `scale_subgrid_vertical_velocity`, `dust_default_radii`).
-- `gpu-rrtmgp-reset-fluxes-byband` — **`rrtmgp_pre` zeroes the by-band
-  flux arrays on the host.** Added 2026-11-20 (perf22 nsys CPU sampling):
-  0.21 of `rrtmgp_pre`'s 0.24 s/day on rank 0 is `reset_fluxes_byband`, the
-  largest host-only compute left in a ported scheme. `rrtmgp_pre.F90`
-  `initialize_rrtmgp_fluxes_byband` allocates `fluxes%fluxes%flux_*` and
-  `bnd_flux_up/dn/net(/dn_dir)` (ncol x nlevels x nbands) on every radiation
-  call and `reset_fluxes_byband` (~L401) zeroes them with host array
-  assignments; `rrtmgp_post` frees them (`free_fluxes_byband`). So the cost
-  is likely first-touch page faults of fresh allocations as much as the
-  stores. Before changing: find where RTE (`ty_fluxes_byband` reduce, called
-  in the sw/lw calc schemes) fills these on the device and whether night /
-  non-computed columns rely on the zeros (the arrays are sized ncol, RTE
-  runs on the nday/compacted columns). Options: zero on the device (one
-  kernel per array, or `!$acc enter data create` + device fill if RTE uses
-  the device copy), or allocate once and keep (with
-  `gpu-run-local-suite-owned-alloc` in mind). Test: rrtmgp replays CPU+GPU,
-  rrtmgp + cam4 GPU subsets vs the CPU baseline; the next nsys run for the
-  time.
+- `gpu-rrtmgp-reset-fluxes-byband` — **Resolved (2026-11-21)** -- CHANGELOG.md L16838.
 - `gpu-port-check-energy-gmean` — **Resolved (2026-11-19)** -- CHANGELOG.md L16400.
 - `gpu-cap-present-regions` — **Fewer `!$acc data present(...)` regions
   in the generated caps.** Options 1 (one region per call) and 2 (regions
@@ -3384,8 +3366,9 @@ Supporting items (not tracked elsewhere):
     no replay possible since the scheme keeps using the host modules).
   - Effort ~1 week: plan + CPU compute (regressions bit-for-bit + new
     replay), then GPU kernels (replays CPU+GPU, GPU subsets). Payoff in
-    cam4: ~0.25 s/day host + the ~0.78 GB/day `aer_tau*` upload (perf20);
-    after `gpu-port-check-energy-chng` and `gpu-history-accumulate`.
+    cam4: ~0.25 s/day host + the ~0.78 GB/day `aer_tau*` upload (perf20).
+    Order (user, 2026-11-21): after `gpu-rrtmgp-reset-fluxes-byband`, before
+    `gpu-history-accumulate` (`gpu-port-check-energy-chng` done 2026-11-19).
   - New standard names (plan arrays, tables): flag for SE review.
   - Related CPU-only observations (modal path): `water_uptake` is called
     ~4x per bin per call (SW constructor, `wet_volume` -> `water_volume` ->

@@ -16834,3 +16834,26 @@ rank, cap sync host time 4.29 -> 4.00 s, cap memcpy 11.85 -> 10.75 GB/day;
 the gain is the constituent-view fix (stratiform-cloud syncs 0.230 ->
 0.012 s); two GPU ports since perf22 contribute too
 (`/glade/work/dennis/cam_sima_perf/perf23.md`).
+
+## `gpu-rrtmgp-reset-fluxes-byband`: by-band fluxes on the device (2026-11-21)
+
+atmospheric_physics only (no generator change). `rrtmgp_pre`
+`reset_fluxes_byband` zeroed `bnd_flux_up/dn/net(/dn_dir)` (ncol x nlev x
+nbands) on the host every radiation call (perf22 rank 0: 0.21 s/day). It
+now creates each non-empty array on the device and zeroes it there with
+RTE's `zero_array`; RTE's `sum_byband`/`net_byband` overwrite them on the
+device and `rrtmgp_sw_calculate_fluxes` (the only reader) reads them there.
+`rrtmgp_post` `free_fluxes_byband` deletes the device copies before
+deallocating. SW `bnd_flux_up`/`bnd_flux_net` are now allocated only with
+`spectralflux` (nothing else reads them). Broadband fluxes are unchanged
+(host; `rrtmgp-flux-object-residency`).
+
+CAM-SIMA: the capture handler's `compare_pointer_2d/3d`
+(`ccpp_capture_rte_objects.F90`) update the host copy (`if_present`) before
+comparing, since these components now live only on the device.
+
+Verification: rrtmgp recapture c17a, replays CPU + GPU pass; xdsl122gpu
+(rrtmgp, SE cam4, analy_ic cam4 GPU vs 20261117-02ac990-nvhpc) 8/8.
+`capture_cam4` and `capture_F2000_C4` still hold pre-change `rrtmgp_pre`
+captures: their replays report SW `bnd_flux_up/net` "captured, but not
+allocated" until recaptured.
