@@ -281,7 +281,9 @@ def compare_memory_space(
     arguments of such an entry point classified by the callees it passes
     them to (fparser2_to_meta.apply_callee_residency); arguments the scheme
     syncs itself with `update ... if_present` (device only where the
-    variable is device data elsewhere).
+    variable is device data elsewhere); arrays the entry point never
+    references (no sync: device only where the variable is device data
+    elsewhere).
     `unified` in `.meta` is not compared.
     """
     from xdsl_ccpp.transforms.fparser2_to_meta import ACC_DEVICE, ACC_HOST, ACC_SYNCED
@@ -311,6 +313,13 @@ def compare_memory_space(
             arg for arg, op in meta_args.items()
             if op.memory_space is not None and op.memory_space.data == "device"
         )
+        for arg in sorted(residency.unreferenced):
+            if arg in meta_args and meta_args[arg].memory_space is None:
+                findings.append(ResidencyFinding(
+                    "note", name,
+                    f"'{arg}' is never referenced by the entry point: no sync, "
+                    "memory_space = device only where it is device data elsewhere",
+                ))
         if not residency.has_acc and residency.via_callees:
             # Classified through its callees (apply_callee_residency).
             for arg, use in sorted(residency.args.items()):

@@ -799,3 +799,260 @@ end module
         str(tmp_path / "s.meta"), str(tmp_path / "s.F90"), None, 1, "acc"
     )
     assert classification == {"s_run": {"b": ACC_DERIVED, "x": ACC_DEVICE}}
+
+
+
+def test_unreferenced_array_is_synced_in_the_classification(tmp_path):
+    """Rule A end to end: an array dummy the entry point never references is
+    "synced" in the classification derive_memory_space reads, with a note."""
+    from xdsl_ccpp.tools.ccpp_dsl import _check_fortran_source
+
+    (tmp_path / "s.F90").write_text("""
+module s
+contains
+  subroutine s_run(x, unused, errmsg, errflg)
+    real, intent(inout) :: x(:)
+    real, intent(in) :: unused(:)
+    character(len=*), intent(out) :: errmsg
+    integer, intent(out) :: errflg
+    errmsg = ''
+    errflg = 0
+    !$acc data present(x)
+    !$acc end data
+  end subroutine
+end module
+""")
+    (tmp_path / "s.meta").write_text("""[ccpp-table-properties]
+  name = s
+  type = scheme
+[ccpp-arg-table]
+  name = s_run
+  type = scheme
+[ x ]
+  standard_name = x_var
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+  units = 1
+  intent = inout
+[ unused ]
+  standard_name = unused_var
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+  units = 1
+  intent = in
+[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character | kind = len=*
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+""")
+    messages, classification = _check_fortran_source(
+        str(tmp_path / "s.meta"), str(tmp_path / "s.F90"), None, 2, "acc"
+    )
+    assert classification == {"s_run": {"unused": ACC_SYNCED, "x": ACC_DEVICE}}
+    assert "'unused' is never referenced" in messages
+
+# ── arrays the entry point never references (rule A, 2026-11-20) ─────────────
+# An array dummy the scheme never touches needs no sync: it is recorded in
+# AccResidency.unreferenced and classified "synced" (device where the
+# variable is device data elsewhere, never anchoring residency). cam4:
+# zm_conv_evap's landfrac, zm_conv_momtran's dsubcld, hack's pmiddry/pdeldry,
+# rrtmgp_sw_cloud_optics' idxday were pulled to the host before every call.
+
+def _residency(body: str, decls: str = "", args: str = "temp, qv, ps, n, gas"):
+    src = f"""
+module m
+contains
+  subroutine m_run({args})
+    integer, intent(in) :: n
+    real, intent(inout) :: temp(:,:), qv(:,:)
+    real, intent(in) :: ps(:)
+    type(gas_t), intent(inout) :: gas
+{decls}
+    integer :: i, k
+    real :: r, work(10)
+{body}
+  end subroutine
+end module
+"""
+    residency = {}
+    _extract_subroutines(src, "test.F90", None, residency, "acc")
+    return residency["m_run"]
+
+
+def test_unreferenced_arrays_are_recorded():
+    r = _residency(
+        "    !$acc parallel loop copy(temp)\n"
+        "    do i = 1, n\n"
+        "      temp(i, 1) = 0.\n"
+        "    end do\n"
+    )
+    assert r.unreferenced == {"qv", "ps"}
+    assert "qv" not in r.args and "ps" not in r.args
+
+
+def test_inquiry_only_use_is_unreferenced():
+    r = _residency("    r = real(size(ps)) + real(ubound(qv, 1))\n    temp = 0.\n")
+    assert r.unreferenced == {"qv", "ps"}
+
+
+def test_host_or_call_use_is_a_reference():
+    r = _residency("    r = ps(1)\n    call kern(qv)\n    temp = 0.\n")
+    assert r.unreferenced == set()
+
+
+def test_unreferenced_in_entry_point_without_acc():
+    r = _residency("    temp = 0.\n")
+    assert not r.has_acc
+    assert r.unreferenced == {"qv", "ps"}
+
+
+def test_unreferenced_in_internal_procedure_is_a_reference():
+    src = """
+module m
+contains
+  subroutine m_run(a, b)
+    real, intent(in) :: a(:), b(:)
+    call inner()
+  contains
+    subroutine inner()
+      print *, b(1)
+    end subroutine
+  end subroutine
+end module
+"""
+    residency = {}
+    _extract_subroutines(src, "test.F90", None, residency, "acc")
+    assert residency["m_run"].unreferenced == {"a"}
+
+
+# ── procedure references inside a data region (rule B, 2026-11-20) ─────────────
+# A function reference (`errmsg = rte_sw(..., toa_src_sw, ...)`, parsed as a
+# Part_Ref or Structure_Constructor) is treated like a call; a stride-free
+# section of a rank-1 array (`coszen_day(iCol:iCol2)`) is contiguous, so it is
+# passed without a temporary, like the whole array. Multi-dimensional
+# sections stay host uses (see test_section_actual_in_its_data_region_is_still_host).
+
+def test_whole_array_in_a_function_reference_in_its_data_region_stays_either():
+    got, _ = _classify(
+        "    !$acc data copyin(ps) copy(temp)\n"
+        "    r = f(temp, ps)\n"
+        "    !$acc end data\n",
+        decls="    real :: r",
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin"), "temp": (ACC_EITHER, "copy")}
+
+
+def test_keyword_function_reference_in_its_data_region_stays_either():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    r = f(x=ps, &\n"
+        "          m=n)\n"
+        "    !$acc end data\n",
+        decls="    real :: r",
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin")}
+
+
+def test_rank1_section_in_its_data_region_stays_either():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    call kern(ps(2:n), n)\n"
+        "    r = f(ps(:))\n"
+        "    !$acc end data\n",
+        decls="    real :: r",
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin")}
+
+
+
+def test_type_bound_function_with_keyword_in_its_data_region_stays_either():
+    # rrtmgp_lw_gas_optics: errmsg = props%gas_optics(..., tsfg(iCol:iCol2), tlev=...)
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    r = obj%props%f(ps(1:n), &\n"
+        "                    tlev=n)\n"
+        "    !$acc end data\n",
+        decls="    real :: r\n    type(t_t) :: obj",
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin")}
+
+def test_strided_rank1_section_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    call kern(ps(1:n:2), n)\n"
+        "    !$acc end data\n"
+    )
+    assert got["ps"] == (ACC_HOST, "host use")
+
+
+def test_rank1_element_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copyin(ps)\n"
+        "    call kern(ps(2), n)\n"
+        "    !$acc end data\n"
+    )
+    assert got["ps"] == (ACC_HOST, "host use")
+
+
+def test_local_array_indexed_by_a_mapped_array_is_still_host():
+    got, _ = _classify(
+        "    !$acc data copyin(idx)\n"
+        "    r = work(idx)\n"
+        "    !$acc end data\n",
+        decls="    integer, intent(in) :: idx(:)\n    real :: r",
+        args="temp, qv, ps, n, gas, idx",
+    )
+    assert got["idx"] == (ACC_HOST, "host use")
+
+
+# ── keyword names are not references (2026-11-20) ─────────────────────────────
+# `call compute_cloud_fraction_run(..., cloud = cloud2, ...)` in
+# rk_stratiform_cloud_fraction_perturbation_run: the keyword `cloud` named
+# the callee's dummy, but the reference scanner counted it as a host use of
+# the caller's own `cloud` array.
+
+def test_keyword_name_matching_a_dummy_is_not_a_host_use():
+    got, _ = _classify(
+        "    !$acc parallel loop copyin(ps)\n"
+        "    do i = 1, n\n"
+        "      work(i) = ps(i)\n"
+        "    end do\n"
+        "    call kern(n,              &\n"
+        "              ps = work,      &\n"
+        "              qv = work)\n"
+    )
+    assert got == {"ps": (ACC_EITHER, "copyin")}
+
+
+def test_assignment_on_a_continuation_line_is_a_host_use():
+    got, _ = _classify(
+        "    !$acc parallel loop copyin(ps)\n"
+        "    do i = 1, n\n"
+        "      work(i) = ps(i)\n"
+        "    end do\n"
+        "    if (n > 0) &\n"
+        "      ps = 0.\n",
+        decls="",
+        args="temp, qv, ps, n, gas",
+    )
+    assert got["ps"] == (ACC_HOST, "host use")
+
+
+def test_comparison_after_a_dummy_is_a_host_use():
+    got, _ = _classify(
+        "    !$acc parallel loop copyin(ps)\n"
+        "    do i = 1, n\n"
+        "      work(i) = ps(i)\n"
+        "    end do\n"
+        "    if (any(ps == 0.)) n2 = 1\n",
+        decls="    integer :: n2",
+    )
+    assert got["ps"] == (ACC_HOST, "host use")
