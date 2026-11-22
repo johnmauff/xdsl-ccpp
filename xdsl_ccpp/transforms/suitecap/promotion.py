@@ -217,13 +217,20 @@ class PromotionMixin:
                  and dims_compatible(a.getAttr("standard_name"), alloc_dim)),
                 None,
             )
-            if matching is not None and (
+            # all_args keeps the phase's first declaration of the name, with
+            # the intents of all its schemes merged; its declared intent says
+            # whether that first scheme writes it. A later scheme reading it
+            # too (e.g. a table filler taking the table sizes) makes the
+            # merged intent inout but leaves the first scheme the producer.
+            first_intent = (
+                matching.getAttr("declared_intent")
+                if matching is not None and matching.hasAttr("declared_intent")
+                else matching.getAttr("intent") if matching is not None else None
+            )
+            if matching is not None and first_intent == "out" and (
                 # A package cap's segment returns what its schemes write first.
-                matching.getAttr("declared_intent") == "out"
-                if package_scoped
-                and matching.hasAttr("declared_intent")
-                else matching.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
-                and matching.getAttr("intent") == "out"
+                package_scoped
+                or matching.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
             ):
                 producer = _find_producer_scheme(matching, arg_tables)
                 if producer is not None and producer not in resolved_producers:

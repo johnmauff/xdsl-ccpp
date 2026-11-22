@@ -157,6 +157,37 @@ class TestChainedInterstitialAllocationOrdering:
         consumer_idx = next(i for i, l in enumerate(lines) if "call scheme_a_register" in l)
         assert producer_idx < alloc_idx < consumer_idx
 
+    def test_consumer_that_also_reads_the_dimension(self, run_host_match, ccpp_context):
+        """The consumer also takes the sizing scalar as intent(in) (as
+        bulk_aerosol_optics_tables_init takes its table sizes): the merged
+        intent becomes inout, but the allocation must still wait for the
+        producer (xdsl123: allocated before the sizes were set)."""
+        consumer_meta = _scheme_a_meta().replace(
+            "[ produced ]",
+            "[ n_inter ]\n"
+            "  standard_name = dimension_for_interstitial_variable\n"
+            "  units = count\n"
+            "  dimensions = ()\n"
+            "  type = integer\n"
+            "  intent = in\n"
+            "[ produced ]",
+        )
+        module = run_host_match(
+            scheme_metas=[_scheme_c_meta(), consumer_meta], host_metas=[_HOST_META],
+            suite_xml=_FLAT_SUITE_XML,
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        SuiteCAP().apply(ccpp_context, module)
+        out = StringIO()
+        print_to_ftn(module, out)
+        fn = _fn_body(out.getvalue(), "test_suite_register")
+        lines = [l.strip() for l in fn.splitlines() if l.strip()]
+        producer_idx = next(i for i, l in enumerate(lines) if "call scheme_c_register" in l)
+        alloc_idxs = [i for i, l in enumerate(lines) if l.startswith("allocate(produced")]
+        consumer_idx = next(i for i, l in enumerate(lines) if "call scheme_a_register" in l)
+        assert len(alloc_idxs) == 1
+        assert producer_idx < alloc_idxs[0] < consumer_idx
+
 
 class TestSchemeSelfAllocatedPrimitiveNoLongerDoubleAllocates:
     """examples/suite_allocate/make_workspace.F90's own `work` is declared
