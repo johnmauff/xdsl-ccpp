@@ -101,7 +101,6 @@ measured data, and will drift as items are reassessed.
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
-| `gpu-port-aerosol-optics` | next step BAM only (2026-11-19): light `aerosol_optics_plan` (init, ~150 lines) + portable `aerosol_optics_compute` (~300 lines, replayable) for the bulk/volcanic types, ~1 week; modal later with the MAM CCPP-ization (2-3 weeks then); payoff cam4 ~0.25 s/day + ~0.78 GB/day upload | S-M |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
 | `example-gpu-build-flags` | 1-2 days (`-acc` for the OpenACC examples, offload flags at link time, `OMP_TARGET_OFFLOAD=MANDATORY`/kernel check in the GPU tests; then fix whatever starts running on the GPU) | XS-S |
@@ -128,6 +127,7 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-mpi-reach-renames` | 0.5 day (follow USE-renamed procedures in `mpi_reach`, as `module_state_access` does; test; check which captured phases it newly leaves out) | XS |
 | `rrtmgp-dry-static-energy-intent-out` | 0.5 day (atmospheric_physics: `intent(inout)` in `.F90` + `.meta`, bit-for-bit; upstream PR) | XS |
 | `rrtmgp-intent-out-unassigned` | 1-2 days (atmospheric_physics: ~10 schemes, `intent(inout)` or assign on every path, errmsg/errflg init; bit-for-bit check; upstream PR) | S |
+| `suite-cap-first-use-inout` | 0.5-1 day (error, or a suite-owned persistent array, for an argument whose first use in the suite is `inout` with no host variable and no earlier producer; unit test) | XS |
 | `scheme-io-capture-rrtmgp-coverage` | 0.5 day plus queue (cam4 recapture with the RRTMGP schemes in its list; check both radiation and non-radiation steps replay) | XS |
 | `rte-byband-net-device` | 0.5 day (local fixes in the vendored rte-rrtmgp done 2026-11-16: `net_byband_precalc` on the device, `top_at_1` from the device copy of `play` in gas optics; confirm the rrtmgp GPU replays and FPHYStest stay bit-for-bit, then a PR to earth-system-radiation/rte-rrtmgp and a submodule update in atmospheric_physics) | XS |
 | `gpu-status-scalar-only-schemes` | 0.5 day (`tools/gpu_scheme_status.py`: a mark for schemes whose per-timestep phases touch only scalars, e.g. `rrtmgp_subcycle`, `rrtmgp_variables`; they need no port and should not count as CPU-only) | XS |
@@ -3196,6 +3196,32 @@ Supporting items (not tracked elsewhere):
   assign a value on every path; initialize errmsg/errflg at the top.
   Decide case by case with the scheme owners (upstream PR to
   ESCOMP/atmospheric_physics); check each change is bit-for-bit.
+  Found 2026-11-21: `intent(inout)` does not work for outputs whose first
+  use in the suite is the scheme itself (all of `rrtmgp_inputs_run`'s and
+  both cloud optics' outputs): nothing earlier writes them, so the
+  generator no longer makes them suite-owned arrays and the cap passes
+  undeclared names (`suite-cap-first-use-inout`). Plan: set them once in
+  each scheme's init phase (`intent(out)`), `intent(inout)` in the run
+  phase. Meanwhile `rrtmgp_inputs`, `rrtmgp_sw_cloud_optics` and
+  `rrtmgp_lw_cloud_optics` are commented out of the `capture_F2000_C4` and
+  `capture_cam4` lists (their non-radiation calls fail the replay; the
+  rrtmgp capture, radiation every step, still covers them) and their c18a
+  drivers sit in `capture_F2000_C4/disabled/`: restore both when this is
+  fixed. The errmsg/errflg init of `rrtmgp_sw_cloud_optics_run` and
+  `rrtmgp_sw_solar_var_setup_init` is done (committed 2026-11-21);
+  `rrtmgp_sw_mcica_subcol_gen_run` already sets them, and `gam_liquid_lw`
+  no longer exists.
+- `suite-cap-first-use-inout` — **xdsl-ccpp: an argument first used as
+  `inout`, with no host variable and no earlier producer, becomes an
+  undeclared name in the cap.** Found 2026-11-21
+  (`rrtmgp-intent-out-unassigned`): with `rrtmgp_inputs_run`'s `t_rad`
+  etc. declared `intent(inout)`, `cap_oracle` generated a cam4 cap that
+  passes `t_rad=t_rad` but declares no `t_rad` -- no error at generation,
+  a compile error later. `intent(out)` makes it a suite-owned array
+  (persistent across calls); `inout` drops it from that set and host
+  matching does not complain. Original capgen rejects such metadata, so
+  the fix is a clear generation error naming the argument (or, if wanted,
+  treating it as suite-owned). Unit test with a two-scheme suite.
 - `gpu-port-rrtmgp-wrapper-schemes` — **atmospheric_physics: OpenACC
   ports of RRTMGP's 21 per-step CPU-only CCPP schemes** (see
   `gpu-port-scheme-checklist`: inputs/pre/post, cloud and aerosol
@@ -3235,152 +3261,7 @@ Supporting items (not tracked elsewhere):
   1-ulp `sfac` difference on the GPU. Next: the rrtmgp GPU FPHYStest
   against the nvhpc CPU baseline (the six new ports run in the model with
   host-resident RTE objects).
-- `gpu-port-aerosol-optics` — **atmospheric_physics: GPU port of
-  `aerosol_optics`.** Added 2026-11-09. `schemes/chemistry/aerosol_optics.F90`
-  (556 lines; cam4, cam5/7, rrtmgp) runs on radiation steps; its optical
-  properties feed the RRTMGP wrappers. Not portable as written: its
-  bin/species/level loops call type-bound procedures through polymorphic
-  pointers (`class(aerosol_properties)`, `class(aerosol_state)`:
-  `aeroprops%get`, `aerostate%get_ambient_mmr`, `aerostate%wet_volume`,
-  `aerosol_optics_sw_bin/lw_bin`), and the column loop branches on
-  `select case (trim(spectype_d))` and `associated(specrefindex_d)` --
-  OpenACC has no device dynamic dispatch. Approach (like `qneg`'s
-  constituent properties): per bin, gather on the host what the objects
-  hold (densities, refractive indices, species types as integer flags,
-  pointers to the state's mixing ratios) into plain arrays, then device
-  kernels for the column/level/wavelength arithmetic; keep the objects on
-  the host (`gpu-ddt-deep-copy-residency`, not planned). The objects are
-  CAM's BAM/MAM aerosol abstraction (`aerosol_optics_core`, shared with
-  CAM), so agree the split with ESCOMP. Do it with
-  `gpu-port-rrtmgp-wrapper-schemes`: ported alone it saves little, since
-  its consumers stay on the CPU until then. Test: capture replays (cam4,
-  rrtmgp) CPU and GPU, then the rrtmgp and cam4 GPU regressions.
-  Options and decision (2026-11-17, user leaning to B):
-  - Structure today: the scheme calls `aerosol_optics_sw_bin`/`lw_bin`
-    (`src/aerosol/aerosol_optics_core.F90`, CAM-SIMA host code shared with
-    CAM), which per bin builds a polymorphic `class(aerosol_optics)` object
-    (`create_aerosol_optics_object`) and calls its `sw_props`/`lw_props`
-    per level and band; the math (RH-bin / sulfate-weight-percent / radius
-    table lookups) lives in ~7 subclasses (`hygroscopic_`, `insoluble_`,
-    `hygrowghtpct_`, `volcrad_`, `hygrocoreshell_`, `refractive_`,
-    `hygro_aerosol_optics_mod.F90`, ~1,500 lines).
-  - A: a bulk-aerosol (cam4) GPU path inside the scheme that re-implements
-    the 3-4 subclass formulas BAM uses; ~1-1.5 weeks, atmospheric_physics
-    only, but duplicates the math (bit-for-bit risk, upstream drift).
-  - **B (preferred):** split each subclass into host-side table setup and a
-    plain device-callable math routine in `src/aerosol`, used by both the
-    CPU and the GPU path; needs ESCOMP agreement (shared with CAM).
-    Performance about equal to A (same kernels and data); B wins on
-    maintainability.
-  - C (device-side objects: polymorphic dispatch, deep copy of the
-    pointer-laden state objects) is impractical: no device dynamic
-    dispatch, per-bin object allocation, pointers into host arrays,
-    shared CAM design.
-  - Data plan (A or B): the objects stay on the host but their data need
-    not move -- optics tables to the device once at init; per step only
-    integer indices/flags (e.g. the constituent index of each bin/species
-    mixing ratio) cross the bus; mixing ratios are read from the device
-    `const_array` (or prescribed-aerosol arrays); outputs (`aer_tau*`,
-    `aer_lw_abs`) stay on the device, removing today's 0.19 s/day of
-    `update device` (perf13). Only CPU-only mixing-ratio buffers (an
-    unported prescribed-aerosol source) would need a per-step copy,
-    ~0.4 MB per species per rank at MPAS 120 km.
-  - Measured (perf14 `nsys`, 2026-11-17, MPAS 120 km cam4, rank 0, s per
-    simulated day): `aerosol_optics` 0.22 (0.17 CPU + 0.05 cap syncs, 0.5%
-    of physics); `aerosol_optics_diagnostics` 0.65 (0.52 CPU + 0.13 cap
-    syncs, 1.6%); ~1 GB/day moved for both. **Low priority for cam4**: the
-    port saves at most ~0.2 s/day (<0.9 even counting the diagnostics,
-    which stay on the host), vs ~10 for RTE residency and ~9 for
-    `zm_convr`. Revisit for MAM configurations (cam5/cam7, many more
-    bins) or for a fully device-resident radiation path; option B stays
-    the chosen approach.
-  **Refined design (user, 2026-11-19): two CCPP schemes; bulk now, modal
-  later with MAM.** Option B as first sketched leaves the scheme going
-  through the `src/aerosol` objects, so it still could not get a capture
-  replay (`test_aerosol_optics.skipped`: host modules
-  `aerosol_instances_mod`, `aerosol_optics_core`, `aerosol_properties_mod`,
-  `aerosol_state_mod`, `phys_prop`, `radiative_aerosol_definitions`). New
-  form (neither scheme exists yet, in CAM-SIMA or CAM):
-  - `aerosol_optics_plan` (host-specific, init phase only, ~300 lines):
-    walks the existing instances once through the existing getters
-    (`optics_params`, `get`, `nbins`, `nspecies`, `alogsig`) and outputs
-    plain arrays by new standard names: per bin the optics type code,
-    species count and constituent indices, densities, hygroscopicity,
-    diagnostic species class, refractive indices per band, (modal) log
-    sigma and number constituent, (volcanic) radius constituent; the
-    optics tables (bulk RH-bin ext/ssa/asm/abs per band; modal Chebyshev
-    tables and refractive-index grids; water refractive index). No
-    per-step host work; `src/aerosol` unchanged.
-  - `aerosol_optics_compute` (portable, atmospheric_physics, run phase):
-    plain arrays only, so replayable (tables become captured inputs,
-    ~1e4-1e5 values). Per bin in bin order, one kernel over (col, lev):
-    bulk RH weights/index and table lookup per band; volcanic radius form;
-    (later) modal water uptake (per-point Koehler solve from
-    `modal_aero_wateruptake`, `qsat_line`), volumes, Chebyshev size
-    parameters, refractive-index mixing, table interpolation and Chebyshev
-    sums; accumulation into `aer_tau`/`aer_tau_w`/`aer_tau_w_g` and
-    `aer_lw_abs` in bin order; per-species visible diagnostics summed in
-    level order. Outputs stay on the device for RRTMGP (the ~0.78 GB/day
-    upload of `aer_tau*` in perf20 goes); only the diagnostics' fields
-    cross to the host (`gpu-history-accumulate`).
-  - Code: per-step work becomes ~1,500 portable lines; host-specific
-    optics code is the plan (~300) plus the optics-table reading in
-    `phys_prop`. The ~7,000-line `src/aerosol` framework is not optics
-    cost: it serves activation (`ndrop`, `ndrop_bam`, `aero_activate`),
-    ice nucleation, convective transport, wet deposition, aqueous
-    chemistry and MAM, and is untouched. Write the routines once (copy-out
-    first, checked bit-for-bit against the objects), then optionally make
-    the `src/aerosol` subclasses' `sw_props`/`lw_props` thin wrappers over
-    them (the `gw_drag_prof` pattern; CAM-shared, upstream review).
-  - Scope: every CAM-SIMA suite with aerosol optics uses prescribed bulk
-    aerosols (BAM): cam4, cam7, rrtmgp; MAM (`schemes/modal_aero/core`,
-    moved from CAM in atmos_phys0_31_000, #433) is library code with no
-    CCPP schemes or suites yet. So: stage 1 plan + CPU compute for the bulk
-    types (bit-for-bit regressions + new replay, ~1 week); stage 2 GPU
-    kernels for bulk (replays CPU+GPU, GPU subset, 2-3 days); modal path
-    later, designed with the MAM CCPP-ization (2-3 weeks then). Priority:
-    low for the bulk part (perf20: 0.25 s/day CPU + ~0.78 GB/day
-    upload). Side finding: `suite_cam5.xml` has no `aerosol_optics` (ask
-    the CAM-SIMA developers). The plan/compute split is also the pattern
-    for `ndrop_bam_ccpp` / `nucleate_ice_ccpp`, which reach aerosol data
-    through the same abstract classes every step.
-  **Next step (user, 2026-11-19): BAM-only scope, light two-scheme form.**
-  cam4 (and the BAM cam7/rrtmgp suites) need only the bulk optics types
-  (`hygroscopic`, `hygrowghtpct`, `insoluble`, plus `volcanic_radius`): per
-  bin an RH (or sulfate weight-percent) weight and index per (col, lev), a
-  linear table interpolation per band (ext/ssa/asm, LW abs) times the layer
-  mass, accumulation and the per-species visible diagnostics -- a few dozen
-  lines of arithmetic per type; mixing ratios straight from the
-  device-resident constituents. So:
-  - `aerosol_optics_plan` (~150 lines, init): bulk and volcanic bins only
-    -> type codes, constituent indices, table arrays; any other optics type
-    (modal, CARMA) is an error with a clear message (no such CAM-SIMA suite
-    exists).
-  - `aerosol_optics_compute` (~300 lines, portable, replayable): the bulk
-    and volcanic kernels, one per bin over (col, lev), bands inside,
-    accumulation in bin order; columns innermost in the CPU build.
-  - The BAM suites (cam4, cam7, rrtmgp) switch to the pair; the current
-    `aerosol_optics` stays for future modal/CARMA suites. Modal branches
-    are added to the compute scheme later with the MAM CCPP-ization.
-  - Rejected for now: a GPU path inside the existing scheme (~3-5 days,
-    no replay possible since the scheme keeps using the host modules).
-  - Effort ~1 week: plan + CPU compute (regressions bit-for-bit + new
-    replay), then GPU kernels (replays CPU+GPU, GPU subsets). Payoff in
-    cam4: ~0.25 s/day host + the ~0.78 GB/day `aer_tau*` upload (perf20).
-    Order (user, 2026-11-21): after `gpu-rrtmgp-reset-fluxes-byband`, before
-    `gpu-history-accumulate` (`gpu-port-check-energy-chng` done 2026-11-19).
-  - New standard names (plan arrays, tables): flag for SE review.
-  - Related CPU-only observations (modal path): `water_uptake` is called
-    ~4x per bin per call (SW constructor, `wet_volume` -> `water_volume` ->
-    `water_uptake`, `water_volume`, LW constructor), but for the climate
-    list (`list_idx == 0`, the optics path) it only copies the wet diameter
-    and aerosol water the MAM water-uptake scheme stored once per step
-    (`get_mode_wet_diameter`/`get_mode_aer_water`) -- cheap, bit-for-bit to
-    remove; only diagnostic lists compute (registered
-    `water_uptake_diag_fn`, unused by optics, none registered in CAM-SIMA).
-    Larger costs: optics objects re-allocated per bin per call,
-    species-type strings compared inside column loops, per-(band, level)
-    virtual calls.
+- `gpu-port-aerosol-optics` — **Resolved (2026-11-21)** for bulk aerosols -- CHANGELOG.md L16861, L16903; modal aerosols go with the MAM CCPP-ization.
 - **ID: `gpu-port-prescribed-fields`. Resolved (2026-11-19)** -- CHANGELOG.md L16340.
 - `gpu-port-rrtmgp-pre` — **Resolved (2026-11-19)** -- CHANGELOG.md L16518.
 - `suite-cap-loop-gpu-sync` — **Host/device syncs for host schemes

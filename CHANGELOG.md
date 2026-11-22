@@ -16857,3 +16857,81 @@ Verification: rrtmgp recapture c17a, replays CPU + GPU pass; xdsl122gpu
 `capture_cam4` and `capture_F2000_C4` still hold pre-change `rrtmgp_pre`
 captures: their replays report SW `bnd_flux_up/net` "captured, but not
 allocated" until recaptured.
+
+## `gpu-port-aerosol-optics` stage 1: bulk aerosol optics schemes for cam4 (2026-11-21)
+
+atmospheric_physics: three new BAM-only schemes replace `aerosol_optics` in
+suite_cam4 (XML and suites-py); the generic `aerosol_optics` (MAM/CARMA
+capable, cam7) is unchanged. Design note:
+CAM-SIMA `aerosol_optics_gpu_design.md`.
+- `bulk_aerosol_optics_sizes` (init): `num_bulk_aer` and the table sample
+  count; a scheme of its own so the tables are allocated before they are
+  filled. Errors when modal/CARMA aerosols or another optics type are on.
+- `bulk_aerosol_optics_tables` (init, host aerosol modules): per-aerosol
+  values and the optics tables in one (sample, band, aerosol) layout for
+  the hygroscopic, insoluble and volcanic-radius types.
+- `bulk_aerosol_optics` (run): no host `use`, plain arrays only, so it has
+  a capture replay; module-level helpers ready for `!$acc routine seq`.
+- 15 new standard names (1 dimension, 9 per aerosol, 5 tables).
+
+xdsl-ccpp generator (`suitecap/promotion.py`): an array sized by a scalar
+that an earlier scheme of the same phase writes is allocated after that
+scheme even when a later scheme also reads the scalar. The merged intent
+of the scalar was `inout`, so the deferral was skipped and the tables were
+allocated before their sizes were set (xdsl123 F compsets: subscript out
+of range in `bulk_aerosol_optics_tables_init`). The first scheme's
+declared intent decides now. Test:
+`test_consumer_that_also_reads_the_dimension`.
+
+xdsl-ccpp capture library (`ccpp_capture_mod.F90`): the r8 compares report
+zero max/mean differences for zero-size arrays; the mean was 0/0, which
+the DEBUG trap aborted (F2000_C4 rank 0 has no daylit columns, so the SW
+replays compared empty arrays).
+
+Captures: `capture_F2000_C4` and `capture_cam4` lists name
+`bulk_aerosol_optics`; c18a (F2000_C4, full list) and c18b (FHIST_C4,
+`bulk_aerosol_optics` only, `capture_FHIST_C4`, covers the volcanic type).
+c18a also recaptures `rrtmgp_pre` after `gpu-rrtmgp-reset-fluxes-byband`.
+`rrtmgp_inputs`, `rrtmgp_sw_cloud_optics` and `rrtmgp_lw_cloud_optics` are
+left out of both lists and their c18a drivers moved to
+`capture_F2000_C4/disabled/` (`rrtmgp-intent-out-unassigned`).
+
+Verification: xdsl123 (QPC4 SE/MPAS, F1850/F2000/FHIST_C4, nvhpc CPU vs
+20261117-02ac990-nvhpc) 7/7 BASELINE PASS; replays c18a and c18b pass on
+CPU and GPU.
+
+## `gpu-port-aerosol-optics` stage 2: bulk aerosol optics on the GPU (2026-11-21)
+
+atmospheric_physics only (no generator change). `bulk_aerosol_optics` runs
+as four OpenACC kernels in one data region: `mass` (collapse 2), SW and LW
+optics (collapse 3 over band, level, column; aerosols `loop seq` in list
+order), and the column diagnostics (one thread per column; aerosols and
+levels `loop seq`). Its six helpers are `!$acc routine seq`. Every loop and
+expression keeps the CPU order, so CPU and GPU agree bit for bit
+(`-Mnofma`, `nofma`). ccs_config: `bulk_aerosol_optics.o` in
+`GPU_SCHEME_OBJS` (`Depends.nvhpc`).
+
+No zero-size device data without bulk aerosols (QPC4): the suite cap keeps
+the tables on the GPU for the whole run, and a zero-size device entry kept
+alive can collide with later device data (`gpu-run-local-suite-owned-alloc`).
+`bulk_aerosol_optics_sizes` outputs `naer_tables = max(num_bulk_aer, 1)`
+(new standard name `number_of_bulk_aerosols_in_bulk_aerosol_optics_tables`,
+the 16th of the series), the aerosol dimension of all 14 table arrays; the
+loops still run to `num_bulk_aer`. `odv_col_aod` keeps its
+`(ncol, num_bulk_aer)` shape for `aerosol_optics_diagnostics`: the kernel
+fills a padded device array the scheme copies to the host, so it never goes
+to the GPU. The work arrays `tau_vis`, `ssa_vis` and `odv` have at least one
+aerosol.
+
+Generated cam4 GPU cap: the tables are uploaded once, after
+`bulk_aerosol_optics_tables_init`; `aer_tau*` and `aer_lw_abs` are written
+on the device (the per-step upload is gone); the outputs
+`aerosol_optics_diagnostics` reads (host) are downloaded after the call
+(until `gpu-history-accumulate`).
+
+Verification: xdsl124 (nvhpc CPU, `outfrq_se_cam4`, compare
+20261117-02ac990-nvhpc) 5/5 BASELINE PASS; xdsl124gpu (`outfrq_se_cam4_gpu`,
+`outfrq_analy_ic_cam4_gpu`, GPU vs the CPU baseline) 7/7, including QPC4 SE
+and MPAS (no aerosols) and F1850/F2000/FHIST_C4; replays c18a (F2000_C4) and
+c18b (FHIST_C4) pass on CPU and GPU, `bulk_aerosol_optics_run` 44/44 kernels
+ON-GPU in each.

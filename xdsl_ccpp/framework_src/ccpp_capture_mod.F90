@@ -1195,8 +1195,17 @@ contains
     diff = abs(actual - expected)
     mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
-    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
-    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    ! Zero-size arrays (e.g. no daytime columns on the captured rank) have no
+    ! difference; avoid maxval's -huge and the 0/0 of the mean (an invalid-
+    ! operation trap in DEBUG builds).
+    if (present(max_abs_diff)) then
+      max_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) max_abs_diff = maxval(diff)
+    end if
+    if (present(mean_abs_diff)) then
+      mean_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    end if
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
@@ -1217,8 +1226,17 @@ contains
     diff = abs(actual - expected)
     mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
-    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
-    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    ! Zero-size arrays (e.g. no daytime columns on the captured rank) have no
+    ! difference; avoid maxval's -huge and the 0/0 of the mean (an invalid-
+    ! operation trap in DEBUG builds).
+    if (present(max_abs_diff)) then
+      max_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) max_abs_diff = maxval(diff)
+    end if
+    if (present(mean_abs_diff)) then
+      mean_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    end if
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
@@ -1239,8 +1257,17 @@ contains
     diff = abs(actual - expected)
     mismatch = r8_mismatch(actual, expected, tolerance)
     ok = .not. any(mismatch)
-    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
-    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    ! Zero-size arrays (e.g. no daytime columns on the captured rank) have no
+    ! difference; avoid maxval's -huge and the 0/0 of the mean (an invalid-
+    ! operation trap in DEBUG builds).
+    if (present(max_abs_diff)) then
+      max_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) max_abs_diff = maxval(diff)
+    end if
+    if (present(mean_abs_diff)) then
+      mean_abs_diff = 0.0_kind_phys
+      if (size(diff) > 0) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    end if
     if (present(first_mismatch_index)) then
       if (ok) then
         first_mismatch_index = 0
