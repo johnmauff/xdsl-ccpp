@@ -16935,3 +16935,61 @@ Verification: xdsl124 (nvhpc CPU, `outfrq_se_cam4`, compare
 and MPAS (no aerosols) and F1850/F2000/FHIST_C4; replays c18a (F2000_C4) and
 c18b (FHIST_C4) pass on CPU and GPU, `bulk_aerosol_optics_run` 44/44 kernels
 ON-GPU in each.
+
+## `gpu-history-accumulate` stages 1 and 2: history accumulates on the GPU (2026-11-24)
+
+No generator change. Design: CAM-SIMA.xdsl-ccpp
+`gpu_history_accumulate_design.md`. Goal: the cam4 GPU cap stops copying
+diagnostics data to the host every step (before: ~165 variables before 31
+of 32 `*_diagnostics` calls, perf22 ~2.1 s/day).
+
+Stage 1, history_output (`src/history/buffers`, `hist_buffer.F90`,
+`hist_api.F90`, `hist_field.F90`): in OpenACC builds every buffer (`lst`,
+`avg`, `min`, `max`, `var`) is created on the device at first allocation
+and accumulates there. `buff_{1,2,3}d_accum_device` dispatches at run time:
+`acc_is_present(field)` uses the field in place, otherwise `enter data
+copyin` (host callers, array temporaries). Kernels are plain-array routines
+(`accum_*_dev`, `accum_var_*_dev`, nvfortran derived-type component bug)
+with the host arithmetic and order; the xyfill consistency check is a
+device reduction (`check_fill_*_dev`) and the host raises the same error.
+`sync_host` (`update self` of data, num_samples, var_buffer) runs in the
+`hist_api` readers (`hist_field_value_*`, `_norm_value_*`, `_samples`,
+`_var_buffer_*`), so CAM-SIMA's write and restart paths need no change;
+`device_release` deletes the device copies before deallocation
+(`hist_field.F90`). ccs_config: `hist_buffer.o` as `HISTORY_GPU_OBJS`.
+Without `_OPENACC` the code is unchanged.
+
+Stage 2, atmospheric_physics `sima_diagnostics` (plus
+`to_be_ccppized/cloud_optical_properties.F90` and CAM-SIMA
+`src/aerosol/aerosol_mmr_host.F90`):
+- 13 pass-through schemes: `memory_space = device` on their history
+  arguments in `.meta` (atmospheric_physics 3462770). Chosen over a
+  call-tree analysis, which could only conclude "either" for
+  `history_out_field`; generator alternative `device-capable-host-routines`.
+- Schemes that compute before output: OpenACC kernels into device locals
+  (`!$acc data present(inputs) create(locals)`), then `history_out_field`
+  on the locals: rk_stratiform cloud water (3645bd6) and cloud optics,
+  vertical diffusion and diffusion solver, zm_diagnostics,
+  tropopause_diagnostics, zm_convr/evap/momtran tendency,
+  cloud_particle_sedimentation, surface_coupling, convect_shallow (three
+  phases), gravity_wave_drag common and orographic, sima_state,
+  cloud_water_paths, aerosol_optics (with `rad_aer_diag_out`'s mass and
+  burdens on the device), cloud_cover (`cldsav` and `cldovrlap` as column
+  kernels). Sums are explicit `!$acc loop seq` loops in the original
+  element order (replacing `sum` where it was used); module variables are
+  copied to local scalars before device use.
+- ccs_config: the ported objects in `GPU_SCHEME_OBJS`.
+
+Generated cam4 GPU cap (cap_oracle): the diagnostics pulls drop to the
+three RRTMGP diagnostics schemes (16 distinct arrays, waiting on
+`rrtmgp-flux-object-residency`); 13 `update self` lines left in
+`cam4_cap.F90`. `odv_col_aod` is now pushed to the device each step
+(written on the host by `bulk_aerosol_optics_run`, small).
+
+Verification (nvhpc GPU vs `20261122-894897e-nvhpc`, zero tolerance, every
+case `END OF MODEL RUN`): stage 1 xdsl126gpu 10/10
+(`kessler_mpas_derecho_history` with inst/avg/min/max/var, `se_cslam_multitape`
+with a mid-window restart, `se_cam4`, `analy_ic_cam4`, `kessler_mpas`);
+xdsl127gpu 8/8; stage 2 xdsl128gpu, xdsl129gpu, xdsl130gpu and xdsl131gpu
+7/7 each (`se_cam4` QPC4/F1850/F2000/FHIST_C4 and `analy_ic_cam4` MPAS,
+DEBUG and optimized). Not yet run: full `aux_sima_gpu`, perf.
