@@ -17122,3 +17122,48 @@ host cap's suite-part data regions, the dycore's direct `qneg` and
 Verification: xdsl136gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
 tolerance) 7/7: `se_cam4` QPC4 (DEBUG and optimized), F1850/F2000/FHIST_C4,
 `analy_ic_cam4` MPAS (DEBUG and optimized).
+
+## `host-scheme-present-coherence`: device copy current at every host scheme call (2026-11-25)
+
+Bug found by xdsl137gpu (full `aux_sima_gpu` vs `20261122-894897e-nvhpc`):
+`outfrq_uw_vdiff_derecho_gpu` BASELINE DIFF in `UW_pblh`, `UW_ustar`,
+`UW_kvh`, `UW_kvm` only (4 of 90 fields; state identical; passed in
+xdsl125gpu). `emit_coalesced_updates` (`transforms/util/cap_shared.py`)
+synced a run of consecutive host-scheme touches with one pull before and one
+push after the run. In `vdiff_bretherton_park_cap.F90`,
+`bretherton_park_diff_run` (host) wrote `kvm`/`kvh`/`pblh`/`ustar`, then
+`bretherton_park_diff_diagnostics_run` (host) passed them to
+`history_out_field`, and the push came only after it. Since
+`gpu-history-accumulate`, `history_out_field` accumulates the device copy
+whenever one is present, so it read the previous values.
+
+Fix (user's option A, 2026-11-25): inside a run, every call that follows a
+call which may write the variable gets the run's push before it as well
+(the whole array, or the overwritten section for a run that starts with
+`intent(out)`), so a present device copy is current whenever a host scheme
+runs. Pulls and the push after the run are unchanged; the inner pushes of
+several variables before one call share one `update device`. Applies to
+every ownership kind (host-matched, CapScratch, suite-owned).
+
+`cap_oracle diff` (35 built xdsl137gpu cases): 32 IDENTICAL (all cam4 caps
+included). `vdiff_bretherton_park`: `update device(ustar, kvm, kvh, pblh)`
+before the diagnostics call. `gw_cam7_se` and `cam7`: three extra
+`update device` per step between the host gravity wave drag schemes
+(`convection_deep`, `frontogenesis`, `ridge_beta`) that each add to the
+same tendencies -- the cost of the rule; `device-capable-host-routines`
+would avoid it if it matters.
+
+Tests: `test_update_intent.py` three new tests (push before a call after a
+writing call; none before the first write; several variables share one
+update); expectations updated in `test_update_intent.py` (two section
+tests), `test_gpu_directives.py`
+(`test_consecutive_update_calls_coalesce_into_one_pair`: two pushes) and
+`test_constituent_residency.py` (the reader pushes no `const`, but
+`const_tend` written by `cld_ice_run` is pushed before the next host
+touch). Unit tests 1585 passed; FileCheck goldens pass.
+
+Verification: xdsl138gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
+tolerance) 2/2: `outfrq_uw_vdiff_derecho_gpu` (UW_* fields match again) and
+`outfrq_gw_cam7_derecho_gpu` (answers unchanged by the extra pushes). The cam7
+suite's GPU test (F2000_C7) still fails at RUN upstream, so the `cam7_cap`
+change is checked only through `gw_cam7`.

@@ -505,8 +505,10 @@ class TestGPUDivergedClauseRouting:
 
     def test_consecutive_update_calls_coalesce_into_one_pair(self, run_host_match, ccpp_context):
         """scheme_b and scheme_c both want update, back-to-back after
-        scheme_a's present call -- only ONE update self/device pair should
-        span b->c, not one per call."""
+        scheme_a's present call -- ONE update self spans b->c, not one per
+        call. scheme_b writes the variable, so it is pushed before scheme_c
+        as well as after the run (host-scheme-present-coherence: the device
+        copy is current whenever a host scheme runs)."""
         fortran = _diverged_fortran_output(
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B, _CONFLICT_SCHEME_C],
             _CONFLICT_SUITE_XML_3, run_host_match, ccpp_context,
@@ -514,7 +516,7 @@ class TestGPUDivergedClauseRouting:
         suite_fn = fortran.split("subroutine test_conflict_suite_physics")[1]
         suite_fn = suite_fn.split("end subroutine test_conflict_suite_physics")[0]
         assert suite_fn.count("update self(") == 1
-        assert suite_fn.count("update device(") == 1
+        assert suite_fn.count("update device(") == 2
         # Exactly one present() pair too (scheme_a's own call only).
         assert suite_fn.count("present(") == 1
 

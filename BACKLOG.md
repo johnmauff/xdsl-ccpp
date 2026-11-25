@@ -82,6 +82,9 @@ measured data, and will drift as items are reassessed.
 | `gpu-history-accumulate` | stages 1-2 done and verified (CHANGELOG.md L16939), RRTMGP diagnostics done (L16997); left: commits, full `aux_sima_gpu`, upstream PRs | XS |
 | `device-capable-host-routines` | 1-2 days (host-supplied list of device-capable routines as a neutral input; classify dummies passed unmodified only to them as `device_capable`; unit tests; cap_oracle on every diagnostics scheme) | XS |
 | `resident-physics-state` | 7-12 days (inventory ~1, xdsl-ccpp ~1-2, CAM-SIMA residency + boundary syncs ~4-6, optional derived state on the device ~2-3; plan `CAM-SIMA.xdsl-ccpp/resident_physics_state_plan.md`) | M |
+| `rrtmgp-sw-lw-object-lifetimes` | 1-2 days (new `rrtmgp_sw_post` after the SW subcycle, LW allocation moved from `rrtmgp_inputs` to a new `rrtmgp_lw_inputs` before `rrtmgp_lw_cloud_optics`; every suite with RRTMGP plus the Python composite package; GPU+CPU regressions); after perf27 shows where the GPU memory peak is | XS-S |
+| `radiation-column-blocking` | design first (~1-2 days: interface loop vs generated package-level column loop); then ~1 week either way plus GPU/CPU regressions; pair with async queues before testing fewer ranks per GPU | S-M |
+| `gwd-orographic-kernel-stack` | 1-3 days (find what in `gw_drag_prof_column`'s call chain needs per-thread stack -- callee automatic arrays or spills, `-Minfo`/PTX local-memory per function; restructure; capture replay CPU+GPU; GPU regression; perf `nsys_mem` to confirm the reservation drops) | S |
 | `host-caller-device-callee-audit` | 1-2 days (read every direct call from a host scheme to a GPU-ported scheme -- rk_stratiform -> compute_cloud_fraction, clubb -> hb_pbl_dependent_coefficients, kessler driver -- and check each argument the caller changes on the host; fix as in bretherton_park_diff; GPU tests of the affected suites) | XS |
 | `gpu-port-bretherton-park` | ~8-12 days (like `zm_convr`): `caleddy` + helpers as per-column routine-seq code with per-column work arrays (bulk), `trbintd` and driver loops, device-to-device calls into the ported diffusion solver; replays (`capture_uw_vdiff`), uw_vdiff GPU subset. replay c13a; CAM5 / vdiff_bretherton_park only (re-sized 2026-11-20, was 10-20 days L) | M |
 | `cloud-sedimentation-cfint2-error-column` | <1 day if revisited (store the first failing level per column on the device, pick on the host; rk_stratiform replays CPU+GPU); only if the old message matters | XS |
@@ -1928,6 +1931,12 @@ could reach the same machinery.
 ID: `suite-data-footprint-report`. Added 2026-11-24 (user, from a discussion
 on reducing the data a simulation uses). A read-only report, not a transform:
 which suite variables exist, how big they are, and how long each one is live.
+Motivation (user, 2026-11-25): **GPU memory**. Today cam4 runs with a CPU
+dycore; later the dycore is GPU-resident and the physics larger (CAM5, CAM7),
+so every saving in device memory counts. The report counts device-resident
+bytes separately (memory_space / GPU residency per variable) and groups the
+live ranges by package and by group, to size a shared scratch pool (storage
+reused across packages, sized to the largest package's package-local scratch).
 Example: `python -m xdsl_ccpp.tools.data_report CASE_DIR --ncol N`.
 
 - Inputs exist: `tools/cam_case.py` finds a built case's suite, scheme and host
@@ -2744,6 +2753,65 @@ Supporting items (not tracked elsewhere):
   `test_gravity_wave_drag_prepare_profiles` driver is stale since the `pint`
   change). Test: capture_gw_cam7 replays CPU+GPU, gw_cam7 GPU FPHYStest vs the
   CPU baseline (`outfrq_gw_cam7_derecho_gpu`), CPU gw_cam7.
+- `host-scheme-present-coherence` — **Resolved (2026-11-25)** -- CHANGELOG.md L17126.
+- `radiation-column-blocking` — **Run RRTMGP in column blocks so its
+  temporaries scale with the block, not with the rank's columns.** Added
+  2026-11-25 (user; GPU memory). RRTMGP's temporaries (vendored RTE work
+  arrays and the interface's optics/sources objects) are g-point arrays of
+  columns x layers x g-points; perf26 rank 0: ~1.6 GB of OpenACC pool growth
+  from RRTMGP at ~1,707 columns (pool growth, not a footprint). Each rank's
+  pool keeps its high-water mark, so a GPU holds ranks-per-GPU of them (today
+  6 x ~1.6 GB, inferred). The user expects fewer ranks per GPU (maybe 1):
+  without blocking the per-GPU total stays the same; with blocks of ~1,900
+  columns it drops to about one block's worth (~1/6 of today's RRTMGP share,
+  inferred; check against perf27 `nsys_mem`). Occupancy: the main kernels run
+  over columns x g-points (1,900 x 112 ~ 210k threads, ~one A100).
+  - Where: (a) a block loop in the RRTMGP interface around the SW and LW
+    calculations (per-block `nday` compaction), or (b) xdsl-ccpp: a generated
+    package-level column loop (caps already slice to `col_start:col_end`;
+    package caps slice suite-owned arrays, `chunked-column-slicing`, resolved;
+    related `package-cap-runtime-loop-count`) -- reusable for other heavy
+    packages. Design decides.
+  - Catch: host launch overhead dominates today (perf26: 2.92 s/day in the
+    OpenACC/CUDA runtime vs 1.33 s/day of kernels). One rank issuing six blocks
+    serializes what six ranks issue in parallel, so pair with async queues
+    before testing fewer ranks per GPU.
+  - Order: after perf27 shows the per-GPU peak; after the smaller
+    `rrtmgp-sw-lw-object-lifetimes`.
+- `gwd-orographic-kernel-stack` — **The orographic gravity wave drag kernel
+  sets each rank's GPU stack reservation at 1,316 MiB.** Added 2026-11-25
+  (user; GPU memory). perf27 (`nsys_mem`, rank 0, CUPTI `localMemoryTotal`):
+  the CUDA driver reserves per-thread kernel stack (local) memory for the
+  kernel that needs the most and keeps it for the context. Largest:
+  `gravity_wave_drag_orographic_run` L358 (the `parallel loop` calling
+  `gw_common.F90` `gw_drag_prof_column`) 1,316 MiB; next `check_energy_chng`
+  kernels ~760 MiB, vertical diffusion 310-380 MiB. At 6 ranks per GPU that is
+  ~7.7 GB of each A100's ~22 GB peak; bringing it to ~760 MiB frees ~3.3 GB per
+  GPU. `gw_drag_prof_column`'s own locals are scalars, so the demand comes
+  from its callees (automatic arrays) or spills -- not yet identified. Then the
+  next kernel sets the reservation, so check_energy_chng follows. Report:
+  `/glade/work/dennis/cam_sima_perf/perf27.md`.
+- `rrtmgp-sw-lw-object-lifetimes` — **Free the SW RRTMGP objects before the
+  LW calculation; allocate the LW objects after the SW one.** Added 2026-11-25
+  (user; GPU memory, see `suite-data-footprint-report`). In `suite_cam4.xml`
+  (L272-326) `rrtmgp_inputs` creates `atm_optics_sw`, `aer_sw`,
+  `atm_optics_lw`, `aer_lw`, `sources_lw`; `rrtmgp_sw_mcica_subcol_gen`
+  creates `cloud_sw`, `rrtmgp_lw_cloud_optics` creates `cloud_lw`; the last SW
+  use is `rrtmgp_sw_rte` (SW subcycle), and `rrtmgp_post` only frees
+  everything at the end (`rrtmgp_post.F90` L93-127). So all SW objects are
+  live during the LW solve, and the LW optics/sources during the SW solve.
+  Sizes per rank (MPAS 120 km GPU, ~1,707 columns, 27 radiation layers,
+  g112/g128; calculated, two LW sizes checked against perf26 pool growth):
+  SW ~265 MB x (nday/ncol), LW ~200 MB. Change (atmospheric_physics interface
+  code, no vendored code): a new `rrtmgp_sw_post` right after the SW subcycle
+  frees the SW optics and flux objects; LW allocation moves from
+  `rrtmgp_inputs` to a new `rrtmgp_lw_inputs` before `rrtmgp_lw_cloud_optics`;
+  both outside the diagnostic subcycles (they reuse the objects). Every suite
+  with RRTMGP (cam4, rrtmgp test suite, cam7) and the Python composite RRTMGP
+  package. Expected (inferred): peak lower by ~150-265 MB per rank
+  (~0.9-1.6 GB per A100) if radiation sets the peak -- check with perf27
+  (`nsys_mem`) first; bit-for-bit (only lifetimes move). Related, larger:
+  column chunking of RRTMGP (every g-point array scales with columns per call).
 - `resident-physics-state` — **Keep physics state on the GPU across time steps.**
   Added 2026-11-24. Plan: `CAM-SIMA.xdsl-ccpp/resident_physics_state_plan.md`.
   perf26 nsys (rank 0): the host cap and the dycore coupling's direct

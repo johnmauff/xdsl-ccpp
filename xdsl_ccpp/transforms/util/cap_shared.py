@@ -2192,7 +2192,18 @@ def emit_coalesced_updates(
     writes the variable, an `update device(...)` after it (push the host's
     changes back out; a run that only reads leaves the device copy current).
     A run that starts by overwriting the section it is passed needs no pull;
-    its push then covers only that section (_overwritten_section). Runs are collected across ALL
+    its push then covers only that section (_overwritten_section).
+
+    Inside a run, a call that follows a call which may write the variable
+    gets that push before it as well (host-scheme-present-coherence): a
+    present device copy must be current whenever a host scheme runs,
+    because a host scheme may hand the variable to a routine that uses the
+    device copy when one is present (CAM-SIMA's history_out_field). Without
+    it, uw_vdiff on the GPU wrote stale UW_kvh/UW_kvm/UW_pblh/UW_ustar: the
+    diagnostics scheme ran between the host scheme that computed them and
+    the run's single push. The extra pushes cost transfers only in runs
+    where a host call writes and a later host call in the same run touches
+    the variable. Runs are collected across ALL
     identities first, then grouped by the exact (id(first_op), id(last_op))
     boundary they share, so several variables' runs sharing a boundary
     fold into one shared call instead of one each.
@@ -2238,6 +2249,7 @@ def emit_coalesced_updates(
     """
     pulls: list = []  # (ref, first_op, last_op), across every identity
     pushes: list = []  # (ref or section, first_op, last_op), across every identity
+    inner_pushes: list = []  # (ref or section, call_op): pushes before a call inside a run
     produced_syncs: list = []  # (ref, call_op), across every identity
 
     def _close_run(ref, update_run, host_current):
@@ -2250,8 +2262,16 @@ def emit_coalesced_updates(
         section = _overwritten_section(update_run)
         if section is None and not host_current:
             pulls.append((ref, first_op, last_op))
+        target = ref if section is None else section
         if any(touch.writes for touch in update_run):
-            pushes.append((ref if section is None else section, first_op, last_op))
+            pushes.append((target, first_op, last_op))
+        # Keep the device copy current at every host call of the run: push
+        # before each call that follows a call which may have written it.
+        written = False
+        for touch in update_run:
+            if written:
+                inner_pushes.append((target, touch.call_op))
+            written = written or touch.writes
         update_run.clear()
         return host_current or section is None
 
@@ -2331,6 +2351,14 @@ def emit_coalesced_updates(
                 OmpTargetUpdateToOp, {"array_refs": refs},
             ),
             InsertPoint.after(last_op),
+        )
+    for (call_op,), refs in _grouped(inner_pushes, lambda e: id(e[1])):
+        Rewriter.insert_op(
+            directive_op(
+                directive, AccUpdateDeviceOp, {"array_refs": refs},
+                OmpTargetUpdateToOp, {"array_refs": refs},
+            ),
+            InsertPoint.before(call_op),
         )
 
     for (call_op,), refs in _grouped(produced_syncs, lambda e: id(e[1])):
