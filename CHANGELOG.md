@@ -17249,3 +17249,41 @@ tolerance) 2/2: `outfrq_uw_vdiff_derecho_gpu` (UW_tpert/UW_qpert/UW_tke match
 again) and `outfrq_microp_aero_bam_derecho_gpu`. With xdsl139gpu, every
 `aux_sima_gpu` test is bit-for-bit with group A resident, except the known
 upstream F2000_C7 RUN failure (the cam7 suite's cap change is not run-verified).
+
+## `resident-physics-state`, groups B, D, E: coupler fields, `coszrs_rad`, topography statics (2026-11-25)
+
+Scope (user, 2026-11-25): groups C (dycore state) and F (constituents) are
+not done -- their only host-to-device boundary is the dynamics-to-physics
+coupling (`dp_coupling`/`dyn_coupling_impl`, including its direct
+`qneg`/`geopotential_temp`/`update_dry_static_energy` calls), which a
+GPU-resident dycore replaces; work there now would be redundant. No xdsl-ccpp
+change: host-declared device variables already get whole-run residency.
+
+CAM-SIMA:
+- Registry: `memory_space="device"` on the 37 `cam_in`/`cam_out` members the
+  cam4 host cap moved per step (group B), `coszrs_rad` (D), `sgh`, `landm` (E).
+- `generate_registry_data.py`: the update routines also cover DDT members
+  (`!$acc update device(cam_in%sst) if_present`), and each DDT instance with
+  device members gets its own pair, `physics_types_<instance>_update_device` /
+  `_update_host`, so a boundary syncs only its own fields (the module-wide
+  routines would also move the group-A variables). Registry samples updated;
+  `reg_good_ddt.xml` marks `longitude` device (a member for FV, top-level for
+  EUL/SE). CAM-SIMA Python unit tests 196 passed.
+- Syncs: `import_fields` ends with `physics_types_cam_in_update_device`;
+  `export_fields` starts with `physics_types_cam_out_update_host`;
+  `physics_types_update_device` once after `topography_statics_read_file`
+  (it runs after `phys_init`); `orbital_data_advance` ends with
+  `!$acc update device(coszrs_rad) if_present`; ccs_config `Depends.nvhpc`:
+  `orbital_data.o` compiled with OpenACC (`HOST_GPU_OBJS`).
+- Not marked (static, ~10 MB/day, hand-written metadata with their own init
+  order): `lat_deg`, `thermodynamic_active_species_{liq,ice}_idx`, `tropp_p_loc`.
+
+Generated caps, the 35 xdsl139gpu GPU cases with the new registry metadata vs
+the case's own (same xdsl-ccpp): suite caps unchanged everywhere; host caps
+lose the per-step copies of the 40 variables (cam4: entered in `ccpp_init`,
+copied back in `ccpp_final`, `present` in the run phase), no new update
+directive in any cap; `ccpp_datatable.xml` differs only in the metadata path.
+
+Verification: xdsl141gpu, full nvhpc `aux_sima_gpu` vs `20261122-894897e-nvhpc`
+(zero tolerance): 35 tests, 34 pass, 1 known failure (`F2000_C7`, upstream missing
+PUMAS inputs), 0 FAIL.
