@@ -118,7 +118,8 @@ def test_run_starting_with_intent_out_is_not_pulled_and_pushes_its_section():
         Touch(calls[0], "update", True, True, sec["a"].results[0]),
         Touch(calls[1], "update", False, False, sec["a"].results[0]),
     ])}, lambda ref, call: None)
-    assert _tokens(block, calls) == ["call0", "call1", "device(a(1:2))"]
+    # The push before call1: host-scheme-present-coherence (call0 wrote).
+    assert _tokens(block, calls) == ["call0", "device(a(1:2))", "call1", "device(a(1:2))"]
 
 
 def test_run_starting_with_intent_inout_is_pulled():
@@ -147,7 +148,7 @@ def test_run_passing_different_sections_is_pulled():
         Touch(calls[0], "update", True, True, sec["a"].results[0]),
         Touch(calls[1], "update", True, False, other.results[0]),
     ])}, lambda ref, call: None)
-    assert _tokens(block, calls) == ["self(a)", "call0", "call1", "device(a)"]
+    assert _tokens(block, calls) == ["self(a)", "call0", "device(a)", "call1", "device(a)"]
 
 
 def test_scheme_intent_wins_over_the_suite_merged_intent():
@@ -190,3 +191,28 @@ def test_call_section_ignores_a_section_built_inside_the_guard():
     if_op.true_region.blocks[0].insert_op_before(inner, call)
     call.operands[0] = inner.results[0]
     assert call_section(if_op, "x", None) is None
+
+
+# --- host-scheme-present-coherence: the device copy is current at every
+# host call (a host scheme may hand the variable to a routine that uses the
+# device copy when present, e.g. CAM-SIMA's history_out_field) -------------
+
+def test_call_after_a_writing_call_gets_a_push_before_it():
+    # uw_vdiff: bretherton_park_diff writes kvh on the host, then its
+    # diagnostics scheme (a host scheme) outputs kvh.
+    assert _emit({"a": [(0, True), (1, False)]}) == [
+        "self(a)", "call0", "device(a)", "call1", "device(a)",
+    ]
+
+
+def test_no_inner_push_before_the_first_write():
+    assert _emit({"a": [(0, False), (1, True), (2, False)]}, n_calls=3) == [
+        "self(a)", "call0", "call1", "device(a)", "call2", "device(a)",
+    ]
+
+
+def test_inner_pushes_of_several_variables_share_one_update():
+    assert _emit({"a": [(0, True), (1, False)], "b": [(0, True), (1, True)]}) == [
+        "self(a,b)", "call0", "device(a,b)", "call1", "device(a,b)",
+    ]
+

@@ -276,9 +276,14 @@ def test_cpu_view_reader_after_device_write_gets_update_self():
     gap = _between(lines, "apply_constituent_tendencies_run", "cld_ice_run")
     # The whole array, which covers the view.
     assert "!$acc update self(const)" in gap, gap
-    # A reader pushes nothing back to the device.
+    # A reader of the constituents pushes nothing of them back to the device.
+    # (cld_ice_run writes const_tend on the host and the next call touches it
+    # on the host too, so const_tend is pushed before that call:
+    # host-scheme-present-coherence.)
     after = _between(lines, "cld_ice_run", "apply_constituent_tendencies_run")
-    assert not any(l.startswith("!$acc update device(") for l in after), after
+    assert not any(l.startswith(("!$acc update device(const)", "!$acc update device(const,"))
+                   for l in after), after
+    assert "!$acc update device(const_tend)" in after, after
 
 
 def test_device_view_user_needs_no_update():
