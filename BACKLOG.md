@@ -2791,6 +2791,39 @@ Supporting items (not tracked elsewhere):
   from its callees (automatic arrays) or spills -- not yet identified. Then the
   next kernel sets the reservation, so check_energy_chng follows. Report:
   `/glade/work/dennis/cam_sima_perf/perf27.md`.
+  Findings (2026-11-25, `cuobjdump -res-usage` on the perf27 `cesm.exe` and objects;
+  read-only):
+  - Per-thread stack frame (bytes) of the largest kernels: gravity wave drag
+    orographic L358 **5,664** (255 registers, the maximum); `check_energy_chng`
+    `timestep_init` L125 3,024 and `run` L311 2,768 (254 registers); vertical
+    diffusion horizontal momentum 1,232, tracers 944, dse 896. Frame x max
+    resident threads (~221k on an A100) ~1.25 GB matches the 1,316 MiB nsys
+    reservation.
+  - The device routines in the call chain have no local arrays and report
+    STACK 0 themselves (`gw_drag_prof_column`, `gw_ediff_column`,
+    `gw_diff_tend_column[_3d]`, `fin_vol_decomp_column`,
+    `fin_vol_left_div_column`): the frame belongs to the kernel.
+  - Likely cause (inferred, not confirmed by compiler output): array
+    descriptors. The kernel calls `gw_drag_prof_column` per column with 38
+    arrays to assumed-shape dummies; nvfortran builds a descriptor per array
+    argument in the caller's frame, per thread (5,664 / 38 ~ 150 bytes each).
+    `check_energy_chng`'s kernels call `hydrostatic_energy_column` with ~25
+    array dummies (2.8-3.0 KB): same pattern.
+  - Confirm first: one GPU build with `-gpu=ptxinfo` for
+    `gravity_wave_drag_orographic.F90` and `gw_common.F90` (stack frame and
+    spill bytes per kernel), or a trial of option 3 below and `cuobjdump` on
+    the new executable.
+  - Fix options: (1) explicit-shape dummies (address only, no descriptor) --
+    risky: the scheme's arrays are assumed-shape cap sections, so the compiler
+    may create copies (stale device copy, `reference_explicit_shape_dummy_gpu`);
+    (2) inline the column routine into the kernel -- safe, but
+    `gw_drag_prof_column` is shared by all gravity wave schemes (cam7 ridge,
+    convection, frontogenesis); (3) split the call into smaller kernels
+    (drag profile, then diffusion), each passing fewer arrays -- the
+    reservation follows the largest kernel.
+  - Saving (inferred): gravity wave drag alone ~3.3 GB per GPU (to the
+    check_energy level); with check_energy too, down to the vertical diffusion
+    level (~0.3 GB per rank), ~6 GB per GPU of the ~22 GB peak.
 - `rrtmgp-sw-lw-object-lifetimes` — **Free the SW RRTMGP objects before the
   LW calculation; allocate the LW objects after the SW one.** Added 2026-11-25
   (user; GPU memory, see `suite-data-footprint-report`). In `suite_cam4.xml`

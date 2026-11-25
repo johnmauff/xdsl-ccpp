@@ -487,21 +487,22 @@ class TestGPUDivergedClauseRouting:
         assert "update self(" not in body
         assert "update device(" not in body
 
-    def test_ccpp_cap_level_gets_residency_copy_region(self, run_host_match, ccpp_context):
-        """conflict_var is used only at the 'run' phase (degenerate, single-
-        phase) in both schemes -- residency establishment wraps the whole
-        suite-part dispatch call in a plain per-call copy() region at the
-        ccpp_cap level, exactly like copy-family's own degenerate treatment,
-        independent of the diverged present/update clause routing that still
-        happens one level down in GPUDataPass."""
+    def test_ccpp_cap_level_gets_whole_run_residency(self, run_host_match, ccpp_context):
+        """conflict_var is used only at the 'run' phase in both schemes, and
+        the host declares it device -- so residency is established for the
+        whole run at the ccpp_cap level (entered in ccpp_init, copied back in
+        ccpp_final; resident-physics-state), independent of the diverged
+        present/update clause routing that still happens one level down in
+        GPUDataPass. No per-call copy() region."""
         fortran = _diverged_fortran_output(
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
         run_fn = fortran.split("subroutine ccpp_physics_run")[1]
         run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
-        assert "!$acc data copy(conflict_var" in run_fn
-        assert "!$acc end data" in run_fn
+        assert "!$acc data copy(conflict_var" not in run_fn
+        assert "enter data copyin(conflict_var" in fortran.split("subroutine ccpp_init(")[1].split("end subroutine ccpp_init")[0]
+        assert "exit data copyout(conflict_var" in fortran.split("subroutine ccpp_final(")[1].split("end subroutine ccpp_final")[0]
 
     def test_consecutive_update_calls_coalesce_into_one_pair(self, run_host_match, ccpp_context):
         """scheme_b and scheme_c both want update, back-to-back after

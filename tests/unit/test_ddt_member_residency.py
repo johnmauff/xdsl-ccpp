@@ -274,4 +274,10 @@ class TestDDTMemberResidencyEstablishment:
             [_RESIDENCY_SCHEME], [_DDT_TYPE, _DDT_HOST_MOD], _RESIDENCY_SUITE_XML,
         )
         run_fn = _fn_body(fortran, "ccpp_physics_run")
-        assert "!$acc data copy(phys_state%temp_member" in run_fn
+        init_fn = fortran.split("subroutine ccpp_init(")[1].split("end subroutine ccpp_init")[0]
+        final_fn = fortran.split("subroutine ccpp_final(")[1].split("end subroutine ccpp_final")[0]
+        # Whole-run residency (resident-physics-state): entered in ccpp_init,
+        # copied back in ccpp_final, no per-call copy region.
+        assert "!$acc data copy(phys_state%temp_member" not in run_fn
+        assert "enter data copyin(phys_state%temp_member" in init_fn
+        assert "exit data copyout(phys_state%temp_member" in final_fn

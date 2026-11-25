@@ -93,6 +93,30 @@ def _no_data_directive_line_mentions(body: str, var_name: str) -> bool:
     return True
 
 
+def _suite_fn_calling(fortran: str, entry: str) -> str:
+    """Body of the generated subroutine that calls scheme entry point
+    `entry` (a suite cap phase function)."""
+    for chunk in fortran.split("\n  subroutine ")[1:]:
+        body = chunk.split("end subroutine")[0]
+        if f"call {entry}(" in body:
+            return body
+    raise AssertionError(f"no subroutine calls {entry}")
+
+
+def _flat_fn(fortran: str, fn: str) -> str:
+    """Body of the host cap's flat function `fn` (ccpp_init, ccpp_final)."""
+    return fortran.split(f"subroutine {fn}(")[1].split(f"end subroutine {fn}")[0]
+
+
+def _host_cap_fns(fortran: str) -> str:
+    """Bodies of the host cap's per-step functions."""
+    return "".join(
+        fortran.split(f"subroutine {fn}(")[1].split(f"end subroutine {fn}")[0]
+        for fn in ("ccpp_physics_timestep_init", "ccpp_physics_run",
+                   "ccpp_physics_timestep_final")
+    )
+
+
 def _no_acc_directive_line_mentions(body: str, var_name: str) -> bool:
     """True if no `!$acc ...` line in body references var_name at all --
     unlike a whole-body substring check, this doesn't false-positive on the
@@ -537,6 +561,13 @@ class TestMultiSuiteScoping:
 
 # ── Group D: update-clause regression guard (single-phase, degenerate) ───────
 #
+# Since 2026-11-25 (resident-physics-state, host-scheme-present-coherence) a
+# variable the host declares device and a CPU scheme uses is "diverged" (the
+# host's declaration counts as a device use): it is resident for the whole run
+# (ccpp_init/ccpp_final) and synced per call inside the suite cap, an update
+# device after each CPU writer, no pull. The update-clause hoisting described
+# below no longer applies to such variables; the tests check the new behavior.
+#
 # scheme=host + model=device (CPU-only scheme, host keeps data on GPU), used
 # in only one phase -- degenerate, so it must stay on the legacy per-call
 # AccUpdateSelfOp/AccUpdateDeviceOp path exactly as before hoisting was
@@ -569,21 +600,36 @@ _GROUP_D_SUITE_XML = minimal_suite_xml("hoist_scheme_update", suite_name="hoist_
 
 
 class TestUpdateClauseRegression:
-    def test_update_self_device_unaffected_by_hoisting(self, run_host_match, ccpp_context):
+    def test_cpu_var_pushed_after_its_cpu_writer(self, run_host_match, ccpp_context):
+        # resident-physics-state + host-scheme-present-coherence: a variable the host
+        # declares device but only CPU schemes use is resident for the whole run
+        # (entered in ccpp_init, copied back in ccpp_final) and synced per call inside
+        # the suite cap: an update device right after each CPU call that may write it,
+        # so the device copy is current whenever a host scheme runs. No pull: no
+        # scheme writes it on the device, so the host copy is never stale. Nothing in
+        # the host cap's per-step functions.
         fortran = _fortran_output(
             run_host_match, ccpp_context,
             scheme_metas=[_GROUP_D_SCHEME],
             host_metas=[_GROUP_D_HOST],
             suite_xml=_GROUP_D_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        assert "update self(cpu_var" in run_fn
-        assert "update device(cpu_var" in run_fn
-        assert "enter data" not in run_fn
-        assert "exit data" not in run_fn
+        suite_fn = _suite_fn_calling(fortran, "hoist_scheme_update_run")
+        assert "update device(cpu_var" in suite_fn
+        assert "update self(cpu_var" not in suite_fn
+        assert _no_acc_directive_line_mentions(_host_cap_fns(fortran), "cpu_var")
+        assert "enter data copyin(cpu_var" in _flat_fn(fortran, "ccpp_init")
+        assert "exit data copyout(cpu_var" in _flat_fn(fortran, "ccpp_final")
 
 
 # ── Group E: hoisted update-clause vars (item 1(a)) ───────────────────────────
+#
+# Since 2026-11-25 (resident-physics-state, host-scheme-present-coherence) a
+# variable the host declares device and a CPU scheme uses is "diverged" (the
+# host's declaration counts as a device use): it is resident for the whole run
+# (ccpp_init/ccpp_final) and synced per call inside the suite cap, an update
+# device after each CPU writer, no pull. The update-clause hoisting described
+# below no longer applies to such variables; the tests check the new behavior.
 #
 # scheme=host + model=device variables now get the same earliest/latest-phase
 # hoisting as copyin/copy/copyout, just with a single AccUpdateSelfOp/
@@ -702,30 +748,22 @@ _GROUP_E_WHOLESIM_SUITE_XML = minimal_suite_xml(
 class TestUpdateClauseHoisting:
     """Group E: item 1(a) -- hoisting extended to scheme=host+model=device."""
 
-    def test_three_phase_update_var_syncs_once_each_way_nothing_at_passthrough(
+    def test_three_phase_update_var_pushed_after_each_cpu_writer(
         self, run_host_match, ccpp_context
     ):
         fortran = _group_e_fortran(run_host_match, ccpp_context)
-        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
+        # Whole-run residency + per-call push after each CPU writer inside
+        # the suite (resident-physics-state, host-scheme-present-coherence);
+        # no pull (no device writer); nothing in the host cap per step.
+        for entry in ['hoist_scheme_upd_timestep_init', 'hoist_scheme_upd_run', 'hoist_scheme_upd_timestep_final']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "update device(three_phase_upd" in suite_fn
+            assert "update self(three_phase_upd" not in suite_fn
+        assert _no_acc_directive_line_mentions(_host_cap_fns(fortran), "three_phase_upd")
+        assert "enter data copyin(three_phase_upd" in _flat_fn(fortran, "ccpp_init")
+        assert "exit data copyout(three_phase_upd" in _flat_fn(fortran, "ccpp_final")
 
-        assert "update self(three_phase_upd" in initial_fn
-        assert "update device(three_phase_upd" not in initial_fn
-        assert "update device(three_phase_upd" in final_fn
-        assert "update self(three_phase_upd" not in final_fn
-        # No re-sync, no present(), nothing at all at the passthrough phase
-        # -- the variable is still a plain call argument there (the CPU-only
-        # scheme genuinely needs it), just with no ACC directive.
-        assert _no_acc_directive_line_mentions(run_fn, "three_phase_upd")
-        # Residency establishment (separate from the update self/device sync
-        # above -- neither of those allocate anything) hoists the same
-        # entry/exit anchors: enter data copyin at timestep_initial, exit
-        # data copyout at timestep_final, in addition to the update pair.
-        assert "enter data copyin(three_phase_upd" in initial_fn
-        assert "exit data copyout(three_phase_upd" in final_fn
-
-    def test_init_run_only_update_var_syncs_device_at_finalize_via_synthesized_ref(
+    def test_init_run_only_update_var_pushed_after_each_cpu_writer(
         self, run_host_match, ccpp_context
     ):
         fortran = _fortran_output(
@@ -734,16 +772,16 @@ class TestUpdateClauseHoisting:
             host_metas=[_GROUP_E_WHOLESIM_HOST],
             suite_xml=_GROUP_E_WHOLESIM_SUITE_XML,
         )
-        init_fn = _fn_body(fortran, "ccpp_init")
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "ccpp_final")
-
-        assert "update self(wholesim_upd" in init_fn
-        assert "update device(wholesim_upd" not in init_fn
-        assert _no_acc_directive_line_mentions(run_fn, "wholesim_upd")
-        assert "update device(wholesim_upd" in finalize_fn
-        assert "update self(wholesim_upd" not in finalize_fn
-
+        # Whole-run residency + per-call push after each CPU writer inside
+        # the suite (resident-physics-state, host-scheme-present-coherence);
+        # no pull (no device writer); nothing in the host cap per step.
+        for entry in ['hoist_scheme_upd_wholesim_init', 'hoist_scheme_upd_wholesim_run']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "update device(wholesim_upd" in suite_fn
+            assert "update self(wholesim_upd" not in suite_fn
+        assert _no_acc_directive_line_mentions(_host_cap_fns(fortran), "wholesim_upd")
+        assert "enter data copyin(wholesim_upd" in _flat_fn(fortran, "ccpp_init")
+        assert "exit data copyout(wholesim_upd" in _flat_fn(fortran, "ccpp_final")
 
 # ── Group F: per-timestep hoisting alongside an independent finalize touch ───
 #
@@ -865,7 +903,7 @@ class TestFinalizeAlongsidePerTimestepHoisting:
         assert "copy(fz_var" in finalize_fn or "copyin(fz_var" in finalize_fn or "copyout(fz_var" in finalize_fn
         assert _no_data_directive_line_mentions(finalize_fn, "fz_var")
 
-    def test_update_var_hoists_per_timestep_finalize_touch_stays_legacy(
+    def test_update_var_pushed_after_each_cpu_writer_finalize_too(
         self, run_host_match, ccpp_context
     ):
         fortran = _fortran_output(
@@ -874,17 +912,13 @@ class TestFinalizeAlongsidePerTimestepHoisting:
             host_metas=[_GROUP_F_UPD_HOST],
             suite_xml=_GROUP_F_UPD_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        # See the copy_var test above for why this is ccpp_physics_final
-        # now, not the flat ccpp_final.
-        finalize_fn = _fn_body(fortran, "ccpp_physics_final")
-
-        assert "update self(fz_upd_var" in initial_fn
-        assert "update device(fz_upd_var" not in initial_fn
-        assert "update device(fz_upd_var" in run_fn
-        assert "update self(fz_upd_var" not in run_fn
-        # finalize's own touch is independent of the hoisted span: full
-        # legacy per-call self+device pair, right at its own call site.
-        assert "update self(fz_upd_var" in finalize_fn
-        assert "update device(fz_upd_var" in finalize_fn
+        # Whole-run residency + per-call push after each CPU writer inside
+        # the suite (resident-physics-state, host-scheme-present-coherence);
+        # no pull (no device writer); nothing in the host cap per step.
+        for entry in ['hoist_scheme_fz_upd_timestep_init', 'hoist_scheme_fz_upd_run', 'hoist_scheme_fz_upd_finalize']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "update device(fz_upd_var" in suite_fn
+            assert "update self(fz_upd_var" not in suite_fn
+        assert _no_acc_directive_line_mentions(_host_cap_fns(fortran), "fz_upd_var")
+        assert "enter data copyin(fz_upd_var" in _flat_fn(fortran, "ccpp_init")
+        assert "exit data copyout(fz_upd_var" in _flat_fn(fortran, "ccpp_final")

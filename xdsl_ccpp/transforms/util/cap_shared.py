@@ -1091,6 +1091,20 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
                 )
                 category = "present" if scheme_space == "device" else "update"
                 by_host_var.setdefault(host_var, {}).setdefault(category, set()).add(scheme_name)
+                # The host's own memory_space = device declaration is a device
+                # use too (resident-physics-state): such a variable is present
+                # for the whole run, so a scheme using it on the host disagrees
+                # with the host even when no scheme uses it on the device. Its
+                # host touches are then synced per call inside the suite, where
+                # the device copy is kept current at every host call
+                # (host-scheme-present-coherence) -- a host scheme may hand it
+                # to a routine that reads the device copy when present
+                # (CAM-SIMA's history_out_field). One sync pair around the
+                # whole suite part left it stale between host schemes
+                # (xdsl139gpu: uw_vdiff UW_tpert/UW_qpert/UW_tke).
+                if arg.hasAttr("model_var_memory_space") and \
+                        arg.getAttr("model_var_memory_space") == "device":
+                    by_host_var[host_var].setdefault("present", set()).add("<host>")
 
     return frozenset(
         host_var for host_var, categories in by_host_var.items() if len(categories) > 1
@@ -1113,7 +1127,13 @@ def find_device_readonly_host_vars(scheme_names, meta_data) -> frozenset:
     `scheme_names` must cover every scheme that could run on the device
     (gpu_data_pass passes every scheme with metadata): a device writer
     anywhere makes the device copy newer. A scheme arg with no declared
-    intent counts as a writer (arg_writes)."""
+    intent counts as a writer (arg_writes).
+
+    Also a variable the host declares device (model_var_memory_space) that
+    no scheme writes on the device, even when no scheme uses it there at all
+    (resident-physics-state): it is resident for the whole run, only host
+    code and CPU schemes change it, and each of those pushes its changes, so
+    the device copy is never newer than the host copy."""
     device_vars: set = set()
     written: set = set()
     for scheme_name in scheme_names:
@@ -1124,13 +1144,14 @@ def find_device_readonly_host_vars(scheme_names, meta_data) -> frozenset:
             if split_scheme_table_name(table_name) is None:
                 continue
             for arg in table.getFunctionArguments():
-                if not (
-                    arg.hasAttr("model_var_name")
-                    and arg.hasAttr("memory_space")
-                    and arg.getAttr("memory_space") == "device"
-                ):
+                if not arg.hasAttr("model_var_name"):
                     continue
                 host_var = arg.getAttr("model_var_name")
+                if arg.hasAttr("model_var_memory_space") and \
+                        arg.getAttr("model_var_memory_space") == "device":
+                    device_vars.add(host_var)
+                if not (arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"):
+                    continue
                 device_vars.add(host_var)
                 if arg_writes(arg):
                     written.add(host_var)

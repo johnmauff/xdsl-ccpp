@@ -31,6 +31,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     HostVarRefOp,
     OmpTargetEnterDataOp,
     OmpTargetExitDataOp,
+    OmpTargetUpdateFromOp,
+    OmpTargetUpdateToOp,
 )
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
@@ -185,9 +187,20 @@ class TestOmpTargetUpdateClause:
         print_to_ftn(module, out)
         fortran = out.getvalue()
 
+        # The host declares cpu_var device and only a CPU scheme uses it:
+        # resident for the whole run, pushed right after its CPU writer inside
+        # the suite (resident-physics-state, host-scheme-present-coherence);
+        # no pull, since no scheme writes it on the device. "update from"
+        # rendering: TestOmpTargetUpdatePrinter below.
+        suite_fn = next(
+            chunk.split("end subroutine")[0]
+            for chunk in fortran.split("\n  subroutine ")[1:]
+            if "call test_omp_update_scheme_run(" in chunk.split("end subroutine")[0]
+        )
+        assert "target update to(cpu_var" in suite_fn
+        assert "target update from(cpu_var" not in suite_fn
         run_fn = _fn_body(fortran, "ccpp_physics_run")
-        assert "target update from(cpu_var" in run_fn
-        assert "target update to(cpu_var" in run_fn
+        assert "cpu_var" not in "".join(l for l in run_fn.splitlines() if "!$omp" in l)
 
 
 # ── OmpTargetEnterDataOp / OmpTargetExitDataOp -- op-level printer coverage ──
@@ -240,3 +253,20 @@ class TestOmpTargetEnterExitDataPrinter:
         assert "!$omp target exit data map(from:var1) map(release:var2, var3)" in text
         assert "map(from:(var1" not in text
         assert "map(release:(var2" not in text
+
+
+class TestOmpTargetUpdatePrinter:
+    def test_update_from_and_to_render(self):
+        ref1 = _make_host_var_ref("var1")
+        ref2 = _make_host_var_ref("var2")
+        for op, expected in (
+            (OmpTargetUpdateFromOp([ref1.res, ref2.res]), "!$omp target update from(var1, var2)"),
+            (OmpTargetUpdateToOp([ref1.res]), "!$omp target update to(var1)"),
+        ):
+            out = StringIO()
+            ctx = ftnPrintContext(output=out)
+            ctx.register_binops()
+            ctx.variables[ref1.res] = "var1"
+            ctx.variables[ref2.res] = "var2"
+            ctx.print_op(op)
+            assert expected in out.getvalue(), out.getvalue()

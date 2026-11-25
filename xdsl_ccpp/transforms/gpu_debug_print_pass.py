@@ -130,14 +130,18 @@ class GPUDebugPrintPass(ModulePass):
                     continue
                 if not fn.body.blocks:
                     continue
-                if not is_gpu_call_bearing_fn(module_op, fn):
+                # ccpp_init: where host-declared device variables become
+                # resident for the whole run (resident-physics-state) -- Part A
+                # only, no scheme calls there.
+                residency_only = fn.sym_name.data == "ccpp_init"
+                if not (is_gpu_call_bearing_fn(module_op, fn) or residency_only):
                     continue
                 block = fn.body.blocks[0]
 
                 # --- Part B: scalar host-vs-device value diagnostics ---
                 # One per module scalar, inserted at the very top of the
                 # function.
-                first_op = next(iter(block.ops), None)
+                first_op = None if residency_only else next(iter(block.ops), None)
                 if first_op is not None:
                     for entry in scalar_entries:
                         name = entry.var_name.data

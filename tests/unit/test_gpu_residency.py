@@ -125,35 +125,49 @@ _SINGLE_PHASE_SUITE_XML = minimal_suite_xml(
 
 
 class TestSinglePhaseResidency:
-    def test_present_var_gets_copy_region_in_addition_to_present_clause(
+    def test_present_var_resident_for_the_whole_run(
         self, run_host_match, ccpp_context
     ):
+        """The host declares present_var device: it is entered once in
+        ccpp_init and copied back once in ccpp_final (resident-physics-state),
+        and the run phase only asserts it present -- no per-call copy region."""
         fortran = _fortran_output(
             run_host_match, ccpp_context,
             [_SINGLE_PHASE_SCHEME], [_SINGLE_PHASE_HOST], _SINGLE_PHASE_SUITE_XML,
         )
         run_fn = _fn_body(fortran, "ccpp_physics_run")
+        init_fn = fortran.split("subroutine ccpp_init(")[1].split("end subroutine ccpp_init")[0]
+        final_fn = fortran.split("subroutine ccpp_final(")[1].split("end subroutine ccpp_final")[0]
         assert "present(present_var" in run_fn
-        assert _var_in_clause(run_fn, "copy", "present_var")
-        assert "!$acc end data" in run_fn
+        assert not _var_in_clause(run_fn, "copy", "present_var")
+        assert _var_in_clause(init_fn, "copyin", "present_var")
+        assert _var_in_clause(final_fn, "copyout", "present_var")
 
-    def test_update_var_gets_copy_region_in_addition_to_update_pair(
+    def test_update_var_resident_for_the_whole_run_keeps_its_update_pair(
         self, run_host_match, ccpp_context
     ):
-        """present_var and update_var are both single-phase (legacy)
-        residency vars at the same call site, so they're legitimately
-        combined into one `!$acc data copy(present_var, update_var)` region
-        -- mirroring how _wrap_scheme_call already combines multiple
-        copy-family vars at one call site."""
+        """update_var is host-declared device but used by a host scheme: it
+        is resident for the whole run (entered in ccpp_init, copied back in
+        ccpp_final), and pushed right after the host scheme's call inside the
+        suite (host-scheme-present-coherence); no pull (no device writer),
+        no per-call copy region, nothing in the host cap's run function."""
         fortran = _fortran_output(
             run_host_match, ccpp_context,
             [_SINGLE_PHASE_SCHEME], [_SINGLE_PHASE_HOST], _SINGLE_PHASE_SUITE_XML,
         )
         run_fn = _fn_body(fortran, "ccpp_physics_run")
-        assert "update self(update_var" in run_fn
-        assert "update device(update_var" in run_fn
-        assert _var_in_clause(run_fn, "copy", "update_var")
-        assert _var_in_clause(run_fn, "copy", "present_var")
+        init_fn = fortran.split("subroutine ccpp_init(")[1].split("end subroutine ccpp_init")[0]
+        final_fn = fortran.split("subroutine ccpp_final(")[1].split("end subroutine ccpp_final")[0]
+        suite_fn = next(
+            chunk.split("end subroutine")[0]
+            for chunk in fortran.split("\n  subroutine ")[1:]
+            if "call test_residency_scheme_run(" in chunk.split("end subroutine")[0]
+        )
+        assert "update device(update_var" in suite_fn
+        assert "update self(update_var" not in suite_fn
+        assert "update_var" not in "".join(l for l in run_fn.splitlines() if "!$acc" in l)
+        assert _var_in_clause(init_fn, "copyin", "update_var")
+        assert _var_in_clause(final_fn, "copyout", "update_var")
 
 
 # ── Multi-phase present var (initialize + run) -- real hoisting, not per-call ─

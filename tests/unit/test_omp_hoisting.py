@@ -62,6 +62,28 @@ import pytest
 pytestmark = pytest.mark.usefixtures("legacy_mode")
 
 
+def _suite_fn_calling(fortran: str, entry: str) -> str:
+    """Body of the generated subroutine that calls scheme entry point `entry`."""
+    for chunk in fortran.split("\n  subroutine ")[1:]:
+        body = chunk.split("end subroutine")[0]
+        if f"call {entry}(" in body:
+            return body
+    raise AssertionError(f"no subroutine calls {entry}")
+
+
+def _flat_fn(fortran: str, fn: str) -> str:
+    return fortran.split(f"subroutine {fn}(")[1].split(f"end subroutine {fn}")[0]
+
+
+def _omp_lines_mentioning(body: str, var: str) -> list:
+    return [l for l in body.splitlines() if "!$omp" in l and var in l]
+
+
+def _host_cap_fns(fortran: str) -> str:
+    return "".join(_flat_fn(fortran, fn) for fn in (
+        "ccpp_physics_timestep_init", "ccpp_physics_run", "ccpp_physics_timestep_final"))
+
+
 def _omp_fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas, suite_xml) -> str:
     """Same pipeline as test_gpu_data_hoisting.py's _fortran_output, but with
     directive="omp" for both GPU passes."""
@@ -193,7 +215,7 @@ class TestOmpWholeSimulationScope:
 class TestOmpUpdateClauseHoisting:
     """Group E equivalent: item 1(a)'s update-clause hoisting, extended to OMP."""
 
-    def test_three_phase_update_var_syncs_once_each_way_nothing_at_passthrough(
+    def test_three_phase_update_var_pushed_after_each_cpu_writer(
         self, run_host_match, ccpp_context
     ):
         fortran = _omp_fortran_output(
@@ -202,20 +224,17 @@ class TestOmpUpdateClauseHoisting:
             host_metas=[_GROUP_E_HOST],
             suite_xml=_GROUP_E_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
-
-        assert "target update from(three_phase_upd" in initial_fn
-        assert "target update to(three_phase_upd" not in initial_fn
-        assert "target update to(three_phase_upd" in final_fn
-        assert "target update from(three_phase_upd" not in final_fn
-        # Nothing at all -- no directive, no clause -- at the passthrough phase.
-        for line in run_fn.splitlines():
-            stripped = line.strip()
-            if "!$omp" in stripped:
-                assert "three_phase_upd" not in stripped
-
+        # Whole-run residency + per-call "target update to" after each CPU
+        # writer inside the suite (resident-physics-state,
+        # host-scheme-present-coherence); no "update from" (no device writer);
+        # nothing in the host cap per step.
+        for entry in ['hoist_scheme_upd_timestep_init', 'hoist_scheme_upd_run', 'hoist_scheme_upd_timestep_final']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "target update to(three_phase_upd" in suite_fn
+            assert "target update from(three_phase_upd" not in suite_fn
+        assert not _omp_lines_mentioning(_host_cap_fns(fortran), "three_phase_upd")
+        assert "map(to:three_phase_upd" in _flat_fn(fortran, "ccpp_init")
+        assert "map(from:three_phase_upd" in _flat_fn(fortran, "ccpp_final")
 
 class TestOmpMultiSuiteScoping:
     """Group C equivalent: a variable's classification in one suite must not
@@ -253,19 +272,26 @@ class TestOmpUpdateClauseRegression:
     variable stays on the legacy per-call target update from/to path,
     unaffected by hoisting."""
 
-    def test_update_from_to_unaffected_by_hoisting(self, run_host_match, ccpp_context):
+    def test_cpu_var_pushed_after_its_cpu_writer(
+        self, run_host_match, ccpp_context
+    ):
         fortran = _omp_fortran_output(
             run_host_match, ccpp_context,
             scheme_metas=[_GROUP_D_SCHEME],
             host_metas=[_GROUP_D_HOST],
             suite_xml=_GROUP_D_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        assert "target update from(cpu_var" in run_fn
-        assert "target update to(cpu_var" in run_fn
-        assert "target enter data" not in run_fn
-        assert "target exit data" not in run_fn
-
+        # Whole-run residency + per-call "target update to" after each CPU
+        # writer inside the suite (resident-physics-state,
+        # host-scheme-present-coherence); no "update from" (no device writer);
+        # nothing in the host cap per step.
+        for entry in ['hoist_scheme_update_run']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "target update to(cpu_var" in suite_fn
+            assert "target update from(cpu_var" not in suite_fn
+        assert not _omp_lines_mentioning(_host_cap_fns(fortran), "cpu_var")
+        assert "map(to:cpu_var" in _flat_fn(fortran, "ccpp_init")
+        assert "map(from:cpu_var" in _flat_fn(fortran, "ccpp_final")
 
 class TestOmpFinalizeAlongsidePerTimestepHoisting:
     """Group F equivalent: finalize can't anchor whole-sim scope alone, so a
@@ -300,7 +326,7 @@ class TestOmpFinalizeAlongsidePerTimestepHoisting:
         assert "map(tofrom:fz_var" in finalize_fn
         assert _no_omp_data_directive_line_mentions(finalize_fn, "fz_var")
 
-    def test_update_var_hoists_per_timestep_finalize_touch_stays_legacy(
+    def test_update_var_pushed_after_each_cpu_writer_finalize_too(
         self, run_host_match, ccpp_context
     ):
         fortran = _omp_fortran_output(
@@ -309,17 +335,14 @@ class TestOmpFinalizeAlongsidePerTimestepHoisting:
             host_metas=[_GROUP_F_UPD_HOST],
             suite_xml=_GROUP_F_UPD_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
-        run_fn = _fn_body(fortran, "ccpp_physics_run")
-        # See the copy_var test above for why this is ccpp_physics_final
-        # now, not the flat ccpp_final.
-        finalize_fn = _fn_body(fortran, "ccpp_physics_final")
-
-        assert "target update from(fz_upd_var" in initial_fn
-        assert "target update to(fz_upd_var" not in initial_fn
-        assert "target update to(fz_upd_var" in run_fn
-        assert "target update from(fz_upd_var" not in run_fn
-        # finalize's own touch is independent of the hoisted span: full
-        # legacy per-call from+to pair, right at its own call site.
-        assert "target update from(fz_upd_var" in finalize_fn
-        assert "target update to(fz_upd_var" in finalize_fn
+        # Whole-run residency + per-call "target update to" after each CPU
+        # writer inside the suite (resident-physics-state,
+        # host-scheme-present-coherence); no "update from" (no device writer);
+        # nothing in the host cap per step.
+        for entry in ['hoist_scheme_fz_upd_timestep_init', 'hoist_scheme_fz_upd_run', 'hoist_scheme_fz_upd_finalize']:
+            suite_fn = _suite_fn_calling(fortran, entry)
+            assert "target update to(fz_upd_var" in suite_fn
+            assert "target update from(fz_upd_var" not in suite_fn
+        assert not _omp_lines_mentioning(_host_cap_fns(fortran), "fz_upd_var")
+        assert "map(to:fz_upd_var" in _flat_fn(fortran, "ccpp_init")
+        assert "map(from:fz_upd_var" in _flat_fn(fortran, "ccpp_final")

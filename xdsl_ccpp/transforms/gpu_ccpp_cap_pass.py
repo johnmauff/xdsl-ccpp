@@ -504,6 +504,7 @@ class GPUCcppCapPass(ModulePass):
         """
         diverged = find_diverged_suite_vars(scheme_names, meta_data)
         phases_used: dict = {}  # host_var -> set[phase]
+        host_declared: set = set()  # host_vars the host declares memory_space = device
         for scheme_name in scheme_names:
             props = meta_data.get(scheme_name)
             if props is None:
@@ -528,6 +529,17 @@ class GPUCcppCapPass(ModulePass):
                         arg, ddt_instance_map, ddt_parent_map, host_var_map
                     )
                     phases_used.setdefault(host_var, set()).add(phase)
+                    if model_space == "device":
+                        host_declared.add(host_var)
+
+        # resident-physics-state: a variable the host declares device lives
+        # on the device for the whole run -- entered when the suite
+        # initializes, copied back at finalize, present in between -- not
+        # per time step. The host keeps the two copies coherent around its
+        # own host reads and writes between suite calls (update device after
+        # it writes, update self before it reads).
+        for host_var in host_declared:
+            phases_used[host_var] |= {"initialize", "finalize"}
 
         return {
             host_var: self._resolve_lifetime("residency", used)

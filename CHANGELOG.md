@@ -17167,3 +17167,85 @@ tolerance) 2/2: `outfrq_uw_vdiff_derecho_gpu` (UW_* fields match again) and
 `outfrq_gw_cam7_derecho_gpu` (answers unchanged by the extra pushes). The cam7
 suite's GPU test (F2000_C7) still fails at RUN upstream, so the `cam7_cap`
 change is checked only through `gw_cam7`.
+
+## `resident-physics-state`, group A: host-declared device variables resident for the whole run (2026-11-25)
+
+Plan: `CAM-SIMA.xdsl-ccpp/resident_physics_state_plan.md`; stage-1 inventory
+`CAM-SIMA.xdsl-ccpp/resident_state_inventory.md` (149 host variables in the
+cam4 MPAS GPU host cap's per-step constructs; group A = 73 touched by no host
+code between physics calls except generated allocation, initial/snapshot
+reads, the snapshot check and restart writes; `read_restart_physics` is an
+empty stub, so no restart reads).
+
+xdsl-ccpp:
+- `gpu_ccpp_cap_pass.py` `_analyze_one_suite_residency`: a variable whose host
+  metadata declares `memory_space = device` is resident for the whole run --
+  `enter data copyin` in `ccpp_init`, `exit data copyout` in `ccpp_final`,
+  `present` in between -- instead of per time step (a `data copy` around each
+  suite-part call when only `run` used it). Variables resident only because
+  schemes disagree keep their per-step anchors. The host keeps the copies
+  coherent around its own host reads and writes between suite calls.
+- `gpu_debug_print_pass.py`: Part A (array-size diagnostics after a
+  residency op) also walks `ccpp_init`, where that residency is now
+  established.
+- Tests: 7 expectations updated from per-step `copy` regions to whole-run
+  enter/exit (`test_gpu_residency.py` two, renamed; `test_ddt_member_residency.py`,
+  `test_gpu_data_hoisting.py`, `test_gpu_directives.py`
+  `test_ccpp_cap_level_gets_whole_run_residency`); the two debug-print tests
+  pass again with the pass change. Unit tests 1641 passed; FileCheck pass.
+- `cap_oracle diff` vs main: xdsl137gpu (35 GPU cases) and xdsl125/125i/125n
+  (109 CPU cases): all IDENTICAL -- no CAM-SIMA host variable declared device
+  before this change. With group A marked (generated in a scratch copy of the
+  cam4 MPAS GPU case's `physics_types.meta`): the 68 marked variables leave
+  every per-step construct of `cam_ccpp_cap.F90` except `present`; entered
+  in `ccpp_init`, copied back in `ccpp_final`; `cam4_cap.F90` unchanged.
+
+CAM-SIMA (registry): optional `memory_space="device"` variable attribute
+(`registry_v1_0.xsd`, `generate_registry_data.py` writes it to the `.meta`
+and generates `physics_types_update_device`/`_update_host` with
+`!$acc update ... if_present` per device variable); 68 group-A variables
+marked in `registry.xml`; calls after `physics_read_data`, before
+`physics_check_data` and before `write_restart_physics`; ccs_config
+`Depends.nvhpc`: `physics_types.o` compiled with OpenACC
+(`REGISTRY_GPU_OBJS`). Registry unit-test samples updated (two empty routines
+each; `reg_good_simple.xml` marks `latitude` device); CAM-SIMA Python unit
+tests 196 passed. The original capgen does not accept `memory_space` in
+metadata (already the case for 23 scheme `.meta` files); out of scope.
+
+Verification of the above: xdsl139gpu (full `aux_sima_gpu`, nvhpc GPU vs
+`20261122-894897e-nvhpc`, zero tolerance): 33 PASS, F2000_C7 known upstream RUN
+failure, 1 FAIL -- `outfrq_uw_vdiff_derecho_gpu` BASELINE DIFF in `UW_tpert`,
+`UW_qpert`, `UW_tke` only (3 of 90 fields; state identical). `tpert`, `qpert`,
+`tke` are group A variables that only CPU schemes use in that suite, so they
+were not "diverged": the host cap synced them once around the whole suite part,
+and inside it `bretherton_park_diff_run` (CPU) wrote them before the CPU
+diagnostics scheme handed them to `history_out_field`, which read the present,
+stale device copy (the `host-scheme-present-coherence` rule acts only inside
+the suite cap).
+
+Fix (user's option 1, 2026-11-25), `transforms/util/cap_shared.py`:
+- `find_diverged_suite_vars`: the host's `memory_space = device` declaration
+  counts as a device use, so a host-declared device variable that a CPU scheme
+  uses is diverged and its touches are synced per call inside the suite cap,
+  with the coherence pushes (`update device` after each CPU writer).
+- `find_device_readonly_host_vars`: also a host-declared device variable that
+  no scheme writes on the device, even with no device use at all -- its device
+  copy is never newer than the host copy, so CPU callers need no pull.
+- Tests: 9 expectations of the old host-cap update hoisting for such variables
+  rewritten to whole-run residency + per-call push inside the suite, no pull
+  (`test_gpu_data_hoisting.py` 4, `test_omp_hoisting.py` 3,
+  `test_omp_directives.py`, `test_gpu_residency.py`); new
+  `TestOmpTargetUpdatePrinter` (the "target update from" rendering the rewritten
+  test no longer produces). Unit tests 1642 passed; FileCheck pass.
+- `cap_oracle diff` against the group A tree (`git stash create` 5994f0e):
+  xdsl139gpu 35 GPU cases -- 32 IDENTICAL (all cam4); `vdiff_bretherton_park`:
+  `tpert`/`qpert`/`tke` pushed after `bretherton_park_diff_run` (before the
+  diagnostics call), host-cap pull/push around the suite part gone;
+  `microp_aero_bam`, `cam7`: host-cap update pairs of `ast`/`aist` (read-only on
+  the device) removed. xdsl125/125i/125n 109 CPU cases: all IDENTICAL.
+
+Verification: xdsl140gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
+tolerance) 2/2: `outfrq_uw_vdiff_derecho_gpu` (UW_tpert/UW_qpert/UW_tke match
+again) and `outfrq_microp_aero_bam_derecho_gpu`. With xdsl139gpu, every
+`aux_sima_gpu` test is bit-for-bit with group A resident, except the known
+upstream F2000_C7 RUN failure (the cam7 suite's cap change is not run-verified).
