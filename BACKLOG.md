@@ -77,11 +77,11 @@ measured data, and will drift as items are reassessed.
 | `gpu-cap-present-regions` | option 3 only (options 1-2 done 2026-11-20): `default(present)` in the ported schemes, scheme by scheme with replays, after residency is guaranteed; not sized | - |
 | `gpu-widen-column-kernels` | 3.5-4.5 days in three pieces, each bit-for-bit and replay-checked: `qneg` collapse(3) + atomic stats (0.5), `diffuse_tracers` columns x constituents (1), McICA KISS jump-ahead (2-3, exhaustive integer unit test first); est. ~0.23 s/day of rank-0 kernel time | S |
 | `gpu-async-queues` | idea, not planned: first an nsys gap analysis (idle GPU time inside vs between scheme data regions, scheme entry-region enter/wait/exit counts), ~0.5 day; the work itself depends on option 3 of `gpu-cap-present-regions` | - |
-| `gpu-cam4-host-uses-in-device-schemes` | constituent views and hack `pdel` done (2026-11-20, CHANGELOG.md L16727, L16704); `rrtmgp_post` flwds moved to `rrtmgp-flux-object-residency`; left: `compute_cloud_fraction` `cldfrc_ice` qsat on the device (0.5 day, waits for `wv-sat-goffgratch-point-matches-vector`); `prescribed_ozone` trcdata on device not included (perf20 ~0.08 s/day) | S |
 | `gpu-run-local-suite-owned-alloc` | not worth it for speed alone (perf20 ~6 ms/day of enter/exit events + host allocation; perf23 could not see the 2026-11-21 attempt); a correct version must handle zero extents (free and delete at extent 0, or never enter a zero-size array), ~1 day plus a test with an all-night rank; reverted attempt CHANGELOG.md L16799 | S |
 | `aerosol-objects-as-scheme-arguments` | decision first (upstream: atmospheric_physics + CAM-SIMA aerosol owners); then ~3-5 days: BAM aerosol data as plain array arguments of `ndrop_bam_ccpp` / `nucleate_ice_ccpp` via an interstitial, recapture, replays; prerequisite for their replays and GPU ports | S |
-| `gpu-history-accumulate` | stages 1-2 done and verified (CHANGELOG.md L16939), uncommitted; left: RRTMGP diagnostics after `rrtmgp-flux-object-residency`, full `aux_sima_gpu`, CHANGELOG, upstream PRs | S |
+| `gpu-history-accumulate` | stages 1-2 done and verified (CHANGELOG.md L16939), RRTMGP diagnostics done (L16997); left: commits, full `aux_sima_gpu`, upstream PRs | XS |
 | `device-capable-host-routines` | 1-2 days (host-supplied list of device-capable routines as a neutral input; classify dummies passed unmodified only to them as `device_capable`; unit tests; cap_oracle on every diagnostics scheme) | XS |
+| `resident-physics-state` | 7-12 days (inventory ~1, xdsl-ccpp ~1-2, CAM-SIMA residency + boundary syncs ~4-6, optional derived state on the device ~2-3; plan `CAM-SIMA.xdsl-ccpp/resident_physics_state_plan.md`) | M |
 | `host-caller-device-callee-audit` | 1-2 days (read every direct call from a host scheme to a GPU-ported scheme -- rk_stratiform -> compute_cloud_fraction, clubb -> hb_pbl_dependent_coefficients, kessler driver -- and check each argument the caller changes on the host; fix as in bretherton_park_diff; GPU tests of the affected suites) | XS |
 | `gpu-port-bretherton-park` | ~8-12 days (like `zm_convr`): `caleddy` + helpers as per-column routine-seq code with per-column work arrays (bulk), `trbintd` and driver loops, device-to-device calls into the ported diffusion solver; replays (`capture_uw_vdiff`), uw_vdiff GPU subset. replay c13a; CAM5 / vdiff_bretherton_park only (re-sized 2026-11-20, was 10-20 days L) | M |
 | `cloud-sedimentation-cfint2-error-column` | <1 day if revisited (store the first failing level per column on the device, pick on the host; rk_stratiform replays CPU+GPU); only if the old message matters | XS |
@@ -114,8 +114,7 @@ measured data, and will drift as items are reassessed.
 | `suite-cap-first-use-inout` | 0.5-1 day (error, or a suite-owned persistent array, for an argument whose first use in the suite is `inout` with no host variable and no earlier producer; unit test) | XS |
 | `rte-byband-net-device` | upstream PR only (local fixes confirmed bit-for-bit, CHANGELOG.md L15933; on hold) | XS |
 | `cap-per-scheme-timers` | 1-2 days base (timers around each scheme call and around the cap's own syncs/group data regions in the generated suite caps, as language-neutral ops behind a generator option; host supplies the timer routines, CAM-SIMA `perf_mod`; pytest + FileCheck; cap_oracle; one CPU and one GPU perf run); +2-3 days optional step 2 (OpenACC profiling-interface library attributing in-scheme transfer time and bytes to the current scheme), ~3-5 days total | S |
-| `rrtmgp-gpu-data-movement` | umbrella; phases 0-2 done (perf15: `phys_run1` -10.3 s/day). Left, optional: broadband part of `rrtmgp-flux-object-residency`, 2-D sections of `residency-call-args-to-device-callees`, pinned-memory experiment | S |
-| `rrtmgp-flux-object-residency` | 2-4 days (byband already on the device; left: broadband fluxes and `flwds` in `rrtmgp_post`, then the rrtmgp_sw/lw/diagnostics ports; replays, rrtmgp GPU FPHYStest, cam4 GPU subset) | S |
+| `rrtmgp-gpu-data-movement` | umbrella; phases 0-2 done (perf15: `phys_run1` -10.3 s/day). Left, optional: `%fluxes` descriptor copies (follow-up of `rrtmgp-flux-object-residency`, resolved L16997), 2-D sections of `residency-call-args-to-device-callees`, pinned-memory experiment | S |
 | `rrtmgp-gas-concs-device-vmr` | likely done (fix in 1b7ae07); 0.5 day to confirm with an nsys byte count | XS |
 | `residency-call-args-to-device-callees` | function references and contiguous rank-1 sections done by rule B (2026-11-20, CHANGELOG.md L16629; 8 RRTMGP `.meta` entries dropped); left: 2-D column sections (`p_lay`, `p_lev`, `t_lay` as `x(iCol:iCol2,:)`): 2-4 days (prove the section needs no host temporary, or tell the callee's residency from its source; cap_oracle over all cases, rrtmgp replays, GPU regression) | S |
 | `rte-caller-supplied-orientation` | 1-2 days, upstream-only (user 2026-11-17: the interim per-call kernel stays; do it only with an RTE PR) | XS |
@@ -2491,8 +2490,9 @@ Supporting items (not tracked elsewhere):
   (check that CAM's copy of `wv_sat_methods` also comes from atmos_phys,
   or note the mismatch in the PR). Issue draft:
   `issue_goffgratch_vect_point.md` (session scratchpad, 2026-11-20).
-  Unblocks a per-point, device-resident `cldfrc_ice` branch in
-  `compute_cloud_fraction` (removes the `t` pull without rule B extension).
+  Would allow a per-point, device-resident `cldfrc_ice` branch in
+  `compute_cloud_fraction`; no longer needed for the `t` pull, which a
+  `.meta` mark removed (CHANGELOG.md L17099).
 - **ID: `capture-gpu-status-own-kernels`. Resolved (2026-11-11)** -- CHANGELOG.md L14950.
 - **ID: `gpu-port-hack-convect-shallow`. Resolved (2026-11-11)** -- CHANGELOG.md L14909.
 - **ID: `gpu-port-zm-convr`. Resolved (2026-11-18)** -- CHANGELOG.md L15944.
@@ -2536,54 +2536,9 @@ Supporting items (not tracked elsewhere):
      own full GPU regression, or last in the generator batch, so a failure
      points at it.
 - `gpu-cam4-unused-device-args` — **Resolved (2026-11-21)** -- CHANGELOG.md L16629, L16750.
-- `gpu-cam4-host-uses-in-device-schemes` — **GPU schemes that read or
-  write arguments in host code, so the cam4 cap syncs around them.** Added
-  2026-11-20 (user; after `gpu-port-hb-diff-prepare-inputs`; same survey as
-  `gpu-cam4-unused-device-args`). Rule (a) of `derive_memory_space.py`: an
-  array a scheme copies itself (`copy`/`copyin`) but also touches in host
-  code is "host", and the cap syncs it around the call. Per step:
-  - **Whole constituent array, 3x** (likely the largest remaining
-    transfer): `update self(constituents)` before
-    `rk_stratiform_check_qtlcwat_run` and `update self(t, constituents)`
-    before each of the two `compute_cloud_fraction_run` calls. Done
-    2026-11-20 (a bug in `_apply_constituent_rule`; 3 -> 1 pulls, the one
-    left is history output), CHANGELOG.md L16727.
-  - `compute_cloud_fraction_run` `temp` (cap `t`), **open** (waits for
-    `wv-sat-goffgratch-point-matches-vector`): real host use --
-    `call qsat_water(temp(1:ncol, k), ...)` and `call svp_ice_vect(temp(1:ncol, k), ...)`
-    per level in host code (~L284-285). Fix: the device column
-    `wv_saturation` routines (`gpu-kernel-launch-reduction` qsat piece,
-    CHANGELOG.md L16247) inside the existing kernel.
-  - `rk_stratiform_cloud_fraction_perturbation_run` `cloud`, `rhu00`,
-    `relhum`: done 2026-11-20 by rule C (keyword names are not host uses,
-    CHANGELOG.md L16629).
-  - `hack_convect_shallow_run` `pdel`: done 2026-11-20 (debug sums in an
-    `!$acc serial` region), CHANGELOG.md L16704.
-  - `prescribed_ozone_run` `pmid`, `pint`, `phis`, `zi`: `update self` of
-    all four every step, passed to the trcdata read/interpolation on the
-    host (~L230). Real host use; fix only with trcdata interpolation on
-    the device (larger; separate item if wanted).
-  - `rrtmgp_post_run` `flwds` (inout): moved to `rrtmgp-flux-object-residency`
-    (2026-11-20): `flux_dn` is host-only after `rrtmgp_lw_rte`.
-  Cost (perf20 nsys, rank 0, MPAS cam4, per simulated day, OpenACC data events attributed to the neighbouring scheme call; perf20 predates the xdsl107-110 ports):
-  - whole-constituent pulls: 50 pulls, 78 ms, 266 MB (~1.5-3 ms per 5.3 MB
-    pull); perf20 had one such site per step, the current cap three; the
-    fix removes two, ~0.14-0.29 s/day (2 x 48 steps x 1.5-3 ms; the earlier
-    ~0.25-0.45 overstated it) -- the only piece here worth doing for speed;
-  - `prescribed_ozone`: 350 transfers, 83 ms, 357 MB;
-  - perturbation (`cldfrc`, `rhu00`, `relhum`): 200 transfers, 25 ms, 71 MB;
-  - `compute_cloud_fraction` `t`: 50 pulls, 5 ms, 18 MB;
-  - `rrtmgp_post` `flwds`: 100 transfers, 1.4 ms, 1.4 MB;
-  - hack `pdel`: not in the perf20 cap (hack not yet ported then).
-  For scale (same profile): diagnostics pulls ~2.1 s/day, 5.4 GB
-  (`gpu-history-accumulate`); aerosol_optics ~0.14 s/day, 1 GB.
-  Effort per piece: see the effort table. Each piece: `cap_oracle diff` on the cam4 GPU
-  cap, replays of the touched schemes CPU+GPU, GPU subset regression vs the
-  CPU baseline (bit-for-bit).
-  Update 2026-11-24 (backlog review): `prescribed_ozone` now costs only `update
-  self(zi)` (`pmid`/`pint`/`phis` removed by the read-only rule, CHANGELOG.md
-  L16750). `compute_cloud_fraction`'s host vector `qsat_water`/`svp_ice_vect`
-  calls still cause `update self(t)` twice per step.
+- `gpu-cam4-host-uses-in-device-schemes` — **Resolved (2026-11-24)** -- CHANGELOG.md L17099 (last piece; earlier L16727, L16704, L16629).
+- **ID: `odv-col-aod-device-write`. Resolved (2026-11-24)** -- CHANGELOG.md L17052.
+- `tracer-data-device-interpolation` — **Resolved (2026-11-24, `zi` fix; device interpolation deferred by the user)** -- CHANGELOG.md L17074.
 - `gpu-cam4-host-scheme-syncs` — **Resolved (2026-11-21)** -- CHANGELOG.md L16704, L16750.
 - `gpu-run-local-suite-owned-alloc` — **RRTMGP's per-call scratch arrays
   are allocated and created on the device every step.** Added 2026-11-20
@@ -2789,6 +2744,17 @@ Supporting items (not tracked elsewhere):
   `test_gravity_wave_drag_prepare_profiles` driver is stale since the `pint`
   change). Test: capture_gw_cam7 replays CPU+GPU, gw_cam7 GPU FPHYStest vs the
   CPU baseline (`outfrq_gw_cam7_derecho_gpu`), CPU gw_cam7.
+- `resident-physics-state` — **Keep physics state on the GPU across time steps.**
+  Added 2026-11-24. Plan: `CAM-SIMA.xdsl-ccpp/resident_physics_state_plan.md`.
+  perf26 nsys (rank 0): the host cap and the dycore coupling's direct
+  `qneg`/`geopotential_temp` calls move 6.1 GB/day; the floor with a CPU
+  dycore is ~0.7-1.1 (coupler ~0.05, constituents and dycore state once each
+  way per step). Host time in those constructs ~2.5 s/day (inferred upper
+  bound on the saving). Design: CAM-SIMA declares its device variables in host
+  metadata (registry attribute), creates them at allocation and syncs at its
+  own boundaries (d_p/p_d coupling, import/export, restart, snapshot
+  read/check); host `memory_space = device` makes the cap emit `present` only,
+  with no per-step enter/exit and no constituent step syncs.
 - `gpu-history-accumulate` — **Accumulate history fields on the GPU.**
   Added 2026-11-08. **A full design project (user, 2026-11-10), not
   GPU-optimization work:** the history buffers' redesign needs its own
@@ -2953,6 +2919,9 @@ Supporting items (not tracked elsewhere):
   Left: the RRTMGP diagnostics (after `rrtmgp-flux-object-residency`), commits,
   a full `aux_sima_gpu` regression, CHANGELOG, upstream PRs; PUMAS `proc_rates`
   optional.
+  Update 2026-11-24: the RRTMGP diagnostics are done
+  (`rrtmgp-flux-object-residency`, CHANGELOG.md L16997): the cam4 cap pulls
+  nothing for any `*_diagnostics` call (xdsl132gpu).
 - `device-capable-host-routines` — **Classify dummies passed only to
   device-capable host routines as device-capable.** Added 2026-11-23 (user, from
   `gpu-history-accumulate` stage 2). Pass-through diagnostics schemes have no
@@ -3278,7 +3247,7 @@ RTE, fluxes, heating rates, `rrtmgp_post`). Left:
 
 Update 2026-11-24 (backlog review): phase 2 done; `suite-cap-loop-gpu-sync`
 closed (CHANGELOG.md L14633). Left: the broadband part of
-`rrtmgp-flux-object-residency`, the 2-D-section part of
+`rrtmgp-flux-object-residency` (resolved 2026-11-24, CHANGELOG.md L16997), the 2-D-section part of
 `residency-call-args-to-device-callees`, and the optional pinned-memory
 experiment.
 - `flwds` around `rrtmgp_post` (one host line after its data region).
@@ -3397,42 +3366,7 @@ the CPU baseline, and the cap's `update self`/`update device` list.
 
 **ID: `rrtmgp-rte-object-residency`. Resolved (2026-11-17)** -- optics and LW source objects created on the device where allocated (`rrtmgp_inputs`, `rrtmgp_lw_cloud_optics`, `rrtmgp_sw_mcica_subcol_gen`) and deleted in `rrtmgp_post`; replay drivers copy out-objects back; perf15 `phys_run1` 32.6 -> 22.3 s/day. CHANGELOG.md L15884.
 
-**ID: `rrtmgp-flux-object-residency`. Keep the RTE flux objects on the
-GPU for a whole radiation call.** Added 2026-11-17 (user), from perf15.
-
-Update 2026-11-24 (backlog review): the byband components are already created
-and zeroed on the device in `rrtmgp_pre` and deleted in `rrtmgp_post`
-(`gpu-rrtmgp-reset-fluxes-byband`, CHANGELOG.md L16838). Left: the broadband
-`flux_up`/`flux_dn`/`flux_net` (read on the host by
-`rrtmgp_sw/lw_diagnostics`), and `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)`
-outside `rrtmgp_post`'s data region (the cam4 cap still does `update
-self(flwds)`/`update device(flwds)`). Then port `rrtmgp_sw/lw_diagnostics` and
-`rrtmgp_diagnostics` (the last 16 diagnostics arrays the cam4 cap pulls).
-
-- `fsw`, `fswc`, `flw`, `flwc` (broadband and byband) are allocated by the
-  host scheme `rrtmgp_pre` and read on the host by
-  `rrtmgp_sw/lw_diagnostics` and `rrtmgp_post` (`flwds`); phase 1 of
-  `rrtmgp-gpu-data-movement` left them out on purpose.
-- Every RTE call and flux scheme therefore copies them: perf15 ~0.17
-  s/day in `rrtmgp_sw/lw_calculate_fluxes`, `sum_byband`,
-  `net_byband_precalc` and the `rrtmgp_lw/sw_rte` copy-outs.
-- Same pattern as the optics objects: `enter data` where `rrtmgp_pre`
-  allocates them (or move the allocation into a ported scheme),
-  `exit data delete` in `rrtmgp_post`'s `free_fluxes_*`, an explicit
-  `update self` of what the host diagnostics read, and
-  `flwds(:) = flw%fluxes%flux_dn(:, nlay+1)` inside `rrtmgp_post`'s data
-  region. The flux types have pointer components: create the targets on
-  the device and attach them (check the capture handlers' rule for
-  pointers).
-- nvfortran (25.9) trap from the optics work: a `default(present)` kernel
-  indexing an allocatable component of an extended RTE type directly can
-  abort "partially present" (its present lookup gets a garbage size from
-  the component's descriptor). Zero or fill the flux arrays through a
-  routine with a plain array dummy (e.g. RTE's `zero_array`), not an
-  in-kernel component access. CHANGELOG.md L15884.
-- Test: rrtmgp replays CPU/GPU (driver copy-back for the out objects as
-  for the optics), rrtmgp GPU FPHYStest vs an nvhpc CPU run, acc_time
-  rerun.
+**ID: `rrtmgp-flux-object-residency`. Resolved (2026-11-24)** -- CHANGELOG.md L16997. Follow-up (deferred by the user): the parent `%fluxes` descriptor is still copied per RTE call and in `rrtmgp_post`.
 
 **ID: `rrtmgp-rte-validation-transfers`. Resolved (2026-11-19)** -- value checks through the first radiation call only. CHANGELOG.md L16478.
 

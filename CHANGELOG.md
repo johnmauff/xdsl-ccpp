@@ -16993,3 +16993,132 @@ with a mid-window restart, `se_cam4`, `analy_ic_cam4`, `kessler_mpas`);
 xdsl127gpu 8/8; stage 2 xdsl128gpu, xdsl129gpu, xdsl130gpu and xdsl131gpu
 7/7 each (`se_cam4` QPC4/F1850/F2000/FHIST_C4 and `analy_ic_cam4` MPAS,
 DEBUG and optimized). Not yet run: full `aux_sima_gpu`, perf.
+
+## `rrtmgp-flux-object-residency`: broadband fluxes and the RRTMGP diagnostics on the GPU (2026-11-24)
+
+No generator change. Plan: CAM-SIMA.xdsl-ccpp
+`rrtmgp_flux_object_residency_plan.md`. Follows `gpu-rrtmgp-reset-fluxes-byband`
+(L16838, by-band components) and `gpu-history-accumulate` (L16939).
+
+Stage 1, broadband flux components (atmospheric_physics `schemes/rrtmgp`):
+- `rrtmgp_pre`: new `reset_broadband_components` (both reset routines call
+  it, so `fsw`, `fswc`, `flw`, `flwc` are covered): `enter data create` and
+  `zero_array` of `flux_up`, `flux_dn`, `flux_net`, `flux_dn_dir`, skipping
+  zero-size arrays (no daylit columns). Without OpenACC `zero_array` zeroes
+  the host arrays (same values).
+- `rrtmgp_post`: `flwds` from `flw%fluxes%flux_dn(:, nlay+1)` in a kernel
+  (plain-array helper `set_surface_flux`, nvfortran "partially present"),
+  inside `!$acc data copyin(flw%fluxes, flw%fluxes%flux_dn) copy(flwds)`;
+  `free_broadband_components` deletes the device copies before
+  `deallocate`.
+- The RTE schemes' `copy`/`copyin` clauses on the components now find them
+  present (no change to the RTE wrappers). The parent `%fluxes` descriptor
+  is still copied per call (deferred follow-up, user 2026-11-24).
+- Replay drivers: a scheme's own clauses decide whether the driver puts an
+  RTE object on the device, so `rrtmgp_post` names `flw` (as
+  `rrtmgp_lw_calculate_fluxes` does); `test_rrtmgp_post` regenerated
+  (generation only) in `capture_F2000_C4` and `capture_rrtmgp`.
+
+Stage 2, diagnostics (atmospheric_physics `sima_diagnostics`, `phys_utils`):
+- `phys_utils/atmos_phys_interp_utils.F90`: `vertinterp_column`
+  (`!$acc routine seq`), `vertinterp`'s default method for one column (same
+  search, branches and arithmetic), with a bracketed flag; host
+  `vertinterp` unchanged.
+- `rrtmgp_diagnostics` (HR): one kernel into a device local.
+- `rrtmgp_lw_diagnostics`, `rrtmgp_sw_diagnostics`: device locals for every
+  computed field (`qrl/cpair`, `qrs/cpair`, LWCF, SWCF, FLN200/FSN200,
+  FLNR/FSNR through `vertinterp_column`); flux arrays read only through
+  plain-array helpers (`difference_at_level`, `scatter_daylit`; the SW
+  scatter through `idxday` is skipped when `nday == 0`); contiguous
+  sections of present arrays passed directly to `history_out_field`.
+  Error path: all interpolations are computed first; if a column is not
+  bracketed (NaN only), no field is written for that call and the same
+  `VERTINTERP` error is returned (one integer reduction per call).
+- ccs_config: `rrtmgp_sw_diagnostics.o`, `rrtmgp_lw_diagnostics.o`,
+  `rrtmgp_diagnostics.o`, `atmos_phys_interp_utils.o` in `GPU_SCHEME_OBJS`.
+
+Generated cam4 GPU cap (cap_oracle): no `update self` before any
+`*_diagnostics` call (the last 16 arrays, 19 references, removed);
+`update self/device(flwds)` around `rrtmgp_post` removed. `update` lines
+30 -> 25. Several arguments move between the two group-level `data copy`
+lists in `cam_ccpp_cap.F90` (no functional change).
+
+Verification: replays c18a (F2000_C4) and the rrtmgp captures pass on CPU
+and GPU after stage 1 (`test_rrtmgp_post` failed on the GPU until the
+driver fix above); xdsl132gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
+tolerance) 8/8: `se_cam4` QPC4 (DEBUG and optimized), F1850/F2000/FHIST_C4,
+`analy_ic_cam4` MPAS (DEBUG and optimized), `rrtmgp_derecho` FPHYStest.
+
+## `odv-col-aod-device-write`: `odv_col_aod` written on the device (2026-11-24)
+
+No generator change. atmospheric_physics `schemes/chemistry/bulk_aerosol_optics.F90`:
+the `!$acc update self(odv)` and the host copy into `odv_col_aod` are
+replaced by a kernel under `!$acc data copyout(odv_col_aod)` (present in
+the model, so no transfer), guarded by `num_bulk_aer > 0` so a zero-size
+`odv_col_aod` (no bulk aerosols, QPC4) gets no device copy in the scheme.
+A plain copy, bit-for-bit by construction.
+
+Generated cam4 GPU cap (cap_oracle): `update device(odv_col_aod(col_start:col_end,
+1:num_bulk_aer))` before `aerosol_optics_diagnostics_run` removed; with the
+scheme's `update self(odv)` gone, two transfers per step fewer. Left in the
+before-coupler phase per step: `update self(zi)` (`tracer-data-device-interpolation`)
+and `update self(t)` twice (`gpu-cam4-host-uses-in-device-schemes`).
+Pre-existing, unchanged: the cap allocates `odv_col_aod` and does `enter
+data create` once at init even when it is zero-size.
+
+Verification: `bulk_aerosol_optics` replays (F2000_C4 c18a) CPU and GPU;
+xdsl133gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero tolerance) 7/7:
+`se_cam4` QPC4 (DEBUG and optimized), F1850/F2000/FHIST_C4,
+`analy_ic_cam4` MPAS (DEBUG and optimized).
+
+## `tracer-data-device-interpolation` (zi fix): no per-step `zi` pull for prescribed tracer data (2026-11-24)
+
+No generator change. The full device interpolation of prescribed tracer
+data is deferred (user decision); the interpolation stays on the host.
+CAM-SIMA's `tracer_data` reads `zi` only for altitude-level files
+(`alt_data`: `rebin`/`interpz_conserve`), which no cam4 file or CAM-SIMA
+test uses, yet the cam4 GPU cap pulled `zi` every step because the four
+`prescribed_*` schemes pass it to the host routine `advance_trcdata`.
+
+atmospheric_physics `schemes/chemistry/prescribed_{ozone,aerosols,aerosol_deposition_flux,volcanic_aerosol}.F90`:
+`advance_trcdata` is wrapped in `!$acc data present(zi)`, with `!$acc
+update self(zi)` before the call only when `tracer_data_file%alt_data`.
+`zi` thus classifies device (rule B) and the cap stops pulling it; an
+altitude-level configuration would still run correctly, with one `zi`
+copy per call (slow rather than failing, user requirement). ccs_config
+`Depends.nvhpc`: `prescribed_aerosol_deposition_flux.o` added to
+`GPU_SCHEME_OBJS`.
+
+Generated cam4 GPU cap (cap_oracle): `update self(zi)` before the
+prescribed tracer schemes removed.
+
+Verification: xdsl135gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
+tolerance) 8/8: `se_cam4` QPC4 (DEBUG and optimized), F1850/F2000/FHIST_C4,
+`analy_ic_cam4` MPAS (DEBUG and optimized), `trcdata_bam_derecho` FPHYStest.
+
+## `gpu-cam4-host-uses-in-device-schemes` (last piece): `compute_cloud_fraction` `temp` marked device (2026-11-24)
+
+No generator or Fortran change. atmospheric_physics
+`schemes/cloud_fraction/compute_cloud_fraction.meta`: `memory_space =
+device` on `temp` (with a comment). The only host use of `temp` is in the
+`cldfrc_ice` branch (false in cam4): 2-D sections `temp(1:ncol,k)` passed
+to the `wv_saturation` vector routines, which map their argument with
+`!$acc data copyin(t)` and so find the device copy present -- no host read
+in any configuration. Rule B does not yet cover 2-D sections
+(`residency-call-args-to-device-callees`), hence the explicit mark. The
+earlier assumption that this waited on `wv-sat-goffgratch-point-matches-vector`
+was wrong.
+
+Generated cam4 GPU cap: both `update self(t)` (before the direct
+`compute_cloud_fraction_run` call and the one inside
+`rk_stratiform_cloud_fraction_perturbation_run`) removed. With the zi fix,
+the cam4 cap's per-step phases (before/after coupler run, timestep
+init/final) contain no `update` directives; the 13 left are in the two
+init phases. perf24 (`NV_ACC_TIME`, MPAS 120 km, 1 day) confirms no
+per-step transfers from `cam4_cap.F90`; what remains per step is in the
+host cap's suite-part data regions, the dycore's direct `qneg` and
+`geopotential_temp` calls and scheme-internal regions.
+
+Verification: xdsl136gpu (nvhpc GPU vs `20261122-894897e-nvhpc`, zero
+tolerance) 7/7: `se_cam4` QPC4 (DEBUG and optimized), F1850/F2000/FHIST_C4,
+`analy_ic_cam4` MPAS (DEBUG and optimized).
